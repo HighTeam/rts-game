@@ -6,7 +6,7 @@
 #   .\scripts\setup-github.ps1 -SkipProject # if project scope not granted yet
 
 param(
-    [string]$Owner = "4ord-dev",
+    [string]$Owner = "HighTeam",
     [string]$Repo = "rts-game",
     [switch]$SkipProject
 )

@@ -2,7 +2,7 @@
 # Usage: .\scripts\link-project.ps1
 
 param(
-    [string]$Owner = "4ord-dev",
+    [string]$Owner = "HighTeam",
     [string]$Repo = "rts-game",
     [int]$ProjectNumber = 1
 )

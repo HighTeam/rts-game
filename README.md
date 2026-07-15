@@ -2,6 +2,8 @@
 
 AoE2-style RTS with four civilizations from *Avatar: The Last Airbender* — Water, Earth, Fire, and Air.
 
+**Organization:** [HighTeam](https://github.com/HighTeam)
+
 ## Stack
 
 | Layer | Choice |
@@ -15,11 +17,13 @@ AoE2-style RTS with four civilizations from *Avatar: The Last Airbender* — Wat
 
 ## Links
 
-- **Repo:** https://github.com/4ord-dev/rts-game
-- **Issues:** https://github.com/4ord-dev/rts-game/issues
-- **Milestones:** https://github.com/4ord-dev/rts-game/milestones
-- **Project board:** https://github.com/users/4ord-dev/projects/1
+- **Repo:** https://github.com/HighTeam/rts-game
+- **Website:** https://github.com/HighTeam/rts-game-web
+- **Issues:** https://github.com/HighTeam/rts-game/issues
+- **Milestones:** https://github.com/HighTeam/rts-game/milestones
+- **Project board:** https://github.com/orgs/HighTeam/projects/1
 - **Backlog:** [docs/BACKLOG.md](docs/BACKLOG.md)
+- **Org layout:** [docs/ORG.md](docs/ORG.md)
 
 ## Milestones (v1.0 / MVP)
 
@@ -36,7 +40,9 @@ AoE2-style RTS with four civilizations from *Avatar: The Last Airbender* — Wat
 
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)
 - [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, issue hierarchy
+- [ORG.md](docs/ORG.md) — repos, licensing, distribution
+- [GITHUB_SETUP.md](docs/GITHUB_SETUP.md) — project board setup
 
 ## Status
 
-Pre-development — M0 not started. Track progress on GitHub Issues and the Project board.
+Pre-development — M0 in progress. Track work on the org project board.

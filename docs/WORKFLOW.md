@@ -13,7 +13,7 @@ Use one GitHub Project with a **Kanban** view as the daily board.
 
 Add a **Roadmap** view later if you want a timeline; skip **Feature release** until post-v1.0 patches.
 
-Project link: see [GITHUB_SETUP.md](GITHUB_SETUP.md). Issues: https://github.com/4ord-dev/rts-game/issues
+Project link: see [GITHUB_SETUP.md](GITHUB_SETUP.md). Issues: https://github.com/HighTeam/rts-game/issues
 
 ## Milestones
 
