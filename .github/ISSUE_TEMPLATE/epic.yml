@@ -1,0 +1,29 @@
+---
+name: Epic
+about: Milestone epic with a checklist (one ### section from docs/BACKLOG.md)
+title: "[M0] "
+labels:
+  - epic
+body:
+  - type: markdown
+    value: |
+      Epic from [docs/BACKLOG.md](../docs/BACKLOG.md). Copy the checklist from the matching `###` section.
+      Add labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking` as appropriate.
+  - type: checkboxes
+    id: tasks
+    attributes:
+      label: Tasks
+      options:
+        - label: Task 1
+        - label: Task 2
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Milestone
+      options:
+        - M0 - Foundations
+        - M1 - Single-civ core simulation
+        - M2 - Lockstep networking, 2 players
+        - M3 - Scale to 8 players + save/load
+        - M4 - Civilization content x4
+        - M5 - Menus, UI, packaging
