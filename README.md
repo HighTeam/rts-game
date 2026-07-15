@@ -18,7 +18,7 @@ AoE2-style RTS with four civilizations from *Avatar: The Last Airbender* — Wat
 - **Repo:** https://github.com/4ord-dev/rts-game
 - **Issues:** https://github.com/4ord-dev/rts-game/issues
 - **Milestones:** https://github.com/4ord-dev/rts-game/milestones
-- **Project board:** https://github.com/users/4ord-dev/projects — create Kanban per [docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md)
+- **Project board:** https://github.com/users/4ord-dev/projects/1
 - **Backlog:** [docs/BACKLOG.md](docs/BACKLOG.md)
 
 ## Milestones (v1.0 / MVP)

@@ -85,15 +85,8 @@ Get-ChildItem $issueDir -Filter "*.json" | ForEach-Object {
 }
 
 if (-not $SkipProject) {
-    Write-Host "Creating GitHub Project (Kanban)..."
-    $projectUrl = gh project create --owner $Owner --title "Avatar RTS MVP" --format json | ConvertFrom-Json
-    Write-Host "  project: $($projectUrl.url)"
-    Write-Host ""
-    Write-Host "Next manual steps in the browser:"
-    Write-Host "  1. Open $($projectUrl.url)"
-    Write-Host "  2. Add this repo as a data source (Settings -> Manage access -> link $repoFull)"
-    Write-Host "  3. Set default view to Kanban with columns: Backlog, In Progress, Blocked, Done"
-    Write-Host "  4. Group/filter by Milestone or Status field"
+    Write-Host "Linking issues to existing project (default: project 1)..."
+    & (Join-Path $PSScriptRoot "link-project.ps1") -Owner $Owner -Repo $Repo
 }
 
 Write-Host ""
