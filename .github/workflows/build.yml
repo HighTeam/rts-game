@@ -36,3 +36,14 @@ jobs:
       - name: Build
         shell: pwsh
         run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Headless smoke test
+        shell: pwsh
+        run: |
+          $preset = "${{ matrix.preset }}"
+          if ($preset -eq "ci-x64-debug") {
+            $exe = "./build/ci-x64-debug/aoa.exe"
+          } else {
+            $exe = "./build/ci-x64-release/aoa.exe"
+          }
+          & $exe --headless --ticks 5

@@ -1,7 +1,24 @@
-// Placeholder entry point for M0 build verification.
-// Window, sim loop, and rendering arrive in the next M0 epics.
+#include "app/application.hpp"
 
-int main()
+#include "sim/simulation.hpp"
+
+#include <exception>
+#include <iostream>
+
+int main(int argc, char** argv)
 {
-    return 0;
+    try {
+        aoa::sim::Simulation simulation{};
+        const aoa::app::LaunchOptions options = aoa::app::parse_launch_options(argc, argv);
+
+        if (options.headless) {
+            return aoa::app::run_headless(simulation, options.headless_ticks);
+        }
+
+        return aoa::app::run_graphical(simulation);
+    }
+    catch (const std::exception& exception) {
+        std::cerr << "Fatal error: " << exception.what() << '\n';
+        return 1;
+    }
 }

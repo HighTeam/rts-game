@@ -39,6 +39,7 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 ## Docs
 
 - [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
+- [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)
 - [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, **PR workflow (required)**
 - [ORG.md](docs/ORG.md) — repos, licensing, distribution
@@ -46,4 +47,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-Pre-development — M0 in progress. Track work on the org project board.
+Pre-development — M0 core loop landed; ECS skeleton next. Track work on the org project board.

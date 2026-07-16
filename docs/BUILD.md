@@ -38,7 +38,15 @@ cmake --preset x64-release
 cmake --build --preset x64-release
 ```
 
-Output executable: `build/x64-debug/Debug/aoa.exe` or `build/x64-release/Release/aoa.exe`.
+## Headless mode
+
+Same binary, no window — for future desync/regression runs:
+
+```powershell
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200
+```
+
+Default tick count without `--ticks`: see `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp`.
 
 ## Open in Visual Studio
 
