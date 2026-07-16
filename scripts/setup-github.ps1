@@ -1,4 +1,4 @@
-# GitHub setup script for Avatar RTS
+# GitHub setup script for Age of Affinities
 # Run from repo root after: gh auth refresh -h github.com -s project,read:project
 #
 # Usage:

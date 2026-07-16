@@ -1,4 +1,4 @@
-# Avatar RTS — End User License Agreement (draft)
+# Age of Affinities — End User License Agreement (draft)
 
 **Version:** 0.1 (draft, pre-release)
 

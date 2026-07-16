@@ -1,6 +1,6 @@
-# Avatar RTS
+# Age of Affinities
 
-AoE2-style RTS with four civilizations from *Avatar: The Last Airbender* — Water, Earth, Fire, and Air.
+AoE2-style RTS where civilizations rise through their affinity to elemental powers — starting with Water, Earth, Fire, and Air.
 
 **Organization:** [HighTeam](https://github.com/HighTeam)
 

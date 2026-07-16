@@ -12,7 +12,7 @@
 | Milestones M0-M5 | https://github.com/HighTeam/rts-game/milestones |
 | Labels | `blocking`, `engine`, `netcode`, `content`, `ui`, `tooling`, `epic` |
 
-The **RTS Game** org project is linked to `HighTeam/rts-game`. All 21 epic issues are on the board.
+The **Age of Affinities** org project is linked to `HighTeam/rts-game`. All 21 epic issues are on the board.
 
 ### Board columns (Status field)
 
