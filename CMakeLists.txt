@@ -27,6 +27,7 @@ add_executable(aoa
     src/core/fixed_timestep_loop.cpp
     src/render/gl_renderer.cpp
     src/sim/simulation.cpp
+    src/sim/systems/sim_systems.cpp
 )
 
 target_include_directories(aoa PRIVATE src)
