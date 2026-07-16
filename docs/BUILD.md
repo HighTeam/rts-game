@@ -46,4 +46,6 @@ After `cmake --preset x64-debug`, open `build/x64-debug/age-of-affinities.sln` (
 
 ## CI
 
-GitHub Actions runs the same presets on every push to `main` and on pull requests.
+GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) because hosted runners do not expose the Visual Studio generator the same way as a local VS install. Local development keeps **Visual Studio 2022** presets (`x64-debug`, `x64-release`).
+
+Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests.

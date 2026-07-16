@@ -35,6 +35,37 @@
       "displayName": "x64 Release",
       "inherits": "windows-base",
       "binaryDir": "${sourceDir}/build/x64-release"
+    },
+    {
+      "name": "ci-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": {
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+          "type": "FILEPATH"
+        }
+      },
+      "environment": {
+        "VCPKG_FEATURE_FLAGS": "manifests"
+      }
+    },
+    {
+      "name": "ci-x64-debug",
+      "displayName": "CI x64 Debug",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "ci-x64-release",
+      "displayName": "CI x64 Release",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -49,6 +80,16 @@
       "displayName": "Build x64 Release",
       "configurePreset": "x64-release",
       "configuration": "Release"
+    },
+    {
+      "name": "ci-x64-debug",
+      "displayName": "Build CI x64 Debug",
+      "configurePreset": "ci-x64-debug"
+    },
+    {
+      "name": "ci-x64-release",
+      "displayName": "Build CI x64 Release",
+      "configurePreset": "ci-x64-release"
     }
   ]
 }
