@@ -38,8 +38,9 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Docs
 
+- [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)
-- [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, issue hierarchy
+- [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, **PR workflow (required)**
 - [ORG.md](docs/ORG.md) — repos, licensing, distribution
 - [GITHUB_SETUP.md](docs/GITHUB_SETUP.md) — project board setup
 

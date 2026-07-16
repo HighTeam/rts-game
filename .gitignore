@@ -60,6 +60,7 @@ compile_commands.json
 
 # vcpkg
 vcpkg_installed/
+.tools/
 
 # debug information files
 *.dwo
