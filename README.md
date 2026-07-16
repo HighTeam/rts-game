@@ -39,6 +39,7 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 ## Docs
 
 - [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
+- [ECS.md](docs/ECS.md) — EnTT components, systems, data-driven hooks
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)
 - [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, **PR workflow (required)**
@@ -47,4 +48,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-Pre-development — M0 core loop landed; ECS skeleton next. Track work on the org project board.
+M0 foundations complete (build, core loop, ECS). M1 sim work is next.
