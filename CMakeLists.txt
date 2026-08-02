@@ -26,7 +26,11 @@ add_executable(aoa
     src/app/application.cpp
     src/core/fixed_timestep_loop.cpp
     src/data/content_loader.cpp
+    src/harness/regression_harness.cpp
+    src/render/camera.cpp
+    src/render/camera_settings.cpp
     src/render/game_renderer.cpp
+    src/render/hud_overlay.cpp
     src/sim/map/test_map.cpp
     src/sim/scenario/test_scenario.cpp
     src/sim/simulation.cpp
@@ -57,6 +61,9 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/data"
         "$<TARGET_FILE_DIR:aoa>/data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/assets"
+        "$<TARGET_FILE_DIR:aoa>/assets"
 )
 
 if(MSVC)

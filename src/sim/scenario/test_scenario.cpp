@@ -32,6 +32,7 @@ entt::entity spawn_unit(
         entity,
         components::Health{definition.max_hp, definition.max_hp});
     registry.emplace<components::MoveCooldown>(entity);
+    registry.emplace<components::AttackCooldown>(entity);
 
     if (is_player) {
         registry.emplace<components::PlayerOwnedTag>(entity);

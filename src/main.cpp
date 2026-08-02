@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 
+#include "harness/regression_harness.hpp"
 #include "sim/simulation.hpp"
 
 #include <exception>
@@ -11,8 +12,12 @@ int main(int argc, char** argv)
         aoa::sim::Simulation simulation{};
         const aoa::app::LaunchOptions options = aoa::app::parse_launch_options(argc, argv);
 
+        if (options.run_harness) {
+            return aoa::harness::run_all_scenarios(aoa::harness::default_scenarios_directory());
+        }
+
         if (options.headless) {
-            return aoa::app::run_headless(simulation, options.headless_ticks);
+            return aoa::app::run_headless(simulation, options);
         }
 
         return aoa::app::run_graphical(simulation);

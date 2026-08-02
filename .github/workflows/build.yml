@@ -47,3 +47,8 @@ jobs:
             $exe = "./build/ci-x64-release/aoa.exe"
           }
           & $exe --headless --ticks 5
+
+      - name: Regression harness
+        if: matrix.preset == 'ci-x64-debug'
+        shell: pwsh
+        run: ./build/ci-x64-debug/aoa.exe --harness
