@@ -150,7 +150,7 @@ std::array<float, 3> ClassicCamera::world_to_clip(
     const float ndc_x = (screen_x / window_width) * 2.0F - 1.0F;
     const float ndc_y = 1.0F - (screen_y / window_height) * 2.0F;
     const float depth = (world_x + world_z) * constants::RENDER_DEPTH_GRID_SCALE
-        + world_y * constants::RENDER_DEPTH_HEIGHT_SCALE;
+        - world_y * constants::RENDER_DEPTH_HEIGHT_SCALE;
 
     return {ndc_x, ndc_y, depth};
 }

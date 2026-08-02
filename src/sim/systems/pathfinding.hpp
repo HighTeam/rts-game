@@ -7,9 +7,15 @@
 
 namespace aoa::sim::systems {
 
-std::vector<core::GridPos> find_path(
+[[nodiscard]] bool is_tile_walkable(
+    const components::MapGrid& map,
+    core::GridPos pos,
+    bool allow_forest);
+
+[[nodiscard]] std::vector<core::GridPos> find_path(
     const components::MapGrid& map,
     core::GridPos start,
-    core::GridPos goal);
+    core::GridPos goal,
+    bool allow_forest = false);
 
 } // namespace aoa::sim::systems

@@ -312,95 +312,96 @@ void GameRenderer::draw_entity_prism(
     const float g,
     const float b) const
 {
-    const float inset = 0.22F;
+    const float inset = 0.18F;
     const float fx = static_cast<float>(grid_x) + inset;
-    const float fy = static_cast<float>(grid_y) + inset;
+    const float fz = static_cast<float>(grid_y) + inset;
     const float size = 1.0F - inset * 2.0F;
-    const float top = height;
+    const float base = constants::RENDER_ENTITY_BASE_LIFT;
+    const float top = base + height;
     const float top_light = constants::RENDER_AMBIENT_LIGHT;
     const float side_light = constants::RENDER_AMBIENT_LIGHT * constants::RENDER_SIDE_LIGHT_FACTOR;
 
     draw_scene_quad(
         fx,
         top,
-        fy,
+        fz,
         fx + size,
         top,
-        fy,
+        fz,
         fx + size,
         top,
-        fy + size,
+        fz + size,
         fx,
         top,
-        fy + size,
+        fz + size,
         r,
         g,
         b,
         top_light);
     draw_scene_quad(
         fx,
-        0.0F,
-        fy,
+        base,
+        fz,
         fx + size,
-        0.0F,
-        fy,
+        base,
+        fz,
         fx + size,
         top,
-        fy,
+        fz,
         fx,
         top,
-        fy,
+        fz,
         r,
         g,
         b,
         side_light);
     draw_scene_quad(
         fx + size,
-        0.0F,
-        fy,
+        base,
+        fz,
         fx + size,
-        0.0F,
-        fy + size,
-        fx + size,
-        top,
-        fy + size,
+        base,
+        fz + size,
         fx + size,
         top,
-        fy,
+        fz + size,
+        fx + size,
+        top,
+        fz,
         r,
         g,
         b,
         side_light);
     draw_scene_quad(
         fx,
-        0.0F,
-        fy + size,
+        base,
+        fz + size,
         fx + size,
-        0.0F,
-        fy + size,
+        base,
+        fz + size,
         fx + size,
         top,
-        fy + size,
+        fz + size,
         fx,
         top,
-        fy + size,
+        fz + size,
         r,
         g,
         b,
         side_light);
     draw_scene_quad(
         fx,
-        0.0F,
-        fy,
+        base,
+        fz,
         fx,
-        0.0F,
-        fy + size,
-        fx,
-        top,
-        fy + size,
+        base,
+        fz + size,
         fx,
         top,
-        fy,
+        fz + size,
+        fx,
+        top,
+        fz,
         r,
         g,
         b,
@@ -413,7 +414,7 @@ void GameRenderer::draw_selection_outline(const int grid_x, const int grid_y) co
     const float center_x = static_cast<float>(grid_x) + 0.5F;
     const float center_z = static_cast<float>(grid_y) + 0.5F;
     const float half = 0.5F * scale;
-    const float outline_height = 0.03F;
+    const float outline_height = constants::RENDER_ENTITY_BASE_LIFT + 0.02F;
 
     draw_scene_quad(
         center_x - half,

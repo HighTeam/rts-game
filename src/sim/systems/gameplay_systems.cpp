@@ -124,13 +124,7 @@ core::GridPos find_adjacent_walkable(
 
     for (const core::GridPos offset : offsets) {
         const core::GridPos candidate{target.x + offset.x, target.y + offset.y};
-        if (!core::is_inside_grid(candidate, map.width, map.height)) {
-            continue;
-        }
-
-        const int index = core::grid_index(candidate, map.width);
-        const auto tile = map.tiles[static_cast<std::size_t>(index)];
-        if (tile != components::TileType::Grass && tile != components::TileType::Forest) {
+        if (!is_tile_walkable(map, candidate, false)) {
             continue;
         }
 
@@ -150,7 +144,7 @@ void assign_path(
 {
     const auto& pos = registry.get<components::GridPosition>(entity).cell;
     auto& path = registry.get_or_emplace<components::MovePath>(entity);
-    path.cells = find_path(map, pos, goal);
+    path.cells = find_path(map, pos, goal, false);
     path.next_index = 0;
 }
 
@@ -296,6 +290,54 @@ void run_militia_ai(entt::registry& registry, const components::MapGrid& map)
     }
 }
 
+void run_enemy_militia_ai(entt::registry& registry, const components::MapGrid& map)
+{
+    const auto view = registry.view<components::MilitiaUnitTag, components::EnemyTag, components::GridPosition>();
+
+    for (const entt::entity militia : view) {
+        entt::entity target = entt::null;
+        int best_distance = std::numeric_limits<int>::max();
+        const core::GridPos militia_pos = view.get<components::GridPosition>(militia).cell;
+
+        const auto player_view =
+            registry.view<components::PlayerOwnedTag, components::GridPosition, components::Health>();
+        for (const entt::entity player_entity : player_view) {
+            if (!registry.any_of<components::UnitTag>(player_entity)) {
+                continue;
+            }
+
+            const auto& health = player_view.get<components::Health>(player_entity);
+            if (health.current.raw() <= 0) {
+                continue;
+            }
+
+            const core::GridPos player_pos = player_view.get<components::GridPosition>(player_entity).cell;
+            const int distance = core::chebyshev_distance(militia_pos, player_pos);
+            if (distance < best_distance) {
+                best_distance = distance;
+                target = player_entity;
+            }
+        }
+
+        if (target == entt::null) {
+            continue;
+        }
+
+        registry.get_or_emplace<components::AttackOrder>(militia).target = target;
+
+        if (best_distance <= 1) {
+            registry.remove<components::MovePath>(militia);
+            continue;
+        }
+
+        if (!registry.any_of<components::MovePath>(militia)) {
+            const core::GridPos target_pos = registry.get<components::GridPosition>(target).cell;
+            const core::GridPos stand_tile = find_adjacent_walkable(map, registry, target_pos, militia);
+            assign_path(registry, militia, map, stand_tile);
+        }
+    }
+}
+
 void run_movement_system(
     entt::registry& registry,
     const components::ContentPack& content)
@@ -419,6 +461,7 @@ void run_gameplay_systems(entt::registry& registry)
 
     run_worker_system(registry, map, content);
     run_militia_ai(registry, map);
+    run_enemy_militia_ai(registry, map);
     run_movement_system(registry, content);
     run_combat_system(registry, content);
     run_death_cleanup(registry);
