@@ -48,4 +48,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M1 sim core done (#4, #5). Headless harness (#6) implemented locally. Next: Classic render (#26). Prototype uses top-down debug quads until #26 lands.
+M1 complete (#4–#6, #26) on branch `feature/m1-harness-render-fixes` — PR #27 ready for review/merge. Next: **M2 lockstep** (#7).

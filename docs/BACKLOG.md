@@ -37,16 +37,17 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 
 ### [BLOCKING] Deterministic sim core
 
-- [ ] Tile/grid map representation, single hardcoded test map
-- [ ] Resource node (wood) + gather/deposit loop for one worker unit
-- [ ] Town Center equivalent: spawns workers, is a valid attack target
-- [ ] One military unit: move, attack, die
-- [ ] A* pathfinding on the grid (don't build flow fields yet — you don't have enough units to need them; flow fields are an optimization for hundreds of units, and building them before you have a stress case is wasted time)
-- [ ] Per-tick state hash function (hash all sim-relevant component data every tick) — this is your desync detector for M2, build it while the sim is simple so you can trust it before networking adds complexity
+- [x] Tile/grid map representation, single hardcoded test map
+- [x] Resource node (wood) + gather/deposit loop for one worker unit
+- [x] Town Center equivalent: spawns workers, is a valid attack target
+- [x] One military unit: move, attack, die
+- [x] A* pathfinding on the grid (8-way, forest blocked, enemy AI)
+- [x] Per-tick state hash function (hash all sim-relevant component data every tick) — desync detector for M2
+- [x] Combat same-tick tie-break (sorted entity id; no mutual kill same tick)
 
 ### Data-driven civ definitions [BLOCKING for M4]
 
-- [ ] Civ/unit/building stats loaded from JSON, not hardcoded in C++ classes
+- [x] Civ/unit/building stats loaded from JSON, not hardcoded in C++ classes
 - [ ] This is the single highest-leverage task in the whole backlog: if this is clean now, "add 3 more civs" in M4 is content authoring, not engine work. If it's skipped now, M4 becomes a refactor under time pressure.
 
 ### Headless regression harness
@@ -57,12 +58,12 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 
 *Goal: AoE2 DE-like look — 3D scene, locked isometric Classic camera, pan + zoom, basic shaders. Sim stays grid-based.*
 
-- [ ] Camera module: Classic mode — fixed isometric azimuth, pan, smooth zoom (no orbit)
-- [ ] Grid → isometric world projection
-- [ ] 3D terrain + entity draw pass (replace top-down debug quads)
-- [ ] Basic shaders (lighting, team-color hook, selection outline hook)
-- [ ] `CameraView` enum: Classic implemented; Full 3D stub for later
-- [ ] Settings **Camera view** dropdown documented for M5 (Classic / Full 3D; Full 3D becomes default when ready)
+- [x] Camera module: Classic mode — fixed isometric azimuth, pan, smooth zoom (no orbit)
+- [x] Grid → isometric world projection
+- [x] 3D terrain + entity draw pass
+- [x] Basic shaders (lighting, team-color hook, selection outline hook)
+- [x] `CameraView` enum: Classic implemented; Full 3D stub for later
+- [x] Settings **Camera view** dropdown documented for M5 (Classic / Full 3D; Full 3D becomes default when ready)
 
 See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 

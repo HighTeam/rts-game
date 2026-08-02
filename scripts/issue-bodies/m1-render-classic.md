@@ -17,4 +17,4 @@ Reference: [docs/DECISIONS.md](../docs/DECISIONS.md) — render style + Camera v
 
 **Out of scope (this epic):** Full 3D orbital camera, art pipeline, asset packing, menu Settings screen (M5 — only documents the Camera view dropdown).
 
-**Follow-up (separate issues):** smooth sub-tile movement, forest path blocking, enemy combat AI, real meshes/sprites.
+**Follow-up (post-M1 / M2 prep):** sub-tile `Fixed` movement + render interpolation; real art/meshes; Full 3D camera mode.

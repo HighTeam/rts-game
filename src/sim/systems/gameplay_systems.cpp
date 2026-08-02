@@ -395,30 +395,45 @@ void run_combat_system(entt::registry& registry, const components::ContentPack& 
         components::AttackCooldown,
         components::Health>();
 
+    std::vector<entt::entity> attackers{};
     for (const entt::entity attacker : view) {
-        auto& cooldown = view.get<components::AttackCooldown>(attacker);
+        attackers.push_back(attacker);
+    }
+
+    std::sort(attackers.begin(), attackers.end(), [](const entt::entity left, const entt::entity right) {
+        return static_cast<entt::id_type>(left) < static_cast<entt::id_type>(right);
+    });
+
+    for (const entt::entity attacker : attackers) {
+        auto& cooldown = registry.get<components::AttackCooldown>(attacker);
         if (cooldown.ticks_remaining > 0) {
             --cooldown.ticks_remaining;
             continue;
         }
 
-        const entt::entity target = view.get<components::AttackOrder>(attacker).target;
+        const entt::entity target = registry.get<components::AttackOrder>(attacker).target;
         if (target == entt::null || !registry.valid(target) || !registry.any_of<components::Health>(target)) {
             continue;
         }
 
-        const core::GridPos attacker_pos = view.get<components::GridPosition>(attacker).cell;
+        auto& target_health = registry.get<components::Health>(target);
+        if (target_health.current.raw() <= 0) {
+            continue;
+        }
+
+        const core::GridPos attacker_pos = registry.get<components::GridPosition>(attacker).cell;
         const core::GridPos target_pos = registry.get<components::GridPosition>(target).cell;
         if (core::chebyshev_distance(attacker_pos, target_pos) > 1) {
             continue;
         }
 
-        const auto* definition = find_unit_definition(content, view.get<components::DefinitionRef>(attacker));
+        const auto* definition = find_unit_definition(
+            content,
+            registry.get<components::DefinitionRef>(attacker));
         if (definition == nullptr || definition->attack_damage <= 0) {
             continue;
         }
 
-        auto& target_health = registry.get<components::Health>(target);
         target_health.current = target_health.current - math::Fixed::from_int(definition->attack_damage);
         cooldown.ticks_remaining = definition->attack_cooldown_ticks;
     }

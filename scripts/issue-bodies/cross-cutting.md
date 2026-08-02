@@ -8,4 +8,6 @@ Epic from [docs/BACKLOG.md](../docs/BACKLOG.md). Decide once — expensive to ch
 - [ ] Disconnect/pause policy (M2) — affects UI and netcode together
 - [x] Tick rate — pick once; changing later touches balance, netcode timing, and input feel (`SIM_TICKS_PER_SECOND = 20`)
 - [x] Render style — AoE2 DE-like hybrid (3D engine, isometric Classic camera, zoom + shaders) — [docs/DECISIONS.md](../docs/DECISIONS.md)
-- [x] Camera view modes — Settings: **Classic** (now) vs **Full 3D** (later default); Classic only until #26 + follow-up
+- [x] Camera view modes — Settings: **Classic** (now) vs **Full 3D** (later default)
+- [x] Combat same-tick resolution — sorted entity id; no double-KO same tick — [docs/DECISIONS.md](../docs/DECISIONS.md)
+- [x] Unit position model — grid cells in M1; sub-tile `Fixed` before M2 — [docs/DECISIONS.md](../docs/DECISIONS.md)

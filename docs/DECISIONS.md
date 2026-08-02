@@ -12,6 +12,8 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Render style (DE-like hybrid) | M1 #26 Render | Decided — see below |
 | Camera modes (Classic / Full 3D) | M1 #26 + M5 Settings | Decided — Classic first; Full 3D later default |
 | Asset pipeline (raw vs shipped) | M5 Packaging | Decided — see below |
+| Combat same-tick resolution | M1 | Done — sorted entity id; skip dead targets same tick |
+| Unit position model | M1 → M2 prep | Grid cells now; sub-tile `Fixed` before netcode — see below |
 | Disconnect / pause policy | M2 | Pending |
 | Host migration policy | M3 | Pending |
 
@@ -66,3 +68,27 @@ Two top-level folders; only **`assets/`** is shipped / committed for distributio
 - Game loads only from `assets/` packs, not `raw-assets/`
 
 See [assets/README.md](../assets/README.md).
+
+---
+
+## Combat same-tick resolution
+
+When multiple units attack on the **same sim tick**:
+
+1. Collect attackers, sort by **`entt::entity` id** (stable, lockstep-safe).
+2. Apply damage **in that order**.
+3. **Skip** attacks against targets already at `health <= 0` this tick (before `run_death_cleanup`).
+
+No mutual “double KO” on the same tick when one hit would kill first. Cooldowns still tick down per attacker as before.
+
+---
+
+## Unit position model
+
+| Phase | Sim | Render |
+|-------|-----|--------|
+| **M1 (now)** | Integer **grid cell** per unit; one occupier per cell for movement | Entity drawn at cell; 3D prism overlay |
+| **Before M2** | **`Fixed` world x/y** on tile plane; move along path segments between waypoints | Interpolate with `interpolation_alpha` (see `docs/ECS.md`) |
+| **Map** | Tile grid stays (terrain, forests, blocking) | Isometric 3D tiles unchanged |
+
+AoE-style “free movement on a tile” means **sub-tile fixed-point coordinates**, not float Minecraft-style doubles — keeps determinism for lockstep.
