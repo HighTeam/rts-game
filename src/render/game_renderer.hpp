@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/camera.hpp"
+#include "render/hud_overlay.hpp"
 #include "sim/simulation.hpp"
 
 #include <SFML/System/Vector2.hpp>
@@ -35,6 +36,7 @@ private:
     unsigned int shader_program_{0U};
     sf::Vector2u window_size_{0U, 0U};
     ClassicCamera camera_{};
+    HudOverlay hud_overlay_{};
     bool map_framed_{false};
 };
 

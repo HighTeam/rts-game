@@ -35,6 +35,15 @@ inline constexpr float CAMERA_CLASSIC_ZOOM_STEP = 0.08F;
 inline constexpr float CAMERA_CLASSIC_PAN_STEP = 16.0F;
 inline constexpr float CAMERA_CLASSIC_FRAME_PADDING = 0.92F;
 
+inline constexpr int HUD_PIXEL_SCALE = 2;
+inline constexpr int HUD_CHAR_SPACING = 1;
+inline constexpr int HUD_LINE_SPACING = 4;
+inline constexpr float HUD_MARGIN_X = 12.0F;
+inline constexpr float HUD_MARGIN_Y = 12.0F;
+inline constexpr float HUD_TEXT_R = 0.95F;
+inline constexpr float HUD_TEXT_G = 0.88F;
+inline constexpr float HUD_TEXT_B = 0.55F;
+
 inline constexpr std::string_view EARTH_CIV_ID = "earth";
 inline constexpr std::string_view WORKER_UNIT_ID = "worker";
 inline constexpr std::string_view MILITIA_UNIT_ID = "militia";

@@ -289,6 +289,8 @@ void GameRenderer::draw(const sim::Simulation& simulation)
 
         draw_iso_marker(pos.x, pos.y, r, g, b);
     }
+
+    hud_overlay_.draw(simulation, window_size_, shader_program_);
 }
 
 } // namespace aoa::render
