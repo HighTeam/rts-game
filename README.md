@@ -48,4 +48,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M0 foundations complete (build, core loop, ECS). M1 sim work is next.
+M1 sim core in progress — Earth civ on 64×64 test map with gather/combat and map rendering.

@@ -11,6 +11,8 @@ namespace aoa::math {
 // Q16.16 fixed-point for deterministic simulation math.
 class Fixed {
 public:
+    Fixed() : raw_(0) {}
+
     static Fixed from_raw(std::int32_t raw) { return Fixed(raw); }
 
     static Fixed from_int(std::int32_t value)
@@ -58,7 +60,10 @@ public:
         return Fixed(static_cast<std::int32_t>(numerator / other.raw_));
     }
 
-    auto operator<=>(const Fixed& other) const = default;
+    bool operator==(const Fixed& other) const
+    {
+        return raw_ == other.raw_;
+    }
 
 private:
     explicit Fixed(std::int32_t raw) : raw_(raw) {}

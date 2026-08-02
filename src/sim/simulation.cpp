@@ -1,16 +1,23 @@
 #include "sim/simulation.hpp"
 
-#include "sim/components/motion_state.hpp"
+#include "core/constants.hpp"
+#include "data/content_loader.hpp"
+#include "sim/components/map_grid.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/scenario/test_scenario.hpp"
+#include "sim/systems/gameplay_systems.hpp"
 #include "sim/systems/sim_systems.hpp"
+
+#include <string>
 
 namespace aoa::sim {
 
 Simulation::Simulation()
 {
-    world_entity_ = registry_.create();
-    registry_.emplace<components::WorldTag>(world_entity_);
-    registry_.emplace<components::MotionState>(world_entity_);
+    const data::CivDefinition civ = data::load_civ_definition(
+        data::default_data_directory() / "civs" / (std::string(constants::EARTH_CIV_ID) + ".json"));
+
+    scenario::load_test_scenario(registry_, civ);
 }
 
 void Simulation::tick()
@@ -19,13 +26,14 @@ void Simulation::tick()
     systems::run_sim_systems(registry_);
 }
 
-math::Fixed Simulation::motion_sample() const
+std::uint64_t Simulation::state_hash() const
 {
-    if (world_entity_ == entt::null || !registry_.all_of<components::MotionState>(world_entity_)) {
-        return math::Fixed::from_int(0);
+    const auto view = registry_.view<components::WorldTag, components::SimState>();
+    for (const entt::entity world : view) {
+        return registry_.get<components::SimState>(world).state_hash;
     }
 
-    return registry_.get<components::MotionState>(world_entity_).value;
+    return 0U;
 }
 
 } // namespace aoa::sim
