@@ -11,7 +11,6 @@
 
 #include <glad/glad.h>
 
-#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -23,12 +22,9 @@ namespace {
 constexpr const char* VERTEX_SHADER = R"(
 #version 330 core
 layout(location = 0) in vec2 position;
-uniform vec2 offset;
-uniform vec2 scale;
 void main()
 {
-    vec2 scaled = position * scale + offset;
-    gl_Position = vec4(scaled, 0.0, 1.0);
+    gl_Position = vec4(position, 0.0, 1.0);
 }
 )";
 
@@ -90,6 +86,7 @@ GameRenderer::GameRenderer()
         throw std::runtime_error("Failed to initialize OpenGL loader");
     }
 
+    glDisable(GL_DEPTH_TEST);
     create_shader_program();
 }
 
@@ -118,24 +115,47 @@ void GameRenderer::destroy_gl_objects()
 void GameRenderer::resize(const sf::Vector2u window_size)
 {
     window_size_ = window_size;
+    camera_.set_window_size(window_size);
+    camera_.reset_view();
+    map_framed_ = false;
     glViewport(0, 0, static_cast<GLsizei>(window_size.x), static_cast<GLsizei>(window_size.y));
 }
 
-void GameRenderer::draw_colored_quad(
-    const float x,
-    const float y,
-    const float width,
-    const float height,
+void GameRenderer::pan_camera(const float delta_x, const float delta_y)
+{
+    camera_.pan(delta_x, delta_y);
+}
+
+void GameRenderer::zoom_camera(const float delta)
+{
+    camera_.add_zoom(delta);
+}
+
+void GameRenderer::draw_colored_polygon(
+    const std::array<sf::Vector2f, 4>& corners,
     const float r,
     const float g,
     const float b)
 {
-    const std::array<float, 8> vertices = {
-        x, y,
-        x + width, y,
-        x + width, y + height,
-        x, y + height,
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+
+    const auto to_ndc = [&](const sf::Vector2f point) {
+        const float ndc_x = (point.x / window_width) * 2.0F - 1.0F;
+        const float ndc_y = 1.0F - (point.y / window_height) * 2.0F;
+        return std::array<float, 2>{ndc_x, ndc_y};
     };
+
+    std::array<float, 8> vertices{};
+    for (std::size_t index = 0U; index < corners.size(); ++index) {
+        const auto ndc = to_ndc(corners[index]);
+        vertices[index * 2U] = ndc[0];
+        vertices[(index * 2U) + 1U] = ndc[1];
+    }
 
     unsigned int vao = 0U;
     unsigned int vbo = 0U;
@@ -144,20 +164,55 @@ void GameRenderer::draw_colored_quad(
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizei>(vertices.size() * sizeof(float)), vertices.data(), GL_STATIC_DRAW);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(vertices.size() * sizeof(float)),
+        vertices.data(),
+        GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
     glUseProgram(shader_program_);
-    glUniform2f(glGetUniformLocation(shader_program_, "offset"), 0.0F, 0.0F);
-    glUniform2f(glGetUniformLocation(shader_program_, "scale"), 1.0F, 1.0F);
     glUniform3f(glGetUniformLocation(shader_program_, "color"), r, g, b);
-
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
     glBindVertexArray(0U);
     glDeleteBuffers(1, &vbo);
     glDeleteVertexArrays(1, &vao);
+}
+
+void GameRenderer::draw_iso_tile(const int grid_x, const int grid_y, const float r, const float g, const float b)
+{
+    const sf::Vector2f top = camera_.grid_top_corner(grid_x, grid_y);
+    const float half_w = camera_.tile_half_width();
+    const float half_h = camera_.tile_half_height();
+    const float tile_h = camera_.tile_height();
+
+    const std::array<sf::Vector2f, 4> corners = {
+        top,
+        sf::Vector2f{top.x + half_w, top.y + half_h},
+        sf::Vector2f{top.x, top.y + tile_h},
+        sf::Vector2f{top.x - half_w, top.y + half_h},
+    };
+
+    draw_colored_polygon(corners, r, g, b);
+}
+
+void GameRenderer::draw_iso_marker(const int grid_x, const int grid_y, const float r, const float g, const float b)
+{
+    const sf::Vector2f top = camera_.grid_top_corner(grid_x, grid_y);
+    const float inset_w = camera_.tile_half_width() * 0.55F;
+    const float inset_h = camera_.tile_half_height() * 0.55F;
+    const float marker_h = camera_.tile_height() * 0.55F;
+
+    const std::array<sf::Vector2f, 4> corners = {
+        sf::Vector2f{top.x, top.y + inset_h * 0.5F},
+        sf::Vector2f{top.x + inset_w, top.y + inset_h},
+        sf::Vector2f{top.x, top.y + marker_h},
+        sf::Vector2f{top.x - inset_w, top.y + inset_h},
+    };
+
+    draw_colored_polygon(corners, r, g, b);
 }
 
 void GameRenderer::draw(const sim::Simulation& simulation)
@@ -174,24 +229,10 @@ void GameRenderer::draw(const sim::Simulation& simulation)
     const entt::entity world = *world_view.begin();
     const auto& map = world_view.get<sim::components::MapGrid>(world);
 
-    const float map_pixel_width =
-        static_cast<float>(map.width * constants::RENDER_TILE_PIXELS);
-    const float map_pixel_height =
-        static_cast<float>(map.height * constants::RENDER_TILE_PIXELS);
-
-    const float scale_x = static_cast<float>(window_size_.x) / map_pixel_width;
-    const float scale_y = static_cast<float>(window_size_.y) / map_pixel_height;
-    const float scale = std::min(scale_x, scale_y) * 0.95F;
-
-    const float offset_x = (static_cast<float>(window_size_.x) - map_pixel_width * scale) * 0.5F;
-    const float offset_y = (static_cast<float>(window_size_.y) - map_pixel_height * scale) * 0.5F;
-
-    const auto to_screen = [&](const int grid_x, const int grid_y) {
-        const float x = offset_x + static_cast<float>(grid_x * constants::RENDER_TILE_PIXELS) * scale;
-        const float y = offset_y + static_cast<float>(grid_y * constants::RENDER_TILE_PIXELS) * scale;
-        const float tile = static_cast<float>(constants::RENDER_TILE_PIXELS) * scale;
-        return std::array<float, 3>{x, y, tile};
-    };
+    if (!map_framed_) {
+        camera_.frame_map(map.width, map.height);
+        map_framed_ = true;
+    }
 
     for (int y = 0; y < map.height; ++y) {
         for (int x = 0; x < map.width; ++x) {
@@ -207,8 +248,7 @@ void GameRenderer::draw(const sim::Simulation& simulation)
                 b = 0.10F;
             }
 
-            const auto [screen_x, screen_y, tile_size] = to_screen(x, y);
-            draw_colored_quad(screen_x, screen_y, tile_size, tile_size, r, g, b);
+            draw_iso_tile(x, y, r, g, b);
         }
     }
 
@@ -218,8 +258,7 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         sim::components::Health>();
     for (const entt::entity entity : building_view) {
         const auto& pos = building_view.get<sim::components::GridPosition>(entity).cell;
-        const auto [screen_x, screen_y, tile_size] = to_screen(pos.x, pos.y);
-        draw_colored_quad(screen_x, screen_y, tile_size, tile_size, 0.55F, 0.38F, 0.18F);
+        draw_iso_marker(pos.x, pos.y, 0.55F, 0.38F, 0.18F);
     }
 
     const auto unit_view = registry.view<
@@ -233,7 +272,6 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         }
 
         const auto& pos = unit_view.get<sim::components::GridPosition>(entity).cell;
-        const auto [screen_x, screen_y, tile_size] = to_screen(pos.x, pos.y);
 
         float r = 0.25F;
         float g = 0.55F;
@@ -249,15 +287,7 @@ void GameRenderer::draw(const sim::Simulation& simulation)
             b = 0.20F;
         }
 
-        const float inset = tile_size * 0.15F;
-        draw_colored_quad(
-            screen_x + inset,
-            screen_y + inset,
-            tile_size - inset * 2.0F,
-            tile_size - inset * 2.0F,
-            r,
-            g,
-            b);
+        draw_iso_marker(pos.x, pos.y, r, g, b);
     }
 }
 

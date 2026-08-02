@@ -10,7 +10,7 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 |-------|--------|
 | Language | C++20+, Windows 10/11 |
 | Build | CMake + vcpkg |
-| Rendering | OpenGL (map), SFML (window/menus) |
+| Rendering | OpenGL 3.3 — DE-style hybrid (3D scene, Classic isometric camera); SFML window/menus |
 | Simulation | EnTT ECS, fixed-point math, 20 ticks/sec |
 | Multiplayer | ENet, deterministic lockstep (up to 8 players) |
 | Data | JSON-driven civ/unit/building definitions |
@@ -48,4 +48,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M1 sim core in progress — Earth civ on 64×64 test map with gather/combat and map rendering.
+M1 sim core done (#4, #5). Headless harness (#6) implemented locally. Next: Classic render (#26). Prototype uses top-down debug quads until #26 lands.

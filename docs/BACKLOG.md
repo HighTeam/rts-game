@@ -51,7 +51,20 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 
 ### Headless regression harness
 
-- [ ] Scripted test scenarios (spawn X units, issue commands, run N ticks, assert final hash) — catches sim bugs before they become "why did multiplayer desync" bugs three weeks from now
+- [x] Scripted test scenarios (spawn X units, issue commands, run N ticks, assert final hash) — catches sim bugs before they become "why did multiplayer desync" bugs three weeks from now
+
+### Classic render pipeline (DE-style) — GitHub #26
+
+*Goal: AoE2 DE-like look — 3D scene, locked isometric Classic camera, pan + zoom, basic shaders. Sim stays grid-based.*
+
+- [ ] Camera module: Classic mode — fixed isometric azimuth, pan, smooth zoom (no orbit)
+- [ ] Grid → isometric world projection
+- [ ] 3D terrain + entity draw pass (replace top-down debug quads)
+- [ ] Basic shaders (lighting, team-color hook, selection outline hook)
+- [ ] `CameraView` enum: Classic implemented; Full 3D stub for later
+- [ ] Settings **Camera view** dropdown documented for M5 (Classic / Full 3D; Full 3D becomes default when ready)
+
+See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 ---
 
@@ -148,7 +161,9 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 
 ### Packaging
 
-- [ ] Asset packing (.dat-style) — flagged as a help-needed area; tackle this in M5, not earlier, since it's independent of everything else
+- [ ] **`raw-assets/`** (gitignored) vs **`assets/`** (shipped) — interim: direct copies; later: immutable binary packs
+- [ ] Asset pack format (`.dat`-style; audio `.adp` TBD) + standalone pack tool (CRUD entries)
+- [ ] Game loads `assets/` packs only — flagged as a help-needed area; tackle in M5, not earlier
 - [ ] Windows installer/build packaging for distribution
 - [ ] Minimal static download page (website) — do not over-invest here for MVP
 
@@ -161,6 +176,8 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 - [ ] Host migration policy (M3) — affects network code shape
 - [ ] Disconnect/pause policy (M2) — affects UI and netcode together
 - [ ] Tick rate — pick once, changing it later touches balance, netcode timing, and input feel simultaneously
+- [x] Render style — AoE2 DE-like 2.5D/3D hybrid (M1 #26)
+- [x] Camera view — Classic now, Full 3D later default (M1 #26 + M5 Settings)
 
 ---
 

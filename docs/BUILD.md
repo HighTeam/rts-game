@@ -40,13 +40,26 @@ cmake --build --preset x64-release
 
 ## Headless mode
 
-Same binary, no window — for future desync/regression runs:
+Same binary, no window — for desync/regression runs:
 
 ```powershell
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
+.\build\x64-debug\Debug\aoa.exe --harness
 ```
 
+Scenario definitions: `data/scenarios/*.json` (expected per-tick state hash after N sim ticks).
+
 Default tick count without `--ticks`: see `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp`.
+
+## Assets
+
+| Folder | Role |
+|--------|------|
+| `raw-assets/` | Gitignored source art (local only) |
+| `assets/` | Shipped runtime copies (POST_BUILD copy next to `aoa.exe`) |
+
+See [assets/README.md](../assets/README.md) and [DECISIONS.md](DECISIONS.md).
 
 ## Open in Visual Studio
 

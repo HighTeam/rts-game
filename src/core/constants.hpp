@@ -26,6 +26,15 @@ inline constexpr int MAP_MAX_SIZE = 512;
 
 inline constexpr int RENDER_TILE_PIXELS = 16;
 
+inline constexpr int RENDER_ISO_TILE_WIDTH = 32;
+inline constexpr int RENDER_ISO_TILE_HEIGHT = 16;
+
+inline constexpr float CAMERA_CLASSIC_MIN_ZOOM = 0.35F;
+inline constexpr float CAMERA_CLASSIC_MAX_ZOOM = 2.5F;
+inline constexpr float CAMERA_CLASSIC_ZOOM_STEP = 0.08F;
+inline constexpr float CAMERA_CLASSIC_PAN_STEP = 16.0F;
+inline constexpr float CAMERA_CLASSIC_FRAME_PADDING = 0.92F;
+
 inline constexpr std::string_view EARTH_CIV_ID = "earth";
 inline constexpr std::string_view WORKER_UNIT_ID = "worker";
 inline constexpr std::string_view MILITIA_UNIT_ID = "militia";
