@@ -2,16 +2,16 @@
 
 #include "core/constants.hpp"
 #include "core/fixed_timestep_loop.hpp"
-#include "render/gl_renderer.hpp"
+#include "render/game_renderer.hpp"
 
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Keyboard.hpp>
 #include <SFML/Window/VideoMode.hpp>
 #include <SFML/Window/Window.hpp>
 
+#include <cstdlib>
 #include <iostream>
 #include <optional>
-#include <cstdlib>
 #include <string>
 
 namespace aoa::app {
@@ -73,14 +73,14 @@ int run_graphical(sim::Simulation& simulation)
     window.setVerticalSyncEnabled(true);
     (void)window.setActive(true);
 
-    render::GlRenderer renderer{};
+    render::GameRenderer renderer{};
     renderer.resize(window.getSize());
 
     core::FixedTimestepLoop loop{};
     loop.run_realtime(
         [&simulation]() { simulation.tick(); },
-        [&renderer, &window](const float interpolation_alpha) {
-            renderer.draw_triangle(interpolation_alpha);
+        [&renderer, &simulation, &window](const float /*interpolation_alpha*/) {
+            renderer.draw(simulation);
             window.display();
         },
         [&window, &renderer]() {

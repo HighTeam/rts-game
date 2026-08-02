@@ -25,12 +25,18 @@ add_executable(aoa
     src/main.cpp
     src/app/application.cpp
     src/core/fixed_timestep_loop.cpp
-    src/render/gl_renderer.cpp
+    src/data/content_loader.cpp
+    src/render/game_renderer.cpp
+    src/sim/map/test_map.cpp
+    src/sim/scenario/test_scenario.cpp
     src/sim/simulation.cpp
+    src/sim/systems/gameplay_systems.cpp
+    src/sim/systems/pathfinding.cpp
     src/sim/systems/sim_systems.cpp
 )
 
 target_include_directories(aoa PRIVATE src)
+target_compile_definitions(aoa PRIVATE AOA_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
 
 target_link_libraries(aoa PRIVATE
     SFML::System
@@ -44,6 +50,14 @@ target_link_libraries(aoa PRIVATE
 if(WIN32)
     target_link_libraries(aoa PRIVATE opengl32)
 endif()
+
+add_custom_command(
+    TARGET aoa
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/data"
+        "$<TARGET_FILE_DIR:aoa>/data"
+)
 
 if(MSVC)
     target_compile_options(aoa PRIVATE /W4 /permissive-)

@@ -8,7 +8,7 @@ Use it as a **checklist of decisions** that must be locked in before they become
 |----------|-------------|--------|
 | Fixed-point math (Q16.16) | M0 #2 Core loop | Done — `src/math/fixed.hpp` |
 | Sim tick rate (20 Hz) | M0 #2 Core loop | Done — `SIM_TICKS_PER_SECOND` in `src/core/constants.hpp` |
-| Data-driven civ JSON | M1 | Pending |
+| Data-driven civ JSON | M1 #5 | Done — `data/civs/earth.json` + loader |
 | Disconnect / pause policy | M2 | Pending |
 | Host migration policy | M3 | Pending |
 
