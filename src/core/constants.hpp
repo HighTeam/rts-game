@@ -44,6 +44,16 @@ inline constexpr float HUD_TEXT_R = 0.95F;
 inline constexpr float HUD_TEXT_G = 0.88F;
 inline constexpr float HUD_TEXT_B = 0.55F;
 
+inline constexpr float RENDER_FOREST_EXTRUDE = 0.22F;
+inline constexpr float RENDER_UNIT_HEIGHT = 0.38F;
+inline constexpr float RENDER_BUILDING_HEIGHT = 0.52F;
+inline constexpr float RENDER_HEIGHT_SCREEN_SCALE = 18.0F;
+inline constexpr float RENDER_DEPTH_GRID_SCALE = 0.0008F;
+inline constexpr float RENDER_DEPTH_HEIGHT_SCALE = 0.01F;
+inline constexpr float RENDER_SIDE_LIGHT_FACTOR = 0.62F;
+inline constexpr float RENDER_AMBIENT_LIGHT = 0.88F;
+inline constexpr float RENDER_SELECTION_OUTLINE_SCALE = 1.18F;
+
 inline constexpr std::string_view EARTH_CIV_ID = "earth";
 inline constexpr std::string_view WORKER_UNIT_ID = "worker";
 inline constexpr std::string_view MILITIA_UNIT_ID = "militia";

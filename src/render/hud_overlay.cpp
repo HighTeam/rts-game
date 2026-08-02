@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 namespace aoa::render {
@@ -18,6 +19,56 @@ namespace {
 
 constexpr int GLYPH_WIDTH = 5;
 constexpr int GLYPH_HEIGHT = 7;
+
+constexpr const char* HUD_VERTEX_SHADER = R"(
+#version 330 core
+layout(location = 0) in vec2 position;
+void main()
+{
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+)";
+
+constexpr const char* HUD_FRAGMENT_SHADER = R"(
+#version 330 core
+uniform vec3 color;
+out vec4 fragment_color;
+void main()
+{
+    fragment_color = vec4(color, 1.0);
+}
+)";
+
+unsigned int compile_shader(const unsigned int type, const char* source)
+{
+    const unsigned int shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    int compiled = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled == GL_FALSE) {
+        throw std::runtime_error("HUD shader compile failed");
+    }
+
+    return shader;
+}
+
+unsigned int link_program(const unsigned int vertex_shader, const unsigned int fragment_shader)
+{
+    const unsigned int program = glCreateProgram();
+    glAttachShader(program, vertex_shader);
+    glAttachShader(program, fragment_shader);
+    glLinkProgram(program);
+
+    int linked = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked == GL_FALSE) {
+        throw std::runtime_error("HUD shader link failed");
+    }
+
+    return program;
+}
 
 const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
 {
@@ -185,9 +236,23 @@ void draw_screen_quad(
 
 } // namespace
 
+unsigned int HudOverlay::hud_shader_program() const
+{
+    static unsigned int program = 0U;
+    if (program != 0U) {
+        return program;
+    }
+
+    const unsigned int vertex_shader = compile_shader(GL_VERTEX_SHADER, HUD_VERTEX_SHADER);
+    const unsigned int fragment_shader = compile_shader(GL_FRAGMENT_SHADER, HUD_FRAGMENT_SHADER);
+    program = link_program(vertex_shader, fragment_shader);
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+    return program;
+}
+
 void HudOverlay::draw_string(
     const sf::Vector2u window_size,
-    const unsigned int shader_program,
     const float x,
     const float y,
     const std::string& text,
@@ -195,6 +260,7 @@ void HudOverlay::draw_string(
     const float g,
     const float b) const
 {
+    const unsigned int shader_program = hud_shader_program();
     const float pixel_scale = static_cast<float>(constants::HUD_PIXEL_SCALE);
     const float char_step = static_cast<float>(GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * pixel_scale;
 
@@ -227,10 +293,7 @@ void HudOverlay::draw_string(
     }
 }
 
-void HudOverlay::draw(
-    const sim::Simulation& simulation,
-    const sf::Vector2u window_size,
-    const unsigned int shader_program) const
+void HudOverlay::draw(const sim::Simulation& simulation, const sf::Vector2u window_size) const
 {
     const auto& registry = simulation.registry();
 
@@ -257,7 +320,6 @@ void HudOverlay::draw(
 
     draw_string(
         window_size,
-        shader_program,
         constants::HUD_MARGIN_X,
         constants::HUD_MARGIN_Y,
         stockpile_line,
@@ -267,7 +329,6 @@ void HudOverlay::draw(
 
     draw_string(
         window_size,
-        shader_program,
         constants::HUD_MARGIN_X,
         constants::HUD_MARGIN_Y + line_height,
         carried_line,

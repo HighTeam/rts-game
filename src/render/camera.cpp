@@ -132,6 +132,29 @@ sf::Vector2f ClassicCamera::grid_top_corner(const int grid_x, const int grid_y) 
     };
 }
 
+std::array<float, 3> ClassicCamera::world_to_clip(
+    const float world_x,
+    const float world_y,
+    const float world_z) const
+{
+    const float half_w = tile_half_width();
+    const float half_h = tile_half_height();
+
+    const float screen_x = (world_x - world_z) * half_w + pan_.x;
+    const float screen_y = (world_x + world_z) * half_h
+        - world_y * constants::RENDER_HEIGHT_SCREEN_SCALE * zoom_ + pan_.y;
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+
+    const float ndc_x = (screen_x / window_width) * 2.0F - 1.0F;
+    const float ndc_y = 1.0F - (screen_y / window_height) * 2.0F;
+    const float depth = (world_x + world_z) * constants::RENDER_DEPTH_GRID_SCALE
+        + world_y * constants::RENDER_DEPTH_HEIGHT_SCALE;
+
+    return {ndc_x, ndc_y, depth};
+}
+
 float ClassicCamera::tile_width() const
 {
     return static_cast<float>(constants::RENDER_ISO_TILE_WIDTH) * zoom_;

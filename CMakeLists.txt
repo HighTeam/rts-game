@@ -28,6 +28,7 @@ add_executable(aoa
     src/data/content_loader.cpp
     src/harness/regression_harness.cpp
     src/render/camera.cpp
+    src/render/camera_settings.cpp
     src/render/game_renderer.cpp
     src/render/hud_overlay.cpp
     src/sim/map/test_map.cpp

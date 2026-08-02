@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <SFML/System/Vector2.hpp>
 
 namespace aoa::render {
@@ -19,6 +21,7 @@ public:
     void add_zoom(float delta);
 
     [[nodiscard]] sf::Vector2f grid_top_corner(int grid_x, int grid_y) const;
+    [[nodiscard]] std::array<float, 3> world_to_clip(float world_x, float world_y, float world_z) const;
     [[nodiscard]] float tile_width() const;
     [[nodiscard]] float tile_height() const;
     [[nodiscard]] float tile_half_width() const;

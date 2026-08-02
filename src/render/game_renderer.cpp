@@ -1,10 +1,10 @@
 #include "render/game_renderer.hpp"
 
 #include "core/constants.hpp"
+#include "render/camera_settings.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
-#include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 
 #include <SFML/Window/Context.hpp>
@@ -19,22 +19,25 @@ namespace aoa::render {
 
 namespace {
 
-constexpr const char* VERTEX_SHADER = R"(
+constexpr const char* SCENE_VERTEX_SHADER = R"(
 #version 330 core
-layout(location = 0) in vec2 position;
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 color;
+out vec3 fragment_color;
 void main()
 {
-    gl_Position = vec4(position, 0.0, 1.0);
+    gl_Position = vec4(position, 1.0);
+    fragment_color = color;
 }
 )";
 
-constexpr const char* FRAGMENT_SHADER = R"(
+constexpr const char* SCENE_FRAGMENT_SHADER = R"(
 #version 330 core
-uniform vec3 color;
-out vec4 fragment_color;
+in vec3 fragment_color;
+out vec4 output_color;
 void main()
 {
-    fragment_color = vec4(color, 1.0);
+    output_color = vec4(fragment_color, 1.0);
 }
 )";
 
@@ -80,13 +83,26 @@ bool init_gl_loader()
     return gladLoadGLLoader(reinterpret_cast<GLADloadproc>(sf::Context::getFunction)) != 0;
 }
 
+GameRenderer::SceneVertex GameRenderer::make_scene_vertex(
+    const float world_x,
+    const float world_y,
+    const float world_z,
+    const float r,
+    const float g,
+    const float b) const
+{
+    const auto clip = camera_.world_to_clip(world_x, world_y, world_z);
+    return SceneVertex{clip[0], clip[1], clip[2], r, g, b};
+}
+
 GameRenderer::GameRenderer()
 {
     if (!init_gl_loader()) {
         throw std::runtime_error("Failed to initialize OpenGL loader");
     }
 
-    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
     create_shader_program();
 }
 
@@ -97,18 +113,18 @@ GameRenderer::~GameRenderer()
 
 void GameRenderer::create_shader_program()
 {
-    const unsigned int vertex_shader = compile_shader(GL_VERTEX_SHADER, VERTEX_SHADER);
-    const unsigned int fragment_shader = compile_shader(GL_FRAGMENT_SHADER, FRAGMENT_SHADER);
-    shader_program_ = link_program(vertex_shader, fragment_shader);
+    const unsigned int vertex_shader = compile_shader(GL_VERTEX_SHADER, SCENE_VERTEX_SHADER);
+    const unsigned int fragment_shader = compile_shader(GL_FRAGMENT_SHADER, SCENE_FRAGMENT_SHADER);
+    scene_shader_program_ = link_program(vertex_shader, fragment_shader);
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
 }
 
 void GameRenderer::destroy_gl_objects()
 {
-    if (shader_program_ != 0U) {
-        glDeleteProgram(shader_program_);
-        shader_program_ = 0U;
+    if (scene_shader_program_ != 0U) {
+        glDeleteProgram(scene_shader_program_);
+        scene_shader_program_ = 0U;
     }
 }
 
@@ -131,32 +147,23 @@ void GameRenderer::zoom_camera(const float delta)
     camera_.add_zoom(delta);
 }
 
-void GameRenderer::draw_colored_polygon(
-    const std::array<sf::Vector2f, 4>& corners,
-    const float r,
-    const float g,
-    const float b)
+void GameRenderer::apply_team_color(
+    const float base_r,
+    const float base_g,
+    const float base_b,
+    float& r,
+    float& g,
+    float& b) const
 {
-    if (window_size_.x == 0U || window_size_.y == 0U) {
-        return;
-    }
+    r = base_r;
+    g = base_g;
+    b = base_b;
+}
 
-    const float window_width = static_cast<float>(window_size_.x);
-    const float window_height = static_cast<float>(window_size_.y);
-
-    const auto to_ndc = [&](const sf::Vector2f point) {
-        const float ndc_x = (point.x / window_width) * 2.0F - 1.0F;
-        const float ndc_y = 1.0F - (point.y / window_height) * 2.0F;
-        return std::array<float, 2>{ndc_x, ndc_y};
-    };
-
-    std::array<float, 8> vertices{};
-    for (std::size_t index = 0U; index < corners.size(); ++index) {
-        const auto ndc = to_ndc(corners[index]);
-        vertices[index * 2U] = ndc[0];
-        vertices[(index * 2U) + 1U] = ndc[1];
-    }
-
+void GameRenderer::draw_scene_triangles(
+    const std::array<SceneVertex, 6>& triangle_vertices,
+    const int vertex_count) const
+{
     unsigned int vao = 0U;
     unsigned int vbo = 0U;
     glGenVertexArrays(1, &vao);
@@ -166,59 +173,275 @@ void GameRenderer::draw_colored_polygon(
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(
         GL_ARRAY_BUFFER,
-        static_cast<GLsizei>(vertices.size() * sizeof(float)),
-        vertices.data(),
+        static_cast<GLsizei>(static_cast<std::size_t>(vertex_count) * sizeof(SceneVertex)),
+        triangle_vertices.data(),
         GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
-    glUseProgram(shader_program_);
-    glUniform3f(glGetUniformLocation(shader_program_, "color"), r, g, b);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SceneVertex), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(
+        1,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(SceneVertex),
+        reinterpret_cast<void*>(3 * sizeof(float)));
+
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_TRIANGLES, 0, vertex_count);
 
     glBindVertexArray(0U);
     glDeleteBuffers(1, &vbo);
     glDeleteVertexArrays(1, &vao);
 }
 
-void GameRenderer::draw_iso_tile(const int grid_x, const int grid_y, const float r, const float g, const float b)
+void GameRenderer::draw_scene_quad(
+    const float wx0,
+    const float wy0,
+    const float wz0,
+    const float wx1,
+    const float wy1,
+    const float wz1,
+    const float wx2,
+    const float wy2,
+    const float wz2,
+    const float wx3,
+    const float wy3,
+    const float wz3,
+    const float r,
+    const float g,
+    const float b,
+    const float light_factor) const
 {
-    const sf::Vector2f top = camera_.grid_top_corner(grid_x, grid_y);
-    const float half_w = camera_.tile_half_width();
-    const float half_h = camera_.tile_half_height();
-    const float tile_h = camera_.tile_height();
+    const float lit_r = r * light_factor;
+    const float lit_g = g * light_factor;
+    const float lit_b = b * light_factor;
 
-    const std::array<sf::Vector2f, 4> corners = {
-        top,
-        sf::Vector2f{top.x + half_w, top.y + half_h},
-        sf::Vector2f{top.x, top.y + tile_h},
-        sf::Vector2f{top.x - half_w, top.y + half_h},
+    const std::array<SceneVertex, 6> vertices = {
+        make_scene_vertex(wx0, wy0, wz0, lit_r, lit_g, lit_b),
+        make_scene_vertex(wx1, wy1, wz1, lit_r, lit_g, lit_b),
+        make_scene_vertex(wx2, wy2, wz2, lit_r, lit_g, lit_b),
+        make_scene_vertex(wx0, wy0, wz0, lit_r, lit_g, lit_b),
+        make_scene_vertex(wx2, wy2, wz2, lit_r, lit_g, lit_b),
+        make_scene_vertex(wx3, wy3, wz3, lit_r, lit_g, lit_b),
     };
 
-    draw_colored_polygon(corners, r, g, b);
+    draw_scene_triangles(vertices, 6);
 }
 
-void GameRenderer::draw_iso_marker(const int grid_x, const int grid_y, const float r, const float g, const float b)
+void GameRenderer::draw_extruded_tile(
+    const int grid_x,
+    const int grid_y,
+    const float extrude_height,
+    const float r,
+    const float g,
+    const float b) const
 {
-    const sf::Vector2f top = camera_.grid_top_corner(grid_x, grid_y);
-    const float inset_w = camera_.tile_half_width() * 0.55F;
-    const float inset_h = camera_.tile_half_height() * 0.55F;
-    const float marker_h = camera_.tile_height() * 0.55F;
+    const float gx = static_cast<float>(grid_x);
+    const float gy = static_cast<float>(grid_y);
+    const float top = extrude_height;
+    const float top_light = constants::RENDER_AMBIENT_LIGHT;
+    const float side_light = constants::RENDER_AMBIENT_LIGHT * constants::RENDER_SIDE_LIGHT_FACTOR;
 
-    const std::array<sf::Vector2f, 4> corners = {
-        sf::Vector2f{top.x, top.y + inset_h * 0.5F},
-        sf::Vector2f{top.x + inset_w, top.y + inset_h},
-        sf::Vector2f{top.x, top.y + marker_h},
-        sf::Vector2f{top.x - inset_w, top.y + inset_h},
-    };
+    draw_scene_quad(
+        gx,
+        top,
+        gy,
+        gx + 1.0F,
+        top,
+        gy,
+        gx + 1.0F,
+        top,
+        gy + 1.0F,
+        gx,
+        top,
+        gy + 1.0F,
+        r,
+        g,
+        b,
+        top_light);
 
-    draw_colored_polygon(corners, r, g, b);
+    if (extrude_height <= 0.0F) {
+        return;
+    }
+
+    draw_scene_quad(gx, 0.0F, gy, gx + 1.0F, 0.0F, gy, gx + 1.0F, top, gy, gx, top, gy, r, g, b, side_light);
+    draw_scene_quad(
+        gx + 1.0F,
+        0.0F,
+        gy,
+        gx + 1.0F,
+        0.0F,
+        gy + 1.0F,
+        gx + 1.0F,
+        top,
+        gy + 1.0F,
+        gx + 1.0F,
+        top,
+        gy,
+        r,
+        g,
+        b,
+        side_light);
+    draw_scene_quad(
+        gx,
+        0.0F,
+        gy + 1.0F,
+        gx + 1.0F,
+        0.0F,
+        gy + 1.0F,
+        gx + 1.0F,
+        top,
+        gy + 1.0F,
+        gx,
+        top,
+        gy + 1.0F,
+        r,
+        g,
+        b,
+        side_light);
+    draw_scene_quad(gx, 0.0F, gy, gx, 0.0F, gy + 1.0F, gx, top, gy + 1.0F, gx, top, gy, r, g, b, side_light);
+}
+
+void GameRenderer::draw_entity_prism(
+    const int grid_x,
+    const int grid_y,
+    const float height,
+    const float r,
+    const float g,
+    const float b) const
+{
+    const float inset = 0.22F;
+    const float fx = static_cast<float>(grid_x) + inset;
+    const float fy = static_cast<float>(grid_y) + inset;
+    const float size = 1.0F - inset * 2.0F;
+    const float top = height;
+    const float top_light = constants::RENDER_AMBIENT_LIGHT;
+    const float side_light = constants::RENDER_AMBIENT_LIGHT * constants::RENDER_SIDE_LIGHT_FACTOR;
+
+    draw_scene_quad(
+        fx,
+        top,
+        fy,
+        fx + size,
+        top,
+        fy,
+        fx + size,
+        top,
+        fy + size,
+        fx,
+        top,
+        fy + size,
+        r,
+        g,
+        b,
+        top_light);
+    draw_scene_quad(
+        fx,
+        0.0F,
+        fy,
+        fx + size,
+        0.0F,
+        fy,
+        fx + size,
+        top,
+        fy,
+        fx,
+        top,
+        fy,
+        r,
+        g,
+        b,
+        side_light);
+    draw_scene_quad(
+        fx + size,
+        0.0F,
+        fy,
+        fx + size,
+        0.0F,
+        fy + size,
+        fx + size,
+        top,
+        fy + size,
+        fx + size,
+        top,
+        fy,
+        r,
+        g,
+        b,
+        side_light);
+    draw_scene_quad(
+        fx,
+        0.0F,
+        fy + size,
+        fx + size,
+        0.0F,
+        fy + size,
+        fx + size,
+        top,
+        fy + size,
+        fx,
+        top,
+        fy + size,
+        r,
+        g,
+        b,
+        side_light);
+    draw_scene_quad(
+        fx,
+        0.0F,
+        fy,
+        fx,
+        0.0F,
+        fy + size,
+        fx,
+        top,
+        fy + size,
+        fx,
+        top,
+        fy,
+        r,
+        g,
+        b,
+        side_light);
+}
+
+void GameRenderer::draw_selection_outline(const int grid_x, const int grid_y) const
+{
+    const float scale = constants::RENDER_SELECTION_OUTLINE_SCALE;
+    const float center_x = static_cast<float>(grid_x) + 0.5F;
+    const float center_z = static_cast<float>(grid_y) + 0.5F;
+    const float half = 0.5F * scale;
+    const float outline_height = 0.03F;
+
+    draw_scene_quad(
+        center_x - half,
+        outline_height,
+        center_z - half,
+        center_x + half,
+        outline_height,
+        center_z - half,
+        center_x + half,
+        outline_height,
+        center_z + half,
+        center_x - half,
+        outline_height,
+        center_z + half,
+        0.95F,
+        0.82F,
+        0.18F,
+        1.0F);
 }
 
 void GameRenderer::draw(const sim::Simulation& simulation)
 {
+    if (active_camera_view() != CameraView::Classic) {
+        return;
+    }
+
     glClearColor(0.05F, 0.06F, 0.08F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     const auto& registry = simulation.registry();
     const auto world_view = registry.view<sim::components::WorldTag, sim::components::MapGrid>();
@@ -242,14 +465,24 @@ void GameRenderer::draw(const sim::Simulation& simulation)
             float r = 0.20F;
             float g = 0.32F;
             float b = 0.18F;
+            float extrude = 0.0F;
             if (tile == sim::components::TileType::Forest) {
                 r = 0.10F;
                 g = 0.22F;
                 b = 0.10F;
+                extrude = constants::RENDER_FOREST_EXTRUDE;
             }
 
-            draw_iso_tile(x, y, r, g, b);
+            draw_extruded_tile(x, y, extrude, r, g, b);
         }
+    }
+
+    const auto town_center_view = registry.view<
+        sim::components::TownCenterTag,
+        sim::components::GridPosition>();
+    for (const entt::entity entity : town_center_view) {
+        const auto& pos = town_center_view.get<sim::components::GridPosition>(entity).cell;
+        draw_selection_outline(pos.x, pos.y);
     }
 
     const auto building_view = registry.view<
@@ -258,7 +491,14 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         sim::components::Health>();
     for (const entt::entity entity : building_view) {
         const auto& pos = building_view.get<sim::components::GridPosition>(entity).cell;
-        draw_iso_marker(pos.x, pos.y, 0.55F, 0.38F, 0.18F);
+        const float base_r = 0.55F;
+        const float base_g = 0.38F;
+        const float base_b = 0.18F;
+        float r = base_r;
+        float g = base_g;
+        float b = base_b;
+        apply_team_color(base_r, base_g, base_b, r, g, b);
+        draw_entity_prism(pos.x, pos.y, constants::RENDER_BUILDING_HEIGHT, r, g, b);
     }
 
     const auto unit_view = registry.view<
@@ -273,24 +513,30 @@ void GameRenderer::draw(const sim::Simulation& simulation)
 
         const auto& pos = unit_view.get<sim::components::GridPosition>(entity).cell;
 
-        float r = 0.25F;
-        float g = 0.55F;
-        float b = 0.85F;
+        float base_r = 0.25F;
+        float base_g = 0.55F;
+        float base_b = 0.85F;
         if (registry.any_of<sim::components::EnemyTag>(entity)) {
-            r = 0.85F;
-            g = 0.25F;
-            b = 0.25F;
+            base_r = 0.85F;
+            base_g = 0.25F;
+            base_b = 0.25F;
         }
         else if (registry.any_of<sim::components::WorkerUnitTag>(entity)) {
-            r = 0.85F;
-            g = 0.75F;
-            b = 0.20F;
+            base_r = 0.85F;
+            base_g = 0.75F;
+            base_b = 0.20F;
         }
 
-        draw_iso_marker(pos.x, pos.y, r, g, b);
+        float r = base_r;
+        float g = base_g;
+        float b = base_b;
+        apply_team_color(base_r, base_g, base_b, r, g, b);
+        draw_entity_prism(pos.x, pos.y, constants::RENDER_UNIT_HEIGHT, r, g, b);
     }
 
-    hud_overlay_.draw(simulation, window_size_, shader_program_);
+    glDisable(GL_DEPTH_TEST);
+    hud_overlay_.draw(simulation, window_size_);
+    glEnable(GL_DEPTH_TEST);
 }
 
 } // namespace aoa::render
