@@ -48,4 +48,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M1 complete (#4–#6, #26) on branch `feature/m1-harness-render-fixes` — PR #27 ready for review/merge. Next: **M2 lockstep** (#7).
+M1 landed on `main` (PR #27 + follow-up). M2 prep: tick-scoped player commands, binary command format, extended state hash, disconnect policy documented. Next: **M2 lockstep** (#7).

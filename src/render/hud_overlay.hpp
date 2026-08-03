@@ -10,7 +10,7 @@ namespace aoa::render {
 
 class HudOverlay {
 public:
-    void draw(const sim::Simulation& simulation, sf::Vector2u window_size) const;
+    void draw(const sim::Simulation& simulation, sf::Vector2u window_size, float fps) const;
 
 private:
     [[nodiscard]] unsigned int hud_shader_program() const;

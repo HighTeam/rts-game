@@ -18,7 +18,8 @@ public:
     void run_realtime(
         TickCallback on_tick,
         RenderCallback on_render,
-        const std::function<bool()>& should_continue);
+        const std::function<bool()>& should_continue,
+        TickCallback on_before_sim_ticks = {});
 };
 
 } // namespace aoa::core

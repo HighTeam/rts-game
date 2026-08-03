@@ -1,0 +1,14 @@
+{
+  "id": "militia",
+  "kind": "unit",
+  "display_name": "Militia",
+  "max_hp": 60,
+  "move_ticks_per_tile": 8,
+  "gather_per_tick": 0,
+  "carry_capacity": 0,
+  "melee_attack": 8,
+  "melee_armor": 0,
+  "pierce_attack": 0,
+  "pierce_armor": 0,
+  "attack_cooldown_ticks": 12
+}

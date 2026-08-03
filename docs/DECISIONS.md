@@ -13,8 +13,9 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Camera modes (Classic / Full 3D) | M1 #26 + M5 Settings | Decided — Classic first; Full 3D later default |
 | Asset pipeline (raw vs shipped) | M5 Packaging | Decided — see below |
 | Combat same-tick resolution | M1 | Done — sorted entity id; skip dead targets same tick |
-| Unit position model | M1 → M2 prep | Grid cells now; sub-tile `Fixed` before netcode — see below |
-| Disconnect / pause policy | M2 | Pending |
+| Unit position model | M1 → M2 prep | Done — sub-tile `Fixed` + render interpolation |
+| World object taxonomy (Option A) | M1 prep | Decided — see [`docs/TAXONOMY.md`](TAXONOMY.md) |
+| Disconnect / pause policy | M2 prep | Done — AI takeover on disconnect; see below |
 | Host migration policy | M3 | Pending |
 
 Do **not** duplicate implementation work on #21. When a decision lands, update this table (optional), check the box on #21, and reference the PR that introduced it.
@@ -92,3 +93,27 @@ No mutual “double KO” on the same tick when one hit would kill first. Cooldo
 | **Map** | Tile grid stays (terrain, forests, blocking) | Isometric 3D tiles unchanged |
 
 AoE-style “free movement on a tile” means **sub-tile fixed-point coordinates**, not float Minecraft-style doubles — keeps determinism for lockstep.
+
+---
+
+## Player commands (M2 prep)
+
+| Topic | Choice |
+|-------|--------|
+| Application timing | Commands are **queued** with an `execute_tick` and applied at the **start** of that sim tick — never from the render/input loop directly |
+| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (command issued during tick *N* runs at tick *N+1*); network input delay buffer stacks on this in M2 |
+| Wire format | Compact binary: sequence, execute tick, player slot, type, unit id list, payload (grid cell or attack target entity id) — see `src/sim/player/player_command.hpp` |
+| Pick → command | Screen pick runs locally; the **semantic result** (cell, entity id) is stored in the command payload for lockstep |
+| Input log | `CommandQueue::input_log()` retains every command from game start (M2 reconnect / save-load reuse) |
+
+---
+
+## Disconnect / pause policy
+
+When a human player disconnects during a multiplayer match:
+
+1. **No global pause** — the match continues for other players.
+2. **AI takeover** — the disconnected player's faction is controlled by the same rule-based AI used for enemies (move, gather, attack nearest threats) until they return.
+3. **Reconnect** — on reconnect, AI control **stops immediately** for that player; they resume issuing commands from their client. Catch-up uses snapshot + input log replay (M2 reconnect epic).
+
+Host disconnect / host migration remains a separate **M3** decision.

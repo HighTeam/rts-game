@@ -1,0 +1,7 @@
+{
+  "id": "town_center",
+  "kind": "structure",
+  "display_name": "Town Center",
+  "max_hp": 1200,
+  "spawn_worker_wood_cost": 50
+}

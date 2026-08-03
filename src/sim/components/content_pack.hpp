@@ -5,7 +5,7 @@
 namespace aoa::sim::components {
 
 struct ContentPack {
-    data::CivDefinition civ{};
+    data::ContentDatabase content{};
 };
 
 } // namespace aoa::sim::components

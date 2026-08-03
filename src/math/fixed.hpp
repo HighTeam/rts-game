@@ -65,6 +65,31 @@ public:
         return raw_ == other.raw_;
     }
 
+    bool operator!=(const Fixed& other) const
+    {
+        return raw_ != other.raw_;
+    }
+
+    bool operator<(const Fixed& other) const
+    {
+        return raw_ < other.raw_;
+    }
+
+    bool operator>(const Fixed& other) const
+    {
+        return raw_ > other.raw_;
+    }
+
+    bool operator<=(const Fixed& other) const
+    {
+        return raw_ <= other.raw_;
+    }
+
+    bool operator>=(const Fixed& other) const
+    {
+        return raw_ >= other.raw_;
+    }
+
 private:
     explicit Fixed(std::int32_t raw) : raw_(raw) {}
 
@@ -74,6 +99,46 @@ private:
 inline Fixed fixed_sim_delta()
 {
     return Fixed::from_int(1) / Fixed::from_int(constants::SIM_TICKS_PER_SECOND);
+}
+
+inline Fixed fixed_lerp(const Fixed from, const Fixed to, const Fixed t)
+{
+    return from + (to - from) * t;
+}
+
+inline Fixed fixed_abs(const Fixed value)
+{
+    return value.raw() < 0 ? Fixed::from_raw(-value.raw()) : value;
+}
+
+inline Fixed tile_center_coord(const int cell)
+{
+    return Fixed::from_int(cell) + Fixed::from_int(1) / Fixed::from_int(2);
+}
+
+inline Fixed fixed_diagonal_step_length()
+{
+    return Fixed::from_float(1.41421356F);
+}
+
+inline int compute_move_segment_ticks(
+    const Fixed from_x,
+    const Fixed from_y,
+    const Fixed to_x,
+    const Fixed to_y,
+    const int move_ticks_per_tile)
+{
+    const Fixed delta_x = fixed_abs(to_x - from_x);
+    const Fixed delta_y = fixed_abs(to_y - from_y);
+
+    Fixed distance = Fixed::from_int(1);
+    if (delta_x.raw() > 0 && delta_y.raw() > 0) {
+        distance = fixed_diagonal_step_length();
+    }
+
+    const Fixed total_ticks = distance * Fixed::from_int(move_ticks_per_tile);
+    const int ticks = total_ticks.to_int();
+    return ticks < 1 ? 1 : ticks;
 }
 
 } // namespace aoa::math

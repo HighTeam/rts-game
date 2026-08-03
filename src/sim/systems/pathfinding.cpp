@@ -1,5 +1,11 @@
 #include "sim/systems/pathfinding.hpp"
 
+#include "math/fixed.hpp"
+#include "sim/components/grid_position.hpp"
+#include "sim/components/health.hpp"
+#include "sim/components/tags.hpp"
+#include "sim/components/world_position.hpp"
+
 #include <algorithm>
 #include <array>
 #include <queue>
@@ -49,7 +55,67 @@ bool can_step_to(
         && is_tile_walkable(map, cardinal_b, allow_forest);
 }
 
+core::GridPos move_segment_destination_cell(const components::MoveSegment& segment)
+{
+    const math::Fixed half_tile = math::Fixed::from_int(1) / math::Fixed::from_int(2);
+    return {
+        (segment.to_x - half_tile).to_int(),
+        (segment.to_y - half_tile).to_int(),
+    };
+}
+
 } // namespace
+
+bool is_movement_blocked(
+    entt::registry& registry,
+    const core::GridPos cell,
+    const entt::entity ignore)
+{
+    const auto unit_view = registry.view<components::UnitTag, components::GridPosition, components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (entity == ignore) {
+            continue;
+        }
+
+        const auto& health = unit_view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (unit_view.get<components::GridPosition>(entity).cell == cell) {
+            return true;
+        }
+    }
+
+    const auto building_view = registry.view<components::BuildingTag, components::GridPosition, components::Health>();
+    for (const entt::entity entity : building_view) {
+        if (entity == ignore) {
+            continue;
+        }
+
+        const auto& health = building_view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (building_view.get<components::GridPosition>(entity).cell == cell) {
+            return true;
+        }
+    }
+
+    const auto segment_view = registry.view<components::UnitTag, components::MoveSegment>();
+    for (const entt::entity entity : segment_view) {
+        if (entity == ignore) {
+            continue;
+        }
+
+        if (move_segment_destination_cell(segment_view.get<components::MoveSegment>(entity)) == cell) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool is_tile_walkable(
     const components::MapGrid& map,
@@ -76,6 +142,8 @@ std::vector<core::GridPos> find_path(
     const components::MapGrid& map,
     core::GridPos start,
     core::GridPos goal,
+    entt::registry& registry,
+    const entt::entity ignore,
     const bool allow_forest)
 {
     if (start == goal) {
@@ -83,6 +151,10 @@ std::vector<core::GridPos> find_path(
     }
 
     if (!is_tile_walkable(map, goal, allow_forest)) {
+        return {};
+    }
+
+    if (is_movement_blocked(registry, goal, ignore)) {
         return {};
     }
 
@@ -148,6 +220,10 @@ std::vector<core::GridPos> find_path(
             const core::GridPos neighbor{current.x + offset.x, current.y + offset.y};
 
             if (!can_step_to(map, current, offset, allow_forest)) {
+                continue;
+            }
+
+            if (neighbor != goal && is_movement_blocked(registry, neighbor, ignore)) {
                 continue;
             }
 
