@@ -1,12 +1,13 @@
 #include "app/application.hpp"
 
+#include "app/fps_tracker.hpp"
+#include "app/game_input.hpp"
 #include "core/constants.hpp"
 #include "core/fixed_timestep_loop.hpp"
 #include "harness/regression_harness.hpp"
 #include "render/game_renderer.hpp"
 
 #include <SFML/Window/Event.hpp>
-#include <SFML/Window/Keyboard.hpp>
 #include <SFML/Window/VideoMode.hpp>
 #include <SFML/Window/Window.hpp>
 
@@ -113,47 +114,52 @@ int run_graphical(sim::Simulation& simulation)
         sf::State::Windowed,
         context_settings);
 
-    window.setVerticalSyncEnabled(true);
+    window.setVerticalSyncEnabled(false);
+    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
     (void)window.setActive(true);
 
     render::GameRenderer renderer{};
     renderer.resize(window.getSize());
 
+    GameInput game_input{};
+    game_input.reset_frame_clock();
+    FpsTracker fps_tracker{};
+
     core::FixedTimestepLoop loop{};
     loop.run_realtime(
         [&simulation]() { simulation.tick(); },
-        [&renderer, &simulation, &window](const float /*interpolation_alpha*/) {
+        [&renderer, &simulation, &window, &game_input, &fps_tracker](const float interpolation_alpha) {
+            fps_tracker.record_frame();
+            game_input.update_continuous(window, renderer, simulation);
             (void)window.setActive(true);
-            renderer.draw(simulation);
+            const app::PlayerSelection& selection = game_input.selection();
+            const app::HoverHighlight& hover = game_input.hover();
+            renderer.draw(
+                simulation,
+                selection.units,
+                interpolation_alpha,
+                game_input.selection_box(),
+                hover.unit,
+                hover.unit_is_enemy,
+                hover.building,
+                hover.resource_cell,
+                selection.resource_cell,
+                selection.building,
+                fps_tracker.fps());
             window.display();
         },
-        [&window, &renderer]() {
+        [&window, &renderer, &simulation, &game_input]() {
             while (const std::optional event = window.pollEvent()) {
                 if (event->is<sf::Event::Closed>()) {
                     window.close();
                 }
 
+                game_input.handle_event(*event, window, renderer, simulation);
+
                 if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
                     if (key_pressed->code == sf::Keyboard::Key::Escape) {
                         window.close();
                     }
-
-                    if (key_pressed->code == sf::Keyboard::Key::Up) {
-                        renderer.pan_camera(0.0F, constants::CAMERA_CLASSIC_PAN_STEP);
-                    }
-                    if (key_pressed->code == sf::Keyboard::Key::Down) {
-                        renderer.pan_camera(0.0F, -constants::CAMERA_CLASSIC_PAN_STEP);
-                    }
-                    if (key_pressed->code == sf::Keyboard::Key::Left) {
-                        renderer.pan_camera(constants::CAMERA_CLASSIC_PAN_STEP, 0.0F);
-                    }
-                    if (key_pressed->code == sf::Keyboard::Key::Right) {
-                        renderer.pan_camera(-constants::CAMERA_CLASSIC_PAN_STEP, 0.0F);
-                    }
-                }
-
-                if (const auto* scroll = event->getIf<sf::Event::MouseWheelScrolled>()) {
-                    renderer.zoom_camera(scroll->delta * constants::CAMERA_CLASSIC_ZOOM_STEP);
                 }
 
                 if (const auto* resized = event->getIf<sf::Event::Resized>()) {
@@ -162,7 +168,8 @@ int run_graphical(sim::Simulation& simulation)
             }
 
             return window.isOpen();
-        });
+        },
+        [&simulation]() { simulation.snapshot_world_positions_for_render(); });
 
     return 0;
 }

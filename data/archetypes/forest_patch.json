@@ -1,0 +1,6 @@
+{
+  "id": "forest_patch",
+  "kind": "resource_node",
+  "display_name": "Forest",
+  "wood_capacity": 100
+}

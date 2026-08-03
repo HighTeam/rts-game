@@ -1,6 +1,8 @@
 #include "render/hud_overlay.hpp"
 
 #include "core/constants.hpp"
+#include "sim/components/combat.hpp"
+#include "sim/components/health.hpp"
 #include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 
@@ -129,6 +131,24 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_digit_9 = {
         0U, 0x0EU, 0x11U, 0x11U, 0x0FU, 0x01U, 0x0EU,
     };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_f_upper = {
+        0U, 0x1FU, 0x10U, 0x1EU, 0x10U, 0x10U, 0x10U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_s_upper = {
+        0U, 0x0EU, 0x11U, 0x0EU, 0x01U, 0x11U, 0x0EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_h_upper = {
+        0U, 0x11U, 0x11U, 0x1FU, 0x11U, 0x11U, 0x11U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_p_upper = {
+        0U, 0x1EU, 0x11U, 0x1EU, 0x10U, 0x10U, 0x10U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_e_upper = {
+        0U, 0x1EU, 0x10U, 0x1CU, 0x10U, 0x10U, 0x1EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_slash = {
+        0U, 0x01U, 0x02U, 0x04U, 0x08U, 0x10U, 0x00U,
+    };
 
     switch (character) {
     case ' ':
@@ -169,6 +189,18 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
         return glyph_digit_8;
     case '9':
         return glyph_digit_9;
+    case 'H':
+        return glyph_h_upper;
+    case 'F':
+        return glyph_f_upper;
+    case 'S':
+        return glyph_s_upper;
+    case 'P':
+        return glyph_p_upper;
+    case 'E':
+        return glyph_e_upper;
+    case '/':
+        return glyph_slash;
     default:
         return glyph_space;
     }
@@ -293,23 +325,24 @@ void HudOverlay::draw_string(
     }
 }
 
-void HudOverlay::draw(const sim::Simulation& simulation, const sf::Vector2u window_size) const
+void HudOverlay::draw(
+    const sim::Simulation& simulation,
+    const sf::Vector2u window_size,
+    const float fps) const
 {
     const auto& registry = simulation.registry();
 
     int town_wood = 0;
     const auto town_center_view =
         registry.view<sim::components::TownCenterTag, sim::components::Stockpile>();
-    for (const entt::entity entity : town_center_view) {
-        town_wood = town_center_view.get<sim::components::Stockpile>(entity).wood;
-        break;
+    if (const auto iterator = town_center_view.begin(); iterator != town_center_view.end()) {
+        town_wood = town_center_view.get<sim::components::Stockpile>(*iterator).wood;
     }
 
     int carried_wood = 0;
     const auto worker_view = registry.view<sim::components::WorkerUnitTag, sim::components::CarriedWood>();
-    for (const entt::entity entity : worker_view) {
-        carried_wood = worker_view.get<sim::components::CarriedWood>(entity).amount;
-        break;
+    if (const auto iterator = worker_view.begin(); iterator != worker_view.end()) {
+        carried_wood = worker_view.get<sim::components::CarriedWood>(*iterator).amount;
     }
 
     const std::string stockpile_line = "Wood: " + std::to_string(town_wood);
@@ -335,6 +368,77 @@ void HudOverlay::draw(const sim::Simulation& simulation, const sf::Vector2u wind
         constants::HUD_TEXT_R,
         constants::HUD_TEXT_G * 0.9F,
         constants::HUD_TEXT_B * 0.7F);
+
+    int player_militia_hp = 0;
+    int player_militia_max_hp = 0;
+    const auto player_militia_view = registry.view<
+        sim::components::MilitiaUnitTag,
+        sim::components::PlayerOwnedTag,
+        sim::components::Health>();
+    for (const entt::entity entity : player_militia_view) {
+        const auto& health = player_militia_view.get<sim::components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        player_militia_hp = health.current.to_int();
+        player_militia_max_hp = health.max.to_int();
+        break;
+    }
+
+    int enemy_militia_hp = 0;
+    int enemy_militia_max_hp = 0;
+    const auto enemy_militia_view = registry.view<
+        sim::components::MilitiaUnitTag,
+        sim::components::EnemyTag,
+        sim::components::Health>();
+    for (const entt::entity entity : enemy_militia_view) {
+        const auto& health = enemy_militia_view.get<sim::components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        enemy_militia_hp = health.current.to_int();
+        enemy_militia_max_hp = health.max.to_int();
+        break;
+    }
+
+    const std::string player_militia_line =
+        "HP P: " + std::to_string(player_militia_hp) + "/" + std::to_string(player_militia_max_hp);
+    const std::string enemy_militia_line =
+        "HP E: " + std::to_string(enemy_militia_hp) + "/" + std::to_string(enemy_militia_max_hp);
+
+    draw_string(
+        window_size,
+        constants::HUD_MARGIN_X,
+        constants::HUD_MARGIN_Y + line_height * 2.0F,
+        player_militia_line,
+        0.55F,
+        0.90F,
+        0.45F);
+
+    draw_string(
+        window_size,
+        constants::HUD_MARGIN_X,
+        constants::HUD_MARGIN_Y + line_height * 3.0F,
+        enemy_militia_line,
+        0.95F,
+        0.45F,
+        0.40F);
+
+    const std::string fps_line = "FPS: " + std::to_string(static_cast<int>(fps + 0.5F));
+    const float char_step = static_cast<float>(
+        (GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
+    const float fps_text_width = static_cast<float>(fps_line.size()) * char_step;
+    const float fps_x = static_cast<float>(window_size.x) - constants::HUD_MARGIN_X - fps_text_width;
+    draw_string(
+        window_size,
+        fps_x,
+        constants::HUD_MARGIN_Y,
+        fps_line,
+        constants::HUD_TEXT_R * 0.85F,
+        constants::HUD_TEXT_G * 0.85F,
+        constants::HUD_TEXT_B * 0.85F);
 }
 
 } // namespace aoa::render

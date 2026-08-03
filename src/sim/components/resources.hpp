@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/grid.hpp"
+
 namespace aoa::sim::components {
 
 enum class WorkerState : std::uint8_t {
@@ -24,6 +26,10 @@ struct Stockpile {
 
 struct ForestResource {
     int wood_remaining{0};
+};
+
+struct GatherTarget {
+    core::GridPos cell{-1, -1};
 };
 
 } // namespace aoa::sim::components

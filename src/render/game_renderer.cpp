@@ -6,6 +6,12 @@
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/components/world_position.hpp"
+
+#include "math/fixed.hpp"
+
+#include <algorithm>
+#include <cmath>
 
 #include <SFML/Window/Context.hpp>
 
@@ -104,6 +110,8 @@ GameRenderer::GameRenderer()
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     create_shader_program();
+    create_scene_batch_gl();
+    scene_batch_.reserve(131072U);
 }
 
 GameRenderer::~GameRenderer()
@@ -120,8 +128,38 @@ void GameRenderer::create_shader_program()
     glDeleteShader(fragment_shader);
 }
 
+void GameRenderer::create_scene_batch_gl()
+{
+    glGenVertexArrays(1, &scene_vao_);
+    glGenBuffers(1, &scene_vbo_);
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SceneVertex), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(
+        1,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(SceneVertex),
+        reinterpret_cast<void*>(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0U);
+}
+
 void GameRenderer::destroy_gl_objects()
 {
+    if (scene_vbo_ != 0U) {
+        glDeleteBuffers(1, &scene_vbo_);
+        scene_vbo_ = 0U;
+    }
+
+    if (scene_vao_ != 0U) {
+        glDeleteVertexArrays(1, &scene_vao_);
+        scene_vao_ = 0U;
+    }
+
     if (scene_shader_program_ != 0U) {
         glDeleteProgram(scene_shader_program_);
         scene_shader_program_ = 0U;
@@ -142,9 +180,143 @@ void GameRenderer::pan_camera(const float delta_x, const float delta_y)
     camera_.pan(delta_x, delta_y);
 }
 
-void GameRenderer::zoom_camera(const float delta)
+void GameRenderer::zoom_camera(const float delta, const float anchor_screen_x, const float anchor_screen_y)
 {
-    camera_.add_zoom(delta);
+    camera_.add_zoom(delta, anchor_screen_x, anchor_screen_y);
+}
+
+std::optional<core::GridPos> GameRenderer::screen_to_grid(
+    const float screen_x,
+    const float screen_y) const
+{
+    return camera_.screen_to_grid(screen_x, screen_y);
+}
+
+sf::Vector2f GameRenderer::world_to_screen(
+    const float world_x,
+    const float world_y,
+    const float world_z) const
+{
+    return camera_.world_to_screen(world_x, world_y, world_z);
+}
+
+std::pair<float, float> GameRenderer::unit_render_world_xz(
+    const entt::registry& registry,
+    const entt::entity entity,
+    const float interpolation_alpha) const
+{
+    if (registry.all_of<sim::components::PreviousWorldPosition, sim::components::WorldPosition>(entity)) {
+        const auto& previous = registry.get<sim::components::PreviousWorldPosition>(entity);
+        const auto& current = registry.get<sim::components::WorldPosition>(entity);
+        const math::Fixed t = math::Fixed::from_float(std::clamp(interpolation_alpha, 0.0F, 1.0F));
+        return {
+            math::fixed_lerp(previous.x, current.x, t).to_float(),
+            math::fixed_lerp(previous.y, current.y, t).to_float(),
+        };
+    }
+
+    if (registry.any_of<sim::components::WorldPosition>(entity)) {
+        const auto& world = registry.get<sim::components::WorldPosition>(entity);
+        return {world.x.to_float(), world.y.to_float()};
+    }
+
+    if (registry.any_of<sim::components::GridPosition>(entity)) {
+        const auto& cell = registry.get<sim::components::GridPosition>(entity).cell;
+        return {
+            static_cast<float>(cell.x) + 0.5F,
+            static_cast<float>(cell.y) + 0.5F,
+        };
+    }
+
+    return {0.0F, 0.0F};
+}
+
+sf::Vector2f GameRenderer::tile_center_screen(
+    const int grid_x,
+    const int grid_y,
+    const float world_y) const
+{
+    return world_to_screen(
+        static_cast<float>(grid_x) + 0.5F,
+        world_y,
+        static_cast<float>(grid_y) + 0.5F);
+}
+
+sf::Vector2f GameRenderer::unit_screen_position(
+    const entt::registry& registry,
+    const entt::entity entity,
+    const float interpolation_alpha) const
+{
+    const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+    return world_to_screen(world_x, constants::RENDER_ENTITY_BASE_LIFT, world_z);
+}
+
+float GameRenderer::selection_pick_radius_px() const
+{
+    return constants::SELECTION_PICK_RADIUS_TILES * camera_.tile_width();
+}
+
+void GameRenderer::draw_screen_rect_outline(
+    const float screen_x0,
+    const float screen_y0,
+    const float screen_x1,
+    const float screen_y1,
+    const float r,
+    const float g,
+    const float b) const
+{
+    draw_screen_rect_outline_immediate(screen_x0, screen_y0, screen_x1, screen_y1, r, g, b);
+}
+
+void GameRenderer::draw_screen_rect_outline_immediate(
+    const float screen_x0,
+    const float screen_y0,
+    const float screen_x1,
+    const float screen_y1,
+    const float r,
+    const float g,
+    const float b) const
+{
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const float left = to_ndc_x(std::min(screen_x0, screen_x1));
+    const float right = to_ndc_x(std::max(screen_x0, screen_x1));
+    const float top = to_ndc_y(std::min(screen_y0, screen_y1));
+    const float bottom = to_ndc_y(std::max(screen_y0, screen_y1));
+    const float depth = -0.99F;
+
+    const std::array<SceneVertex, 8> line_vertices = {
+        SceneVertex{left, top, depth, r, g, b},
+        SceneVertex{right, top, depth, r, g, b},
+        SceneVertex{right, top, depth, r, g, b},
+        SceneVertex{right, bottom, depth, r, g, b},
+        SceneVertex{right, bottom, depth, r, g, b},
+        SceneVertex{left, bottom, depth, r, g, b},
+        SceneVertex{left, bottom, depth, r, g, b},
+        SceneVertex{left, top, depth, r, g, b},
+    };
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(line_vertices.size() * sizeof(SceneVertex)),
+        line_vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(line_vertices.size()));
+    glBindVertexArray(0U);
 }
 
 void GameRenderer::apply_team_color(
@@ -160,40 +332,36 @@ void GameRenderer::apply_team_color(
     b = base_b;
 }
 
+void GameRenderer::append_scene_vertices(
+    const SceneVertex* vertices,
+    const std::size_t vertex_count) const
+{
+    scene_batch_.insert(scene_batch_.end(), vertices, vertices + vertex_count);
+}
+
+void GameRenderer::flush_scene_batch() const
+{
+    if (scene_batch_.empty() || scene_vao_ == 0U || scene_vbo_ == 0U) {
+        return;
+    }
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(scene_batch_.size() * sizeof(SceneVertex)),
+        scene_batch_.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(scene_batch_.size()));
+    glBindVertexArray(0U);
+}
+
 void GameRenderer::draw_scene_triangles(
     const std::array<SceneVertex, 6>& triangle_vertices,
     const int vertex_count) const
 {
-    unsigned int vao = 0U;
-    unsigned int vbo = 0U;
-    glGenVertexArrays(1, &vao);
-    glGenBuffers(1, &vbo);
-
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(
-        GL_ARRAY_BUFFER,
-        static_cast<GLsizei>(static_cast<std::size_t>(vertex_count) * sizeof(SceneVertex)),
-        triangle_vertices.data(),
-        GL_STATIC_DRAW);
-
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SceneVertex), reinterpret_cast<void*>(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(
-        1,
-        3,
-        GL_FLOAT,
-        GL_FALSE,
-        sizeof(SceneVertex),
-        reinterpret_cast<void*>(3 * sizeof(float)));
-
-    glUseProgram(scene_shader_program_);
-    glDrawArrays(GL_TRIANGLES, 0, vertex_count);
-
-    glBindVertexArray(0U);
-    glDeleteBuffers(1, &vbo);
-    glDeleteVertexArrays(1, &vao);
+    append_scene_vertices(triangle_vertices.data(), static_cast<std::size_t>(vertex_count));
 }
 
 void GameRenderer::draw_scene_quad(
@@ -305,16 +473,16 @@ void GameRenderer::draw_extruded_tile(
 }
 
 void GameRenderer::draw_entity_prism(
-    const int grid_x,
-    const int grid_y,
+    const float world_x,
+    const float world_z,
     const float height,
     const float r,
     const float g,
     const float b) const
 {
     const float inset = 0.18F;
-    const float fx = static_cast<float>(grid_x) + inset;
-    const float fz = static_cast<float>(grid_y) + inset;
+    const float fx = world_x - 0.5F + inset;
+    const float fz = world_z - 0.5F + inset;
     const float size = 1.0F - inset * 2.0F;
     const float base = constants::RENDER_ENTITY_BASE_LIFT;
     const float top = base + height;
@@ -408,34 +576,55 @@ void GameRenderer::draw_entity_prism(
         side_light);
 }
 
-void GameRenderer::draw_selection_outline(const int grid_x, const int grid_y) const
+void GameRenderer::draw_ground_highlight(const SceneHighlight& highlight) const
 {
-    const float scale = constants::RENDER_SELECTION_OUTLINE_SCALE;
-    const float center_x = static_cast<float>(grid_x) + 0.5F;
-    const float center_z = static_cast<float>(grid_y) + 0.5F;
-    const float half = 0.5F * scale;
+    const float half = 0.5F * highlight.scale;
     const float outline_height = constants::RENDER_ENTITY_BASE_LIFT + 0.02F;
 
     draw_scene_quad(
-        center_x - half,
+        highlight.world_x - half,
         outline_height,
-        center_z - half,
-        center_x + half,
+        highlight.world_z - half,
+        highlight.world_x + half,
         outline_height,
-        center_z - half,
-        center_x + half,
+        highlight.world_z - half,
+        highlight.world_x + half,
         outline_height,
-        center_z + half,
-        center_x - half,
+        highlight.world_z + half,
+        highlight.world_x - half,
         outline_height,
-        center_z + half,
-        0.95F,
-        0.82F,
-        0.18F,
+        highlight.world_z + half,
+        highlight.r,
+        highlight.g,
+        highlight.b,
         1.0F);
 }
 
-void GameRenderer::draw(const sim::Simulation& simulation)
+void GameRenderer::draw_selection_outline(const float world_x, const float world_z) const
+{
+    draw_ground_highlight(
+        SceneHighlight{
+            world_x,
+            world_z,
+            constants::RENDER_SELECTION_HIGHLIGHT_R,
+            constants::RENDER_SELECTION_HIGHLIGHT_G,
+            constants::RENDER_SELECTION_HIGHLIGHT_B,
+            constants::RENDER_SELECTION_OUTLINE_SCALE,
+        });
+}
+
+void GameRenderer::draw(
+    const sim::Simulation& simulation,
+    const std::vector<entt::entity>& selected_entities,
+    const float interpolation_alpha,
+    const SelectionBoxOverlay& selection_box,
+    const entt::entity hover_unit,
+    const bool hover_unit_is_enemy,
+    const entt::entity hover_building,
+    const std::optional<core::GridPos> hover_resource_cell,
+    const std::optional<core::GridPos> selected_resource_cell,
+    const entt::entity selected_building,
+    const float fps)
 {
     if (active_camera_view() != CameraView::Classic) {
         return;
@@ -458,16 +647,19 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         map_framed_ = true;
     }
 
+    scene_batch_.clear();
+
     for (int y = 0; y < map.height; ++y) {
         for (int x = 0; x < map.width; ++x) {
             const int index = y * map.width + x;
             const auto tile = map.tiles[static_cast<std::size_t>(index)];
+            const int forest_wood = map.forest_wood[static_cast<std::size_t>(index)];
 
             float r = 0.20F;
             float g = 0.32F;
             float b = 0.18F;
             float extrude = 0.0F;
-            if (tile == sim::components::TileType::Forest) {
+            if (tile == sim::components::TileType::Forest && forest_wood > 0) {
                 r = 0.10F;
                 g = 0.22F;
                 b = 0.10F;
@@ -478,12 +670,75 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         }
     }
 
-    const auto town_center_view = registry.view<
-        sim::components::TownCenterTag,
-        sim::components::GridPosition>();
-    for (const entt::entity entity : town_center_view) {
-        const auto& pos = town_center_view.get<sim::components::GridPosition>(entity).cell;
-        draw_selection_outline(pos.x, pos.y);
+    for (const entt::entity entity : selected_entities) {
+        if (!registry.valid(entity) || !registry.any_of<sim::components::GridPosition>(entity)) {
+            continue;
+        }
+
+        const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+        draw_selection_outline(world_x, world_z);
+    }
+
+    if (selected_resource_cell.has_value()) {
+        draw_selection_outline(
+            static_cast<float>(selected_resource_cell->x) + 0.5F,
+            static_cast<float>(selected_resource_cell->y) + 0.5F);
+    }
+
+    if (selected_building != entt::null && registry.valid(selected_building)
+        && registry.any_of<sim::components::GridPosition>(selected_building)) {
+        const auto& pos = registry.get<sim::components::GridPosition>(selected_building).cell;
+        draw_selection_outline(
+            static_cast<float>(pos.x) + 0.5F,
+            static_cast<float>(pos.y) + 0.5F);
+    }
+
+    if (hover_unit != entt::null && registry.valid(hover_unit)
+        && registry.any_of<sim::components::GridPosition>(hover_unit)) {
+        const auto [world_x, world_z] = unit_render_world_xz(registry, hover_unit, interpolation_alpha);
+        const bool is_selected =
+            std::find(selected_entities.begin(), selected_entities.end(), hover_unit) != selected_entities.end();
+        if (!is_selected) {
+            draw_ground_highlight(
+                SceneHighlight{
+                    world_x,
+                    world_z,
+                    hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_R
+                                        : constants::RENDER_HOVER_FRIENDLY_R,
+                    hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_G
+                                        : constants::RENDER_HOVER_FRIENDLY_G,
+                    hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_B
+                                        : constants::RENDER_HOVER_FRIENDLY_B,
+                    constants::RENDER_HOVER_OUTLINE_SCALE,
+                });
+        }
+    }
+    else if (hover_building != entt::null && registry.valid(hover_building)
+        && registry.any_of<sim::components::GridPosition>(hover_building)
+        && hover_building != selected_building) {
+        const auto& pos = registry.get<sim::components::GridPosition>(hover_building).cell;
+        draw_ground_highlight(
+            SceneHighlight{
+                static_cast<float>(pos.x) + 0.5F,
+                static_cast<float>(pos.y) + 0.5F,
+                constants::RENDER_HOVER_FRIENDLY_R,
+                constants::RENDER_HOVER_FRIENDLY_G,
+                constants::RENDER_HOVER_FRIENDLY_B,
+                constants::RENDER_HOVER_OUTLINE_SCALE,
+            });
+    }
+    else if (hover_resource_cell.has_value()
+        && (!selected_resource_cell.has_value()
+            || *hover_resource_cell != *selected_resource_cell)) {
+        draw_ground_highlight(
+            SceneHighlight{
+                static_cast<float>(hover_resource_cell->x) + 0.5F,
+                static_cast<float>(hover_resource_cell->y) + 0.5F,
+                constants::RENDER_HOVER_RESOURCE_R,
+                constants::RENDER_HOVER_RESOURCE_G,
+                constants::RENDER_HOVER_RESOURCE_B,
+                constants::RENDER_HOVER_OUTLINE_SCALE,
+            });
     }
 
     const auto building_view = registry.view<
@@ -499,7 +754,13 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         float g = base_g;
         float b = base_b;
         apply_team_color(base_r, base_g, base_b, r, g, b);
-        draw_entity_prism(pos.x, pos.y, constants::RENDER_BUILDING_HEIGHT, r, g, b);
+        draw_entity_prism(
+            static_cast<float>(pos.x) + 0.5F,
+            static_cast<float>(pos.y) + 0.5F,
+            constants::RENDER_BUILDING_HEIGHT,
+            r,
+            g,
+            b);
     }
 
     const auto unit_view = registry.view<
@@ -512,7 +773,7 @@ void GameRenderer::draw(const sim::Simulation& simulation)
             continue;
         }
 
-        const auto& pos = unit_view.get<sim::components::GridPosition>(entity).cell;
+        const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
 
         float base_r = 0.25F;
         float base_g = 0.55F;
@@ -532,11 +793,25 @@ void GameRenderer::draw(const sim::Simulation& simulation)
         float g = base_g;
         float b = base_b;
         apply_team_color(base_r, base_g, base_b, r, g, b);
-        draw_entity_prism(pos.x, pos.y, constants::RENDER_UNIT_HEIGHT, r, g, b);
+        draw_entity_prism(world_x, world_z, constants::RENDER_UNIT_HEIGHT, r, g, b);
     }
 
+    flush_scene_batch();
+
     glDisable(GL_DEPTH_TEST);
-    hud_overlay_.draw(simulation, window_size_);
+    hud_overlay_.draw(simulation, window_size_, fps);
+
+    if (selection_box.active) {
+        draw_screen_rect_outline(
+            selection_box.start.x,
+            selection_box.start.y,
+            selection_box.current.x,
+            selection_box.current.y,
+            0.35F,
+            0.95F,
+            0.35F);
+    }
+
     glEnable(GL_DEPTH_TEST);
 }
 

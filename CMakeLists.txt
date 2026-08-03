@@ -24,6 +24,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 add_executable(aoa
     src/main.cpp
     src/app/application.cpp
+    src/app/game_input.cpp
     src/core/fixed_timestep_loop.cpp
     src/data/content_loader.cpp
     src/harness/regression_harness.cpp
@@ -32,6 +33,9 @@ add_executable(aoa
     src/render/game_renderer.cpp
     src/render/hud_overlay.cpp
     src/sim/map/test_map.cpp
+    src/sim/player/player_commands.cpp
+    src/sim/player/player_command.cpp
+    src/sim/player/command_queue.cpp
     src/sim/scenario/test_scenario.cpp
     src/sim/simulation.cpp
     src/sim/systems/gameplay_systems.cpp

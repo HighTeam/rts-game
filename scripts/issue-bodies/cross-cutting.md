@@ -5,7 +5,7 @@ Epic from [docs/BACKLOG.md](../docs/BACKLOG.md). Decide once — expensive to ch
 - [x] Fixed-point math (M0) — expensive to retrofit
 - [x] Data-driven civ/unit/building definitions (M1) — expensive to retrofit
 - [ ] Host migration policy (M3) — affects network code shape
-- [ ] Disconnect/pause policy (M2) — affects UI and netcode together
+- [x] Disconnect/pause policy (M2 prep) — AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](../docs/DECISIONS.md)
 - [x] Tick rate — pick once; changing later touches balance, netcode timing, and input feel (`SIM_TICKS_PER_SECOND = 20`)
 - [x] Render style — AoE2 DE-like hybrid (3D engine, isometric Classic camera, zoom + shaders) — [docs/DECISIONS.md](../docs/DECISIONS.md)
 - [x] Camera view modes — Settings: **Classic** (now) vs **Full 3D** (later default)

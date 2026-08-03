@@ -8,51 +8,171 @@ namespace aoa::data {
 
 namespace {
 
-UnitDefinition parse_unit_definition(const nlohmann::json& json)
+ArchetypeDefinition parse_archetype_definition(const nlohmann::json& json)
 {
-    UnitDefinition definition{};
-    definition.max_hp = math::Fixed::from_int(json.at("max_hp").get<int>());
-    definition.move_ticks_per_tile = json.at("move_ticks_per_tile").get<int>();
-    definition.gather_per_tick = json.value("gather_per_tick", 0);
-    definition.carry_capacity = json.value("carry_capacity", 0);
-    definition.attack_damage = json.value("attack_damage", 0);
-    definition.attack_cooldown_ticks = json.value("attack_cooldown_ticks", 1);
-    return definition;
+    ArchetypeDefinition archetype{};
+    archetype.id = json.at("id").get<std::string>();
+    archetype.kind = parse_archetype_kind(json.at("kind").get<std::string>());
+    archetype.display_name = json.value("display_name", archetype.id);
+    archetype.max_hp = math::Fixed::from_int(json.value("max_hp", 1));
+    archetype.move_ticks_per_tile = json.value("move_ticks_per_tile", 1);
+    archetype.gather_per_tick = json.value("gather_per_tick", 0);
+    archetype.carry_capacity = json.value("carry_capacity", 0);
+    archetype.melee_attack = json.value("melee_attack", json.value("attack_damage", 0));
+    archetype.melee_armor = json.value("melee_armor", 0);
+    archetype.pierce_attack = json.value("pierce_attack", 0);
+    archetype.pierce_armor = json.value("pierce_armor", 0);
+    archetype.attack_cooldown_ticks = json.value("attack_cooldown_ticks", 1);
+    archetype.spawn_worker_wood_cost = json.value("spawn_worker_wood_cost", 0);
+    archetype.wood_capacity = json.value("wood_capacity", 0);
+    return archetype;
 }
 
-BuildingDefinition parse_building_definition(const nlohmann::json& json)
+CivManifest parse_civ_manifest(const nlohmann::json& json)
 {
-    BuildingDefinition definition{};
-    definition.max_hp = math::Fixed::from_int(json.at("max_hp").get<int>());
-    definition.spawn_worker_wood_cost = json.value("spawn_worker_wood_cost", 0);
-    return definition;
+    CivManifest civ{};
+    civ.civ_id = json.at("civ_id").get<std::string>();
+    civ.display_name = json.at("display_name").get<std::string>();
+    civ.starting_stockpile_wood = json.value("starting_stockpile_wood", 0);
+
+    if (json.contains("unit_archetypes")) {
+        civ.unit_archetypes = json.at("unit_archetypes").get<std::vector<std::string>>();
+    }
+
+    if (json.contains("structure_archetypes")) {
+        civ.structure_archetypes = json.at("structure_archetypes").get<std::vector<std::string>>();
+    }
+
+    if (json.contains("resource_node_archetypes")) {
+        civ.resource_node_archetypes = json.at("resource_node_archetypes").get<std::vector<std::string>>();
+    }
+
+    return civ;
+}
+
+void validate_civ_archetypes(const CivManifest& civ, const ContentDatabase& content)
+{
+    const auto require_ids = [&content](const std::vector<std::string>& ids, const ArchetypeKind kind) {
+        for (const std::string& id : ids) {
+            const ArchetypeDefinition* archetype = find_archetype(content, id);
+            if (archetype == nullptr) {
+                throw std::runtime_error("Missing archetype: " + id);
+            }
+
+            if (archetype->kind != kind) {
+                throw std::runtime_error("Archetype kind mismatch for: " + id);
+            }
+        }
+    };
+
+    require_ids(civ.unit_archetypes, ArchetypeKind::Unit);
+    require_ids(civ.structure_archetypes, ArchetypeKind::Structure);
+    require_ids(civ.resource_node_archetypes, ArchetypeKind::ResourceNode);
 }
 
 } // namespace
 
-CivDefinition load_civ_definition(const std::filesystem::path& civ_json_path)
+ArchetypeKind parse_archetype_kind(const std::string& kind_text)
 {
-    std::ifstream input(civ_json_path);
-    if (!input) {
-        throw std::runtime_error("Failed to open civ definition: " + civ_json_path.string());
+    if (kind_text == "unit") {
+        return ArchetypeKind::Unit;
     }
 
-    const nlohmann::json json = nlohmann::json::parse(input);
-
-    CivDefinition civ{};
-    civ.civ_id = json.at("civ_id").get<std::string>();
-    civ.display_name = json.at("display_name").get<std::string>();
-    civ.forest_patch_wood = json.at("resources").at("forest_patch_wood").get<int>();
-
-    for (const auto& [unit_id, unit_json] : json.at("units").items()) {
-        civ.units.emplace(unit_id, parse_unit_definition(unit_json));
+    if (kind_text == "structure") {
+        return ArchetypeKind::Structure;
     }
 
-    for (const auto& [building_id, building_json] : json.at("buildings").items()) {
-        civ.buildings.emplace(building_id, parse_building_definition(building_json));
+    if (kind_text == "resource_node") {
+        return ArchetypeKind::ResourceNode;
     }
 
-    return civ;
+    if (kind_text == "prop") {
+        return ArchetypeKind::Prop;
+    }
+
+    throw std::invalid_argument("Unknown archetype kind: " + kind_text);
+}
+
+const ArchetypeDefinition* find_archetype(const ContentDatabase& content, const std::string& archetype_id)
+{
+    const auto iterator = content.archetypes.find(archetype_id);
+    if (iterator == content.archetypes.end()) {
+        return nullptr;
+    }
+
+    return &iterator->second;
+}
+
+const ArchetypeDefinition* find_unit_archetype(
+    const ContentDatabase& content,
+    const std::string& archetype_id)
+{
+    const ArchetypeDefinition* archetype = find_archetype(content, archetype_id);
+    if (archetype == nullptr || archetype->kind != ArchetypeKind::Unit) {
+        return nullptr;
+    }
+
+    return archetype;
+}
+
+const ArchetypeDefinition* find_structure_archetype(
+    const ContentDatabase& content,
+    const std::string& archetype_id)
+{
+    const ArchetypeDefinition* archetype = find_archetype(content, archetype_id);
+    if (archetype == nullptr || archetype->kind != ArchetypeKind::Structure) {
+        return nullptr;
+    }
+
+    return archetype;
+}
+
+const ArchetypeDefinition* find_resource_node_archetype(
+    const ContentDatabase& content,
+    const std::string& archetype_id)
+{
+    const ArchetypeDefinition* archetype = find_archetype(content, archetype_id);
+    if (archetype == nullptr || archetype->kind != ArchetypeKind::ResourceNode) {
+        return nullptr;
+    }
+
+    return archetype;
+}
+
+ContentDatabase load_content_database(const std::filesystem::path& data_directory)
+{
+    ContentDatabase content{};
+
+    const std::filesystem::path archetypes_directory = data_directory / "archetypes";
+    if (!std::filesystem::is_directory(archetypes_directory)) {
+        throw std::runtime_error("Archetypes directory not found: " + archetypes_directory.string());
+    }
+
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(archetypes_directory)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+
+        std::ifstream input(entry.path());
+        if (!input) {
+            throw std::runtime_error("Failed to open archetype: " + entry.path().string());
+        }
+
+        const ArchetypeDefinition archetype = parse_archetype_definition(nlohmann::json::parse(input));
+        content.archetypes.insert_or_assign(archetype.id, archetype);
+    }
+
+    const std::filesystem::path civ_path = data_directory / "civs" / "earth.json";
+    std::ifstream civ_input(civ_path);
+    if (!civ_input) {
+        throw std::runtime_error("Failed to open civ manifest: " + civ_path.string());
+    }
+
+    content.civ = parse_civ_manifest(nlohmann::json::parse(civ_input));
+    validate_civ_archetypes(content.civ, content);
+
+    return content;
 }
 
 std::filesystem::path default_data_directory()

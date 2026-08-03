@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 
 namespace aoa::render {
@@ -112,13 +113,67 @@ void ClassicCamera::pan(const float delta_x, const float delta_y)
     user_adjusted_ = true;
 }
 
-void ClassicCamera::add_zoom(const float delta)
+void ClassicCamera::add_zoom(const float delta, const float anchor_screen_x, const float anchor_screen_y)
 {
-    zoom_ = std::clamp(
+    const float old_zoom = zoom_;
+    const float new_zoom = std::clamp(
         zoom_ + delta,
         constants::CAMERA_CLASSIC_MIN_ZOOM,
         constants::CAMERA_CLASSIC_MAX_ZOOM);
+
+    if (new_zoom == old_zoom) {
+        return;
+    }
+
+    const float local_x = anchor_screen_x - pan_.x;
+    const float local_y = anchor_screen_y - pan_.y;
+    const float zoom_ratio = new_zoom / old_zoom;
+
+    pan_.x = anchor_screen_x - local_x * zoom_ratio;
+    pan_.y = anchor_screen_y - local_y * zoom_ratio;
+    zoom_ = new_zoom;
     user_adjusted_ = true;
+}
+
+std::optional<core::GridPos> ClassicCamera::screen_to_grid(
+    const float screen_x,
+    const float screen_y) const
+{
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return std::nullopt;
+    }
+
+    const float local_x = screen_x - pan_.x;
+    const float local_y = screen_y - pan_.y;
+    const float half_w = tile_half_width();
+    const float half_h = tile_half_height();
+
+    if (half_w <= 0.0F || half_h <= 0.0F) {
+        return std::nullopt;
+    }
+
+    const float grid_x_f = (local_x / half_w + local_y / half_h) * 0.5F;
+    const float grid_y_f = (local_y / half_h - local_x / half_w) * 0.5F;
+
+    return core::GridPos{
+        static_cast<int>(std::floor(grid_x_f)),
+        static_cast<int>(std::floor(grid_y_f)),
+    };
+}
+
+sf::Vector2f ClassicCamera::world_to_screen(
+    const float world_x,
+    const float world_y,
+    const float world_z) const
+{
+    const auto clip = world_to_clip(world_x, world_y, world_z);
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+
+    return {
+        (clip[0] + 1.0F) * 0.5F * window_width,
+        (1.0F - clip[1]) * 0.5F * window_height,
+    };
 }
 
 sf::Vector2f ClassicCamera::grid_top_corner(const int grid_x, const int grid_y) const

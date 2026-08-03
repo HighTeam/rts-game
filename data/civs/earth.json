@@ -1,29 +1,8 @@
 {
   "civ_id": "earth",
   "display_name": "Earth",
-  "units": {
-    "worker": {
-      "max_hp": 50,
-      "move_ticks_per_tile": 10,
-      "gather_per_tick": 1,
-      "carry_capacity": 10,
-      "attack_damage": 2,
-      "attack_cooldown_ticks": 15
-    },
-    "militia": {
-      "max_hp": 60,
-      "move_ticks_per_tile": 8,
-      "attack_damage": 8,
-      "attack_cooldown_ticks": 12
-    }
-  },
-  "buildings": {
-    "town_center": {
-      "max_hp": 1200,
-      "spawn_worker_wood_cost": 50
-    }
-  },
-  "resources": {
-    "forest_patch_wood": 100
-  }
+  "unit_archetypes": ["worker", "militia"],
+  "structure_archetypes": ["town_center"],
+  "resource_node_archetypes": ["forest_patch"],
+  "starting_stockpile_wood": 100
 }

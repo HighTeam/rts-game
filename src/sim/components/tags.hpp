@@ -6,6 +6,7 @@ struct WorldTag {};
 struct UnitTag {};
 struct BuildingTag {};
 struct PlayerOwnedTag {};
+struct ManualControlTag {};
 struct EnemyTag {};
 
 struct TownCenterTag {};
