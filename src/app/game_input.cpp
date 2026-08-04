@@ -7,6 +7,8 @@
 #include "sim/components/tags.hpp"
 #include "sim/player/player_command.hpp"
 #include "sim/player/player_commands.hpp"
+#include "sim/simulation.hpp"
+#include "net/lockstep_session.hpp"
 
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Keyboard.hpp>
@@ -32,6 +34,18 @@ sim::player::PlayerCommand make_command(
 }
 
 } // namespace
+
+void GameInput::submit_player_command(
+    sim::Simulation& simulation,
+    sim::player::PlayerCommand command)
+{
+    if (lockstep_session_ != nullptr) {
+        lockstep_session_->submit_local_command(std::move(command));
+        return;
+    }
+
+    simulation.enqueue_player_command(std::move(command));
+}
 
 sim::player::SelectionModifyMode GameInput::current_modify_mode() const
 {
@@ -332,7 +346,7 @@ void GameInput::handle_event(
                 command.execute_tick = simulation.next_command_execute_tick();
                 command.type = sim::player::PlayerCommandType::SpawnWorker;
                 command.target_entity = selection_.building;
-                simulation.enqueue_player_command(std::move(command));
+                submit_player_command(simulation, std::move(command));
             }
         }
     }
@@ -377,7 +391,7 @@ void GameInput::handle_event(
                 sim::player::PlayerCommand command =
                     make_command(simulation, sim::player::PlayerCommandType::Attack, selection_.units);
                 command.target_entity = enemy;
-                simulation.enqueue_player_command(std::move(command));
+                submit_player_command(simulation, std::move(command));
                 return;
             }
 
@@ -390,7 +404,7 @@ void GameInput::handle_event(
                 sim::player::PlayerCommand command =
                     make_command(simulation, sim::player::PlayerCommandType::Gather, selection_.units);
                 command.cell = *forest_cell;
-                simulation.enqueue_player_command(std::move(command));
+                submit_player_command(simulation, std::move(command));
                 return;
             }
 
@@ -400,10 +414,12 @@ void GameInput::handle_event(
                 screen_position,
                 renderer.selection_pick_radius_px());
             if (town_center != entt::null && registry.any_of<sim::components::TownCenterTag>(town_center)) {
-                simulation.enqueue_player_command(make_command(
+                submit_player_command(
                     simulation,
-                    sim::player::PlayerCommandType::Deposit,
-                    selection_.units));
+                    make_command(
+                        simulation,
+                        sim::player::PlayerCommandType::Deposit,
+                        selection_.units));
                 return;
             }
 
@@ -431,17 +447,19 @@ void GameInput::handle_event(
                     continue;
                 }
 
-                simulation.enqueue_player_command(make_command(
+                submit_player_command(
                     simulation,
-                    sim::player::PlayerCommandType::Deposit,
-                    selection_.units));
+                    make_command(
+                        simulation,
+                        sim::player::PlayerCommandType::Deposit,
+                        selection_.units));
                 return;
             }
 
             sim::player::PlayerCommand command =
                 make_command(simulation, sim::player::PlayerCommandType::Move, selection_.units);
             command.cell = *grid_cell;
-            simulation.enqueue_player_command(std::move(command));
+            submit_player_command(simulation, std::move(command));
         }
     }
 

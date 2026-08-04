@@ -56,8 +56,8 @@ Same binary, no window — for desync/regression runs:
 | `--harness` | Run every `data/scenarios/*.json`, including command-replay scenarios |
 | `--net-smoke` | In-process ENet host/client loopback; sends a `PlayerCommand` reliably |
 | `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
-| `--lockstep-host` | Headless lockstep host (player 0); waits for client, runs N ticks |
-| `--lockstep-join HOST:PORT` | Headless lockstep client (player 1) |
+| `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
+| `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
 
 Default tick count without `--ticks`: `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
 
@@ -85,9 +85,13 @@ Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on 
 Two-instance dev loop:
 
 ```powershell
-# Terminal 1
-.\build\x64-debug\Debug\aoa.exe --lockstep-host --port 27000 --ticks 100
+# Terminal 1 — graphical (default)
+.\build\x64-debug\Debug\aoa.exe --lockstep-host --port 27000
 
 # Terminal 2
-.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000 --ticks 100
+.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000
+
+# Headless scripted run (100 ticks default)
+.\build\x64-debug\Debug\aoa.exe --lockstep-host --headless --ticks 100
+.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --ticks 100
 ```

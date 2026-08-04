@@ -5,7 +5,9 @@
 #include "core/constants.hpp"
 #include "core/fixed_timestep_loop.hpp"
 #include "harness/regression_harness.hpp"
+#include "net/enet_transport.hpp"
 #include "net/lockstep_runner.hpp"
+#include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
 #include "render/game_renderer.hpp"
 
@@ -104,8 +106,8 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
                          "       aoa --harness\n"
                          "       aoa --net-smoke\n"
                          "       aoa --lockstep-smoke\n"
-                         "       aoa --lockstep-host [--port PORT] [--ticks N]\n"
-                         "       aoa --lockstep-join HOST:PORT [--ticks N]\n";
+                         "       aoa --lockstep-host [--port PORT] [--ticks N] [--headless]\n"
+                         "       aoa --lockstep-join HOST:PORT [--ticks N] [--headless]\n";
             std::exit(0);
         }
 
@@ -116,7 +118,8 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
         options.headless_ticks = constants::HEADLESS_DEFAULT_TICK_COUNT;
     }
 
-    if ((options.lockstep_host || options.lockstep_join) && options.lockstep_ticks == 0U) {
+    if ((options.lockstep_host || options.lockstep_join) && options.headless
+        && options.lockstep_ticks == 0U) {
         options.lockstep_ticks = aoa::net::constants::LOCKSTEP_DEFAULT_TICK_COUNT;
     }
 
@@ -212,6 +215,194 @@ int run_graphical(sim::Simulation& simulation)
             return window.isOpen();
         },
         [&simulation]() { simulation.snapshot_world_positions_for_render(); });
+
+    return 0;
+}
+
+namespace {
+
+void update_lockstep_window_title(
+    sf::Window& window,
+    const net::LockstepSession& session,
+    const std::uint8_t player_slot)
+{
+    if (session.is_desynced()) {
+        window.setTitle(
+            std::string(constants::WINDOW_TITLE)
+            + " - DESYNC tick "
+            + std::to_string(session.desync_tick()));
+        return;
+    }
+
+    if (!session.is_connected()) {
+        window.setTitle(std::string(constants::WINDOW_TITLE) + " - Waiting for opponent...");
+        return;
+    }
+
+    window.setTitle(
+        std::string(constants::WINDOW_TITLE) + " - Player " + std::to_string(player_slot + 1U));
+}
+
+} // namespace
+
+int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& options)
+{
+    if (!net::EnetTransport::global_initialize()) {
+        std::cerr << "lockstep: enet_initialize failed\n";
+        return 1;
+    }
+
+    const net::LockstepRole role =
+        options.lockstep_host ? net::LockstepRole::Host : net::LockstepRole::Client;
+    const std::uint8_t player_slot = options.lockstep_host
+        ? net::constants::LOCKSTEP_HOST_PLAYER_SLOT
+        : net::constants::LOCKSTEP_CLIENT_PLAYER_SLOT;
+
+    net::LockstepSession session{role, player_slot, simulation};
+
+    if (options.lockstep_host) {
+        const std::uint16_t port =
+            options.lockstep_port == 0U ? net::constants::DEFAULT_PORT : options.lockstep_port;
+        if (!session.start_host(port)) {
+            std::cerr << "lockstep: failed to start host on port " << port << '\n';
+            net::EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        std::cout << "lockstep-host: listening on port " << port << " (graphical)\n";
+    }
+    else {
+        if (!options.lockstep_join_address.has_value()) {
+            std::cerr << "lockstep-join: missing host address\n";
+            net::EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        const auto parsed_address =
+            net::parse_lockstep_join_address(*options.lockstep_join_address);
+        if (!parsed_address.has_value()) {
+            std::cerr << "lockstep-join: invalid address (expected HOST:PORT)\n";
+            net::EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        if (!session.connect(parsed_address->first.c_str(), parsed_address->second)) {
+            std::cerr << "lockstep-join: failed to connect to " << *options.lockstep_join_address
+                      << '\n';
+            net::EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        std::cout << "lockstep-join: connecting to " << *options.lockstep_join_address
+                  << " (graphical)\n";
+    }
+
+    sf::ContextSettings context_settings{
+        .depthBits = 24U,
+        .majorVersion = static_cast<unsigned int>(constants::OPENGL_MAJOR_VERSION),
+        .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
+    };
+
+    sf::Window window(
+        sf::VideoMode({constants::DEFAULT_WINDOW_WIDTH, constants::DEFAULT_WINDOW_HEIGHT}),
+        std::string(constants::WINDOW_TITLE),
+        sf::State::Windowed,
+        context_settings);
+
+    window.setVerticalSyncEnabled(false);
+    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
+    (void)window.setActive(true);
+    update_lockstep_window_title(window, session, player_slot);
+
+    render::GameRenderer renderer{};
+    renderer.resize(window.getSize());
+
+    GameInput game_input{};
+    game_input.set_lockstep_session(&session);
+    game_input.reset_frame_clock();
+    FpsTracker fps_tracker{};
+
+    const std::uint64_t tick_limit = options.lockstep_ticks;
+    bool exit_after_desync = false;
+
+    core::FixedTimestepLoop loop{};
+    loop.run_realtime(
+        [&]() {
+            session.poll();
+
+            if (session.is_desynced()) {
+                exit_after_desync = true;
+                return;
+            }
+
+            if (!session.is_connected()) {
+                return;
+            }
+
+            (void)session.try_advance_tick();
+
+            if (tick_limit > 0U && simulation.tick_count() >= tick_limit) {
+                window.close();
+            }
+        },
+        [&renderer, &simulation, &window, &game_input, &fps_tracker, &session, player_slot](
+            const float interpolation_alpha) {
+            fps_tracker.record_frame();
+            game_input.update_continuous(window, renderer, simulation);
+            update_lockstep_window_title(window, session, player_slot);
+            (void)window.setActive(true);
+            const app::PlayerSelection& selection = game_input.selection();
+            const app::HoverHighlight& hover = game_input.hover();
+            renderer.draw(
+                simulation,
+                selection.units,
+                interpolation_alpha,
+                game_input.selection_box(),
+                hover.unit,
+                hover.unit_is_enemy,
+                hover.building,
+                hover.resource_cell,
+                selection.resource_cell,
+                selection.building,
+                fps_tracker.fps());
+            window.display();
+        },
+        [&window, &renderer, &simulation, &game_input, &session, player_slot]() {
+            session.poll();
+            update_lockstep_window_title(window, session, player_slot);
+
+            while (const std::optional event = window.pollEvent()) {
+                if (event->is<sf::Event::Closed>()) {
+                    window.close();
+                }
+
+                game_input.handle_event(*event, window, renderer, simulation);
+
+                if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
+                    if (key_pressed->code == sf::Keyboard::Key::Escape) {
+                        window.close();
+                    }
+                }
+
+                if (const auto* resized = event->getIf<sf::Event::Resized>()) {
+                    renderer.resize(resized->size);
+                }
+            }
+
+            if (session.is_desynced()) {
+                return false;
+            }
+
+            return window.isOpen();
+        },
+        [&simulation]() { simulation.snapshot_world_positions_for_render(); });
+
+    net::EnetTransport::global_deinitialize();
+
+    if (exit_after_desync || session.is_desynced()) {
+        std::cerr << "lockstep: desync at tick " << session.desync_tick() << '\n';
+        return 1;
+    }
 
     return 0;
 }
