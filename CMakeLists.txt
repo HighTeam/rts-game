@@ -28,6 +28,9 @@ add_executable(aoa
     src/core/fixed_timestep_loop.cpp
     src/data/content_loader.cpp
     src/harness/regression_harness.cpp
+    src/net/enet_transport.cpp
+    src/net/net_message.cpp
+    src/net/net_smoke.cpp
     src/render/camera.cpp
     src/render/camera_settings.cpp
     src/render/game_renderer.cpp
@@ -57,7 +60,7 @@ target_link_libraries(aoa PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(aoa PRIVATE opengl32)
+    target_link_libraries(aoa PRIVATE opengl32 ws2_32 winmm)
 endif()
 
 add_custom_command(

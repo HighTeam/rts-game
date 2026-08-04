@@ -47,6 +47,7 @@ jobs:
             $exe = "./build/ci-x64-release/aoa.exe"
           }
           & $exe --headless --ticks 5
+          & $exe --net-smoke
 
       - name: Regression harness
         if: matrix.preset == 'ci-x64-debug'

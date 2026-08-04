@@ -1,6 +1,7 @@
 #include "app/application.hpp"
 
 #include "harness/regression_harness.hpp"
+#include "net/net_smoke.hpp"
 #include "sim/simulation.hpp"
 
 #include <exception>
@@ -14,6 +15,10 @@ int main(int argc, char** argv)
 
         if (options.run_harness) {
             return aoa::harness::run_all_scenarios(aoa::harness::default_scenarios_directory());
+        }
+
+        if (options.run_net_smoke) {
+            return aoa::net::run_net_smoke();
         }
 
         if (options.headless) {
