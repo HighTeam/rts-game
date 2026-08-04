@@ -13,7 +13,8 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Camera modes (Classic / Full 3D) | M1 #26 + M5 Settings | Decided — Classic first; Full 3D later default |
 | Asset pipeline (raw vs shipped) | M5 Packaging | Decided — see below |
 | Combat same-tick resolution | M1 | Done — sorted entity id; skip dead targets same tick |
-| Unit position model | M1 → M2 prep | Done — sub-tile `Fixed` + render interpolation |
+| Unit position model | M1 → M2 prep | Done — `GridPosition` + sub-tile `Fixed` segments |
+| Player militia auto-AI | Pre-M2 harness | Done — removed; only enemy militia auto-attacks |
 | World object taxonomy (Option A) | M1 prep | Decided — see [`docs/TAXONOMY.md`](TAXONOMY.md) |
 | Disconnect / pause policy | M2 prep | Done — AI takeover on disconnect; see below |
 | Host migration policy | M3 | Pending |
@@ -88,11 +89,11 @@ No mutual “double KO” on the same tick when one hit would kill first. Cooldo
 
 | Phase | Sim | Render |
 |-------|-----|--------|
-| **M1 (now)** | Integer **grid cell** per unit; one occupier per cell for movement | Entity drawn at cell; 3D prism overlay |
-| **Before M2** | **`Fixed` world x/y** on tile plane; move along path segments between waypoints | Interpolate with `interpolation_alpha` (see `docs/ECS.md`) |
-| **Map** | Tile grid stays (terrain, forests, blocking) | Isometric 3D tiles unchanged |
+| M1 early | Integer **grid cell** per unit; one occupier per cell | Entity drawn at cell |
+| **M2 prep (current)** | `GridPosition` plus **`Fixed` world x/y** on the tile plane; move along `MovePath` / `MoveSegment` between waypoints | Interpolate with `interpolation_alpha` (see [ECS.md](ECS.md)) |
+| Map | Tile grid stays (terrain, forests, blocking) | Isometric 3D tiles unchanged |
 
-AoE-style “free movement on a tile” means **sub-tile fixed-point coordinates**, not float Minecraft-style doubles — keeps determinism for lockstep.
+AoE-style free movement on a tile means sub-tile fixed-point coordinates, not float doubles — keeps determinism for lockstep.
 
 ---
 

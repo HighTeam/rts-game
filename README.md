@@ -39,7 +39,9 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 ## Docs
 
 - [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
-- [ECS.md](docs/ECS.md) — EnTT components, systems, data-driven hooks
+- [HARNESS.md](docs/HARNESS.md) — headless CLI, scenario JSON, command replay, hash updates
+- [ECS.md](docs/ECS.md) — EnTT components, tick pipeline, systems, data-driven hooks
+- [TAXONOMY.md](docs/TAXONOMY.md) — world object terms and live archetype JSON
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)
 - [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, **PR workflow (required)**
