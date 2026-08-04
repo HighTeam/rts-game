@@ -11,6 +11,7 @@ inline constexpr std::uint8_t CHANNEL_RELIABLE = 0U;
 inline constexpr int NET_SMOKE_CONNECT_ATTEMPTS = 5000;
 inline constexpr int NET_SMOKE_RECEIVE_ATTEMPTS = 5000;
 inline constexpr std::uint32_t NET_POLL_TIMEOUT_MS = 1U;
+inline constexpr int LOCKSTEP_COMMAND_DELAY_TICKS = 2;
 inline constexpr int LOCKSTEP_PLAYER_COUNT = 2;
 inline constexpr std::uint8_t LOCKSTEP_HOST_PLAYER_SLOT = 0U;
 inline constexpr std::uint8_t LOCKSTEP_CLIENT_PLAYER_SLOT = 1U;

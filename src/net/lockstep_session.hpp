@@ -40,6 +40,7 @@ private:
     void send_input_batch(std::uint64_t execute_tick, const std::vector<sim::player::PlayerCommand>& commands);
     void send_state_hash(std::uint64_t execute_tick, std::uint64_t state_hash);
     void ensure_local_batch_sent(std::uint64_t execute_tick);
+    void flush_local_commands_for_tick(std::uint64_t execute_tick);
     void process_received_packet(const std::vector<std::byte>& packet);
     void verify_state_hash(std::uint64_t execute_tick, std::uint64_t remote_hash);
 
@@ -51,6 +52,7 @@ private:
     std::unordered_set<std::uint64_t> local_sent_ticks_{};
     std::unordered_set<std::uint64_t> remote_ready_ticks_{};
     std::unordered_map<std::uint64_t, std::vector<sim::player::PlayerCommand>> local_outbox_{};
+    std::uint64_t local_command_sequence_{1U};
 
     bool desynced_{false};
     std::uint64_t desync_tick_{0U};
