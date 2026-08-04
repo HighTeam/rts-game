@@ -451,42 +451,6 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
     }
 }
 
-void run_militia_ai(entt::registry& registry)
-{
-    const auto view = registry.view<components::MilitiaUnitTag, components::PlayerOwnedTag, components::GridPosition>();
-
-    for (const entt::entity militia : view) {
-        if (registry.any_of<components::ManualControlTag>(militia)) {
-            continue;
-        }
-
-        entt::entity target = entt::null;
-        int best_distance = std::numeric_limits<int>::max();
-        const core::GridPos militia_pos = view.get<components::GridPosition>(militia).cell;
-
-        const auto enemy_view = registry.view<components::EnemyTag, components::GridPosition, components::Health>();
-        for (const entt::entity enemy : enemy_view) {
-            const auto& health = enemy_view.get<components::Health>(enemy);
-            if (health.current.raw() <= 0) {
-                continue;
-            }
-
-            const core::GridPos enemy_pos = enemy_view.get<components::GridPosition>(enemy).cell;
-            const int distance = core::chebyshev_distance(militia_pos, enemy_pos);
-            if (distance < best_distance) {
-                best_distance = distance;
-                target = enemy;
-            }
-        }
-
-        if (target == entt::null) {
-            continue;
-        }
-
-        registry.get_or_emplace<components::AttackOrder>(militia).target = target;
-    }
-}
-
 void run_attack_chase_system(entt::registry& registry, const components::MapGrid& map)
 {
     const auto view = registry.view<
@@ -757,7 +721,6 @@ void run_gameplay_systems(entt::registry& registry)
 
     run_worker_system(registry, map, content);
     run_worker_deposit_system(registry);
-    run_militia_ai(registry);
     run_enemy_militia_ai(registry);
     run_attack_chase_system(registry, map);
     run_movement_system(registry, map, content);

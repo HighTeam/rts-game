@@ -48,11 +48,12 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 ### Data-driven civ definitions [BLOCKING for M4]
 
 - [x] Civ/unit/building stats loaded from JSON, not hardcoded in C++ classes
-- [ ] This is the single highest-leverage task in the whole backlog: if this is clean now, "add 3 more civs" in M4 is content authoring, not engine work. If it's skipped now, M4 becomes a refactor under time pressure.
+- [x] Archetype JSON + loader (`data/archetypes/`, `content_loader.cpp`) — M4 content authoring ready
 
 ### Headless regression harness
 
 - [x] Scripted test scenarios (spawn X units, issue commands, run N ticks, assert final hash) — catches sim bugs before they become "why did multiplayer desync" bugs three weeks from now
+- [x] Command-replay scenario (`earth_player_commands`) — replays gather/deposit via tick-scoped `PlayerCommand` queue
 
 ### Classic render pipeline (DE-style) — GitHub #26
 
@@ -76,7 +77,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 ### [BLOCKING] Transport layer
 
 - [ ] ENet integration: connect, send/receive reliable messages
-- [ ] Message serialization format for inputs (compact — you're sending player commands, not state)
+- [ ] Message serialization format for inputs (compact — you're sending player commands, not state) — wire format in `src/sim/player/player_command.hpp`; ENet transport pending
 
 ### [BLOCKING] Lockstep sync
 
@@ -88,7 +89,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 ### Reconnect
 
 - [ ] On reconnect: new client receives current sim state snapshot + resumes receiving live inputs; if you keep the full input log, replaying it is mostly free
-- [ ] Grace period / pause-on-disconnect policy (decide: does the match pause for everyone, or continue with the disconnected player's units idle? AoE2 DE pauses briefly then continues — worth deciding early since it affects UI)
+- [x] Disconnect policy decided: no global pause; AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](DECISIONS.md)
 
 ### Networking test scenarios
 

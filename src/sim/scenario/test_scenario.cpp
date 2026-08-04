@@ -250,5 +250,79 @@ void load_test_scenario(entt::registry& registry, const data::ContentDatabase& c
 
 
 
+entt::entity find_scenario_entity(entt::registry& registry, const std::string_view role)
+
+{
+
+    if (role == "player_worker") {
+
+        const auto view = registry.view<components::WorkerUnitTag, components::PlayerOwnedTag>();
+
+        if (view.begin() == view.end()) {
+
+            return entt::null;
+
+        }
+
+        return *view.begin();
+
+    }
+
+
+
+    if (role == "player_militia") {
+
+        const auto view = registry.view<components::MilitiaUnitTag, components::PlayerOwnedTag>();
+
+        if (view.begin() == view.end()) {
+
+            return entt::null;
+
+        }
+
+        return *view.begin();
+
+    }
+
+
+
+    if (role == "enemy_militia") {
+
+        const auto view = registry.view<components::MilitiaUnitTag, components::EnemyTag>();
+
+        if (view.begin() == view.end()) {
+
+            return entt::null;
+
+        }
+
+        return *view.begin();
+
+    }
+
+
+
+    if (role == "town_center") {
+
+        const auto view = registry.view<components::TownCenterTag>();
+
+        if (view.begin() == view.end()) {
+
+            return entt::null;
+
+        }
+
+        return *view.begin();
+
+    }
+
+
+
+    return entt::null;
+
+}
+
+
+
 } // namespace aoa::sim::scenario
 

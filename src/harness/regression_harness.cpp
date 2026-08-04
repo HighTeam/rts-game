@@ -1,7 +1,9 @@
 #include "harness/regression_harness.hpp"
 
-#include "core/fixed_timestep_loop.hpp"
+#include "core/grid.hpp"
 #include "data/content_loader.hpp"
+#include "sim/player/player_command.hpp"
+#include "sim/scenario/test_scenario.hpp"
 #include "sim/simulation.hpp"
 
 #include <fstream>
@@ -27,10 +29,85 @@ std::uint64_t parse_hash_string(const std::string& hash_text)
     return std::stoull(normalized, nullptr, 16);
 }
 
+sim::player::PlayerCommandType parse_command_type(const std::string& type_text)
+{
+    if (type_text == "move") {
+        return sim::player::PlayerCommandType::Move;
+    }
+
+    if (type_text == "attack") {
+        return sim::player::PlayerCommandType::Attack;
+    }
+
+    if (type_text == "gather") {
+        return sim::player::PlayerCommandType::Gather;
+    }
+
+    if (type_text == "deposit") {
+        return sim::player::PlayerCommandType::Deposit;
+    }
+
+    throw std::invalid_argument("Unknown command type: " + type_text);
+}
+
 void print_hash_line(const ScenarioDefinition& scenario, const std::uint64_t actual_hash)
 {
     std::cout << scenario.scenario_id << ": ticks=" << scenario.ticks << " hash=0x" << std::hex
               << actual_hash << std::dec << '\n';
+}
+
+sim::player::PlayerCommand build_player_command(
+    entt::registry& registry,
+    const ScenarioCommandDefinition& command_definition)
+{
+    sim::player::PlayerCommand command{};
+    command.execute_tick = command_definition.execute_tick;
+    command.type = command_definition.type;
+
+    for (const std::string& unit_role : command_definition.unit_roles) {
+        const entt::entity unit = sim::scenario::find_scenario_entity(registry, unit_role);
+        if (unit == entt::null) {
+            throw std::runtime_error("Unknown scenario unit role: " + unit_role);
+        }
+
+        command.unit_ids.push_back(unit);
+    }
+
+    command.cell = command_definition.cell;
+
+    if (!command_definition.target_role.empty()) {
+        const entt::entity target =
+            sim::scenario::find_scenario_entity(registry, command_definition.target_role);
+        if (target == entt::null) {
+            throw std::runtime_error("Unknown scenario target role: " + command_definition.target_role);
+        }
+
+        command.target_entity = target;
+    }
+
+    return command;
+}
+
+void enqueue_due_commands(sim::Simulation& simulation, const ScenarioDefinition& scenario)
+{
+    const std::uint64_t execute_tick = simulation.next_command_execute_tick();
+    entt::registry& registry = simulation.registry();
+
+    for (const ScenarioCommandDefinition& command_definition : scenario.commands) {
+        if (command_definition.execute_tick != execute_tick) {
+            continue;
+        }
+
+        simulation.enqueue_player_command(build_player_command(registry, command_definition));
+    }
+}
+
+void run_ticks(sim::Simulation& simulation, const ScenarioDefinition& scenario)
+{
+    for (std::uint64_t tick_index = 0U; tick_index < scenario.ticks; ++tick_index) {
+        enqueue_due_commands(simulation, scenario);
+        simulation.tick();
+    }
 }
 
 } // namespace
@@ -48,19 +125,41 @@ ScenarioDefinition load_scenario_definition(const std::filesystem::path& scenari
     scenario.scenario_id = json.at("scenario_id").get<std::string>();
     scenario.ticks = json.at("ticks").get<std::uint64_t>();
     scenario.expected_state_hash = parse_hash_string(json.at("expected_state_hash").get<std::string>());
+
+    if (!json.contains("commands")) {
+        return scenario;
+    }
+
+    for (const nlohmann::json& command_json : json.at("commands")) {
+        ScenarioCommandDefinition command{};
+        command.execute_tick = command_json.at("execute_tick").get<std::uint64_t>();
+        command.type = parse_command_type(command_json.at("type").get<std::string>());
+        command.unit_roles = command_json.at("units").get<std::vector<std::string>>();
+
+        if (command_json.contains("cell")) {
+            command.cell.x = command_json.at("cell").at("x").get<int>();
+            command.cell.y = command_json.at("cell").at("y").get<int>();
+        }
+
+        if (command_json.contains("target")) {
+            command.target_role = command_json.at("target").get<std::string>();
+        }
+
+        scenario.commands.push_back(command);
+    }
+
     return scenario;
 }
 
 int run_scenario(const ScenarioDefinition& scenario)
 {
-    if (scenario.scenario_id != "earth_default") {
+    if (scenario.scenario_id != "earth_default" && scenario.scenario_id != "earth_player_commands") {
         std::cerr << "Unsupported scenario_id: " << scenario.scenario_id << '\n';
         return 1;
     }
 
     sim::Simulation simulation{};
-    core::FixedTimestepLoop loop{};
-    loop.run_headless([&simulation]() { simulation.tick(); }, scenario.ticks);
+    run_ticks(simulation, scenario);
 
     const std::uint64_t actual_hash = simulation.state_hash();
     print_hash_line(scenario, actual_hash);

@@ -1,0 +1,18 @@
+{
+  "scenario_id": "earth_player_commands",
+  "ticks": 150,
+  "expected_state_hash": "0x22aa666ab4523726",
+  "commands": [
+    {
+      "execute_tick": 5,
+      "type": "gather",
+      "units": ["player_worker"],
+      "cell": { "x": 20, "y": 12 }
+    },
+    {
+      "execute_tick": 100,
+      "type": "deposit",
+      "units": ["player_worker"]
+    }
+  ]
+}
