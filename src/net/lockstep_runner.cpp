@@ -142,7 +142,7 @@ int run_lockstep_smoke()
         host.poll();
         client.poll();
 
-        if (!issued_gather && host_simulation.tick_count() == 4U) {
+        if (!issued_gather && host_simulation.tick_count() == 3U) {
             issue_smoke_gather_command(host, host_simulation);
             issued_gather = true;
         }

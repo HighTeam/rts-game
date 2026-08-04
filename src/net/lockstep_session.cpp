@@ -36,13 +36,19 @@ void LockstepSession::submit_local_command(sim::player::PlayerCommand command)
     }
 
     command.player_slot = player_slot_;
-    if (command.execute_tick == 0U) {
-        command.execute_tick = simulation_.next_command_execute_tick();
+    command.sequence = local_command_sequence_++;
+
+    const std::uint64_t earliest_execute_tick =
+        simulation_.tick_count() + static_cast<std::uint64_t>(constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+    if (command.execute_tick < earliest_execute_tick) {
+        command.execute_tick = earliest_execute_tick;
     }
 
-    const std::uint64_t execute_tick = command.execute_tick;
-    simulation_.enqueue_player_command(std::move(command));
-    local_outbox_[execute_tick].push_back(simulation_.command_queue().input_log().back());
+    while (has_local_sent(command.execute_tick)) {
+        ++command.execute_tick;
+    }
+
+    local_outbox_[command.execute_tick].push_back(command);
 }
 
 void LockstepSession::poll()
@@ -71,6 +77,7 @@ bool LockstepSession::try_advance_tick()
         return false;
     }
 
+    flush_local_commands_for_tick(execute_tick);
     simulation_.tick();
 
     const std::uint64_t completed_tick = simulation_.tick_count();
@@ -158,14 +165,27 @@ void LockstepSession::ensure_local_batch_sent(const std::uint64_t execute_tick)
         return;
     }
 
-    std::vector<sim::player::PlayerCommand> commands{};
-    if (const auto iterator = local_outbox_.find(execute_tick); iterator != local_outbox_.end()) {
-        commands = std::move(iterator->second);
-        local_outbox_.erase(iterator);
-    }
+    const std::vector<sim::player::PlayerCommand> empty_batch{};
+    const auto iterator = local_outbox_.find(execute_tick);
+    const std::vector<sim::player::PlayerCommand>& commands =
+        iterator != local_outbox_.end() ? iterator->second : empty_batch;
 
     send_input_batch(execute_tick, commands);
     local_sent_ticks_.insert(execute_tick);
+}
+
+void LockstepSession::flush_local_commands_for_tick(const std::uint64_t execute_tick)
+{
+    const auto iterator = local_outbox_.find(execute_tick);
+    if (iterator == local_outbox_.end()) {
+        return;
+    }
+
+    for (sim::player::PlayerCommand& command : iterator->second) {
+        simulation_.enqueue_network_command(std::move(command));
+    }
+
+    local_outbox_.erase(iterator);
 }
 
 void LockstepSession::process_received_packet(const std::vector<std::byte>& packet)
