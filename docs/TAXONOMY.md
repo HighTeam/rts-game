@@ -31,30 +31,42 @@ Game-design names are separate from **ECS implementation** (`entt::entity`, comp
 | **resource node** | Resource | forest patch, gold pile | Yes | No (single tile) | Yes (when selectable) |
 | **prop** | — | rocks, decor | No | No | No |
 
-Trees in M1 are **resource node** tiles (forest on `MapGrid`), not separate registry rows yet. Selection stores a **grid cell** for the chosen resource node.
+Trees in M1 are **resource node** tiles (forest on `MapGrid`), not separate registry rows yet. Selection stores a **grid cell** for the chosen resource node. The `forest_patch` archetype supplies wood capacity / display metadata; the map still owns per-tile wood amounts.
 
-## Archetype JSON shape (future)
+## Archetype JSON (live)
+
+Shipped under `data/archetypes/` and loaded by `src/data/content_loader.cpp` into `data::ArchetypeDefinition`. Earth civ wires them via `data/civs/earth.json`.
+
+| File | Kind | Used for |
+|------|------|----------|
+| `worker.json` | unit | Gather / deposit |
+| `militia.json` | unit | Melee combat |
+| `town_center.json` | structure | Stockpile + spawn cost fields |
+| `forest_patch.json` | resource_node | Wood capacity metadata |
+
+Example (`militia.json`):
 
 ```json
 {
   "id": "militia",
   "kind": "unit",
   "display_name": "Militia",
-  "owner": "player",
   "max_hp": 60,
+  "move_ticks_per_tile": 8,
   "melee_attack": 8,
   "melee_armor": 0,
   "pierce_attack": 0,
-  "pierce_armor": 0
+  "pierce_armor": 0,
+  "attack_cooldown_ticks": 12
 }
 ```
 
-Civ files reference **archetype** ids; **instances** get owner (player 1…8, gaia, neutral) at spawn.
+Constraints verified in the loader:
 
-## Code migration (later)
+- `kind` must be `unit` \| `structure` \| `resource_node` \| `prop`
+- Civ manifest lists must resolve to archetypes of the matching kind
+- Owner is **not** in the JSON row; spawn code assigns `PlayerOwnedTag` / `EnemyTag` (and later player slots)
 
-Existing code still uses names like `UnitDefinition`, `GatherTarget`, and `entt::entity`. Rename in a dedicated pass when we expand JSON:
+## Naming debt
 
-- `data/content_types.hpp` → archetype structs
-- Comments / UI strings → world object / resource node / prop
-- Keep `entt::entity` in C++ only
+C++ still mixes taxonomy with older names (`DefinitionRef`, `GatherTarget`, `UnitDefinition`-style comments). Prefer archetype / world object / resource node in new docs and UI strings. Keep `entt::entity` in C++ only.
