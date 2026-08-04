@@ -55,13 +55,15 @@ Same binary, no window — for desync/regression runs:
 | `--headless` | Run the default Earth spawn for N ticks (optional hash print/assert) |
 | `--harness` | Run every `data/scenarios/*.json`, including command-replay scenarios |
 | `--net-smoke` | In-process ENet host/client loopback; sends a `PlayerCommand` reliably |
-| `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
-| `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
-| `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
+| `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather; verifies hash match |
+| `--lockstep-host` | Lockstep host (player slot 0); graphical unless `--headless` |
+| `--lockstep-join HOST:PORT` | Lockstep client (player slot 1); graphical unless `--headless` |
 
-Default tick count without `--ticks`: `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
+Default tick count without `--ticks`: `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100). Headless lockstep host/join defaults to `LOCKSTEP_DEFAULT_TICK_COUNT` (100) when `--ticks` is omitted.
 
 Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNESS.md).
+
+Lockstep architecture, wire messages, delay rules, and desync runbook: [LOCKSTEP.md](LOCKSTEP.md).
 
 ## Assets
 
@@ -82,7 +84,7 @@ GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) 
 
 Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5`, `--net-smoke`, and `--lockstep-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
 
-Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): commands are buffered, sent in `TickInputBatch`, then applied on both peers at the same execute tick. Do not enqueue locally before the batch is sent — that caused desync when moving units.
+Quick 2p localhost check (details and pitfalls in [LOCKSTEP.md](LOCKSTEP.md)):
 
 ```powershell
 # Terminal 1 — graphical (default)
@@ -90,8 +92,4 @@ Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): command
 
 # Terminal 2
 .\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000
-
-# Headless scripted run (100 ticks default)
-.\build\x64-debug\Debug\aoa.exe --lockstep-host --headless --ticks 100
-.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --ticks 100
 ```
