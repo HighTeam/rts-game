@@ -12,6 +12,8 @@ class CommandQueue {
 public:
     void enqueue(PlayerCommand command);
 
+    void enqueue_network(PlayerCommand command);
+
     void apply_pending(entt::registry& registry, std::uint64_t tick);
 
     [[nodiscard]] const std::vector<PlayerCommand>& input_log() const { return input_log_; }

@@ -77,14 +77,15 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 ### [BLOCKING] Transport layer
 
 - [x] ENet integration: connect, send/receive reliable messages
-- [x] Message serialization format for inputs (compact — player commands, not state) — wire format in `src/sim/player/player_command.hpp` + `src/net/net_message.hpp`; lockstep wiring pending
+- [x] Message serialization format for inputs (compact — player commands, not state) — wire format in `src/sim/player/player_command.hpp` + `src/net/net_message.hpp`; lockstep batches wired
 
 ### [BLOCKING] Lockstep sync
 
-- [ ] Turn/tick-based input collection: every client sends its inputs for tick N, sim doesn't advance to N until all inputs for N are received
-- [ ] Input delay buffer (send inputs for tick N+k, not tick N, to hide latency without stalling — standard lockstep technique)
-- [ ] Full input log kept from game start (every input, every tick) — this is what both save/load and reconnect will reuse
-- [ ] Live desync detection: exchange per-tick state hashes between clients, flag immediately if they diverge (using the hash function from M1 — confirm it actually works under real network conditions, not just in the headless harness)
+- [x] Turn/tick-based input collection: every client sends inputs for tick N; sim doesn't advance until all inputs for N are received
+- [x] Input delay buffer — uses `PLAYER_COMMAND_DELAY_TICKS` via `next_command_execute_tick()`
+- [x] Full input log from game start — `CommandQueue::input_log()` + network `TickInputBatch`
+- [x] Live desync detection: exchange per-tick state hashes between clients
+- [ ] Wire lockstep into graphical play (window mode still uses local-only tick)
 
 ### Reconnect
 
@@ -93,7 +94,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 ### Networking test scenarios
 
-- [ ] Two local instances (localhost) as the daily dev-loop test
+- [x] Two local instances (localhost) as the daily dev-loop test — `--lockstep-host` / `--lockstep-join`
 - [ ] One test with actual two-machine LAN play before calling M2 done — localhost hides real latency/packet-loss bugs
 
 ---

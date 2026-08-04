@@ -11,6 +11,7 @@ namespace aoa::net {
 enum class NetMessageKind : std::uint8_t {
     PlayerCommand = 1,
     TickStateHash = 2,
+    TickInputBatch = 3,
 };
 
 [[nodiscard]] std::vector<std::byte> encode_net_message(

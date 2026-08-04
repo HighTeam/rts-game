@@ -18,6 +18,8 @@ public:
 
     void enqueue_player_command(player::PlayerCommand command);
 
+    void enqueue_network_command(player::PlayerCommand command);
+
     [[nodiscard]] std::uint64_t tick_count() const { return tick_count_; }
 
     [[nodiscard]] std::uint64_t state_hash() const;

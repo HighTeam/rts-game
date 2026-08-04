@@ -12,9 +12,15 @@ struct LaunchOptions {
     bool headless{false};
     bool run_harness{false};
     bool run_net_smoke{false};
+    bool run_lockstep_smoke{false};
+    bool lockstep_host{false};
+    bool lockstep_join{false};
     bool print_state_hash{false};
     std::uint64_t headless_ticks{0U};
+    std::uint64_t lockstep_ticks{0U};
+    std::uint16_t lockstep_port{0U};
     std::optional<std::uint64_t> expect_state_hash{};
+    std::optional<std::string> lockstep_join_address{};
 };
 
 LaunchOptions parse_launch_options(int argc, char** argv);

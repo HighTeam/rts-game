@@ -38,6 +38,16 @@ void CommandQueue::enqueue(PlayerCommand command)
     pending_.push_back(std::move(command));
 }
 
+void CommandQueue::enqueue_network(PlayerCommand command)
+{
+    input_log_.push_back(command);
+    pending_.push_back(std::move(command));
+
+    if (command.sequence >= next_sequence_) {
+        next_sequence_ = command.sequence + 1U;
+    }
+}
+
 void CommandQueue::apply_pending(entt::registry& registry, const std::uint64_t tick)
 {
     std::vector<PlayerCommand> due{};
