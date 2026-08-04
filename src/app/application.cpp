@@ -5,6 +5,8 @@
 #include "core/constants.hpp"
 #include "core/fixed_timestep_loop.hpp"
 #include "harness/regression_harness.hpp"
+#include "net/lockstep_runner.hpp"
+#include "net/net_constants.hpp"
 #include "render/game_renderer.hpp"
 
 #include <SFML/Window/Event.hpp>
@@ -54,6 +56,32 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-smoke") {
+            options.run_lockstep_smoke = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-host") {
+            options.lockstep_host = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-join" && arg_index + 1 < argc) {
+            options.lockstep_join = true;
+            options.lockstep_join_address = argv[++arg_index];
+            continue;
+        }
+
+        if (arg == "--port" && arg_index + 1 < argc) {
+            const int port_value = std::stoi(argv[++arg_index]);
+            if (port_value <= 0 || port_value > 65535) {
+                throw std::invalid_argument("Invalid port: " + std::to_string(port_value));
+            }
+
+            options.lockstep_port = static_cast<std::uint16_t>(port_value);
+            continue;
+        }
+
         if (arg == "--print-hash") {
             options.print_state_hash = true;
             continue;
@@ -65,15 +93,19 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
         }
 
         if (arg == "--ticks" && arg_index + 1 < argc) {
-            options.headless_ticks = static_cast<std::uint64_t>(
-                std::stoull(argv[++arg_index]));
+            const std::uint64_t tick_count = static_cast<std::uint64_t>(std::stoull(argv[++arg_index]));
+            options.headless_ticks = tick_count;
+            options.lockstep_ticks = tick_count;
             continue;
         }
 
         if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: aoa [--headless] [--ticks N] [--expect-hash HEX] [--print-hash]\n"
                          "       aoa --harness\n"
-                         "       aoa --net-smoke\n";
+                         "       aoa --net-smoke\n"
+                         "       aoa --lockstep-smoke\n"
+                         "       aoa --lockstep-host [--port PORT] [--ticks N]\n"
+                         "       aoa --lockstep-join HOST:PORT [--ticks N]\n";
             std::exit(0);
         }
 
@@ -82,6 +114,10 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
 
     if (options.headless && options.headless_ticks == 0U) {
         options.headless_ticks = constants::HEADLESS_DEFAULT_TICK_COUNT;
+    }
+
+    if ((options.lockstep_host || options.lockstep_join) && options.lockstep_ticks == 0U) {
+        options.lockstep_ticks = aoa::net::constants::LOCKSTEP_DEFAULT_TICK_COUNT;
     }
 
     return options;

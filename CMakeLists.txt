@@ -29,6 +29,9 @@ add_executable(aoa
     src/data/content_loader.cpp
     src/harness/regression_harness.cpp
     src/net/enet_transport.cpp
+    src/net/lockstep_runner.cpp
+    src/net/lockstep_session.cpp
+    src/net/lockstep_wire.cpp
     src/net/net_message.cpp
     src/net/net_smoke.cpp
     src/render/camera.cpp

@@ -34,6 +34,11 @@ std::uint64_t Simulation::next_command_execute_tick() const
     return tick_count_ + static_cast<std::uint64_t>(constants::PLAYER_COMMAND_DELAY_TICKS);
 }
 
+void Simulation::enqueue_network_command(player::PlayerCommand command)
+{
+    command_queue_.enqueue_network(std::move(command));
+}
+
 void Simulation::tick()
 {
     ++tick_count_;

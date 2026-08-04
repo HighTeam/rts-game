@@ -9,7 +9,8 @@ namespace {
 [[nodiscard]] bool is_known_kind(const std::uint8_t kind_raw)
 {
     return kind_raw == static_cast<std::uint8_t>(NetMessageKind::PlayerCommand)
-        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::TickStateHash);
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::TickStateHash)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::TickInputBatch);
 }
 
 } // namespace

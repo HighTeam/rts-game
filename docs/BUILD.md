@@ -55,6 +55,9 @@ Same binary, no window — for desync/regression runs:
 | `--headless` | Run the default Earth spawn for N ticks (optional hash print/assert) |
 | `--harness` | Run every `data/scenarios/*.json`, including command-replay scenarios |
 | `--net-smoke` | In-process ENet host/client loopback; sends a `PlayerCommand` reliably |
+| `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
+| `--lockstep-host` | Headless lockstep host (player 0); waits for client, runs N ticks |
+| `--lockstep-join HOST:PORT` | Headless lockstep client (player 1) |
 
 Default tick count without `--ticks`: `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
 
@@ -77,4 +80,14 @@ After `cmake --preset x64-debug`, open `build/x64-debug/age-of-affinities.sln` (
 
 GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) because hosted runners do not expose the Visual Studio generator the same way as a local VS install. Local development keeps **Visual Studio 2022** presets (`x64-debug`, `x64-release`).
 
-Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5` and `--net-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
+Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5`, `--net-smoke`, and `--lockstep-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
+
+Two-instance dev loop:
+
+```powershell
+# Terminal 1
+.\build\x64-debug\Debug\aoa.exe --lockstep-host --port 27000 --ticks 100
+
+# Terminal 2
+.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000 --ticks 100
+```
