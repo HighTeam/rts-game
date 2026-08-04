@@ -37,6 +37,7 @@ add_executable(aoa
     src/sim/player/player_command.cpp
     src/sim/player/command_queue.cpp
     src/sim/scenario/test_scenario.cpp
+    src/sim/spawn/unit_spawn.cpp
     src/sim/simulation.cpp
     src/sim/systems/gameplay_systems.cpp
     src/sim/systems/pathfinding.cpp

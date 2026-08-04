@@ -41,7 +41,7 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 - [x] Resource node (wood) + gather/deposit loop for one worker unit
 - [x] Town Center equivalent: spawns workers, is a valid attack target
 - [x] One military unit: move, attack, die
-- [x] A* pathfinding on the grid (8-way, forest blocked, enemy AI)
+- [x] A* pathfinding on the grid (16-way, forest blocked, enemy AI)
 - [x] Per-tick state hash function (hash all sim-relevant component data every tick) — desync detector for M2
 - [x] Combat same-tick tie-break (sorted entity id; no mutual kill same tick)
 

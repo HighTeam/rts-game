@@ -15,6 +15,7 @@ enum class PlayerCommandType : std::uint8_t {
     Attack = 1,
     Gather = 2,
     Deposit = 3,
+    SpawnWorker = 4,
 };
 
 struct PlayerCommand {

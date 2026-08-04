@@ -16,7 +16,7 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 # Ad-hoc: default Earth scenario, no scripted commands
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x2783280bd432b0c8
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
 ```
 
 | Flag | Effect |
@@ -37,7 +37,7 @@ Files live in `data/scenarios/`. Minimal shape:
 {
   "scenario_id": "earth_default",
   "ticks": 200,
-  "expected_state_hash": "0x2783280bd432b0c8"
+  "expected_state_hash": "0xc59dd1cc68525745"
 }
 ```
 
@@ -47,7 +47,7 @@ Optional `commands` array (command replay):
 {
   "scenario_id": "earth_player_commands",
   "ticks": 150,
-  "expected_state_hash": "0x22aa666ab4523726",
+  "expected_state_hash": "0xb0c1f568cc7d28cd",
   "commands": [
     {
       "execute_tick": 5,
@@ -70,10 +70,10 @@ Optional `commands` array (command replay):
 | `ticks` | How many `Simulation::tick()` calls to run |
 | `expected_state_hash` | Hex string, `0x` optional |
 | `commands[].execute_tick` | Applied when `tick_count_` reaches this value (same timing as live play) |
-| `commands[].type` | `move` \| `attack` \| `gather` \| `deposit` |
+| `commands[].type` | `move` \| `attack` \| `gather` \| `deposit` \| `spawn_worker` |
 | `commands[].units` | Scenario **roles**, not archetype ids |
 | `commands[].cell` | Required for `move` / `gather` |
-| `commands[].target` | Role name for `attack` |
+| `commands[].target` | Role name for `attack`; town center entity for `spawn_worker` |
 
 ### Supported scenario ids
 

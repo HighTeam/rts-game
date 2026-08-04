@@ -324,6 +324,19 @@ void GameInput::handle_event(
     render::GameRenderer& renderer,
     sim::Simulation& simulation)
 {
+    if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
+        if (key_pressed->code == sf::Keyboard::Key::W && selection_.building != entt::null) {
+            auto& registry = simulation.registry();
+            if (registry.any_of<sim::components::TownCenterTag>(selection_.building)) {
+                sim::player::PlayerCommand command{};
+                command.execute_tick = simulation.next_command_execute_tick();
+                command.type = sim::player::PlayerCommandType::SpawnWorker;
+                command.target_entity = selection_.building;
+                simulation.enqueue_player_command(std::move(command));
+            }
+        }
+    }
+
     if (const auto* scroll = event.getIf<sf::Event::MouseWheelScrolled>()) {
         const sf::Vector2u window_size = window.getSize();
         renderer.zoom_camera(

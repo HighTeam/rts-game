@@ -67,6 +67,8 @@ void issue_gather_orders(
 
 void issue_deposit_orders(entt::registry& registry, const std::vector<entt::entity>& entities);
 
+bool issue_spawn_worker_order(entt::registry& registry, entt::entity town_center);
+
 void prune_dead_selection(std::vector<entt::entity>& selected, entt::registry& registry);
 
 [[nodiscard]] entt::entity pick_hovered_unit_at_screen(
