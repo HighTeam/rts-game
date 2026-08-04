@@ -85,7 +85,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 - [x] Input delay buffer — uses `PLAYER_COMMAND_DELAY_TICKS` via `next_command_execute_tick()`
 - [x] Full input log from game start — `CommandQueue::input_log()` + network `TickInputBatch`
 - [x] Live desync detection: exchange per-tick state hashes between clients
-- [ ] Wire lockstep into graphical play (window mode still uses local-only tick)
+- [x] Wire lockstep into graphical play — `--lockstep-host` / `--join` open window by default; inputs route through `LockstepSession`
 
 ### Reconnect
 

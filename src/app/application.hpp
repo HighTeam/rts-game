@@ -27,5 +27,6 @@ LaunchOptions parse_launch_options(int argc, char** argv);
 
 int run_headless(sim::Simulation& simulation, const LaunchOptions& options);
 int run_graphical(sim::Simulation& simulation);
+int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& options);
 
 } // namespace aoa::app

@@ -27,17 +27,25 @@ int main(int argc, char** argv)
         }
 
         if (options.lockstep_host) {
-            aoa::net::LockstepRunOptions lockstep_options{};
-            lockstep_options.tick_count = options.lockstep_ticks;
-            lockstep_options.port = options.lockstep_port;
-            return aoa::net::run_lockstep_host(lockstep_options);
+            if (options.headless) {
+                aoa::net::LockstepRunOptions lockstep_options{};
+                lockstep_options.tick_count = options.lockstep_ticks;
+                lockstep_options.port = options.lockstep_port;
+                return aoa::net::run_lockstep_host(lockstep_options);
+            }
+
+            return aoa::app::run_graphical_lockstep(simulation, options);
         }
 
         if (options.lockstep_join) {
-            aoa::net::LockstepRunOptions lockstep_options{};
-            lockstep_options.tick_count = options.lockstep_ticks;
-            lockstep_options.join_address = options.lockstep_join_address;
-            return aoa::net::run_lockstep_join(lockstep_options);
+            if (options.headless) {
+                aoa::net::LockstepRunOptions lockstep_options{};
+                lockstep_options.tick_count = options.lockstep_ticks;
+                lockstep_options.join_address = options.lockstep_join_address;
+                return aoa::net::run_lockstep_join(lockstep_options);
+            }
+
+            return aoa::app::run_graphical_lockstep(simulation, options);
         }
 
         if (options.headless) {
