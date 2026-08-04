@@ -81,4 +81,11 @@ inline constexpr std::string_view MILITIA_UNIT_ID = "militia";
 inline constexpr std::string_view TOWN_CENTER_BUILDING_ID = "town_center";
 inline constexpr std::string_view FOREST_PATCH_RESOURCE_ID = "forest_patch";
 
+inline constexpr int PATHFIND_COST_SCALE = 10;
+inline constexpr int PATHFIND_CARDINAL_STEP_COST = 10;
+inline constexpr int PATHFIND_DIAGONAL_STEP_COST = 14;
+inline constexpr int PATHFIND_KNIGHT_STEP_COST = 22;
+
+inline constexpr char SPAWN_WORKER_HOTKEY = 'W';
+
 } // namespace aoa::constants

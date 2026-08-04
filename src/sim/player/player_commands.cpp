@@ -1,18 +1,20 @@
 #include "sim/player/player_commands.hpp"
 
 #include "core/constants.hpp"
-#include "core/constants.hpp"
 #include "core/grid.hpp"
+#include "data/content_types.hpp"
 #include "render/game_renderer.hpp"
 #include "sim/components/combat.hpp"
+#include "sim/components/content_pack.hpp"
+#include "sim/components/definition_ref.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/resources.hpp"
-#include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/spawn/unit_spawn.hpp"
 #include "sim/systems/pathfinding.hpp"
 
 #include <algorithm>
@@ -288,6 +290,58 @@ void issue_gather_orders(
     for (const entt::entity entity : entities) {
         issue_gather_order(registry, entity, forest_cell);
     }
+}
+
+bool issue_spawn_worker_order(entt::registry& registry, const entt::entity town_center)
+{
+    if (!registry.valid(town_center)) {
+        return false;
+    }
+
+    if (!registry.all_of<
+            components::TownCenterTag,
+            components::PlayerOwnedTag,
+            components::Stockpile,
+            components::GridPosition,
+            components::DefinitionRef>(town_center)) {
+        return false;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null) {
+        return false;
+    }
+
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+    const auto& definition_ref = registry.get<components::DefinitionRef>(town_center);
+    const auto* town_center_archetype =
+        data::find_structure_archetype(content_pack.content, definition_ref.id);
+    if (town_center_archetype == nullptr || town_center_archetype->spawn_worker_wood_cost <= 0) {
+        return false;
+    }
+
+    auto& stockpile = registry.get<components::Stockpile>(town_center);
+    if (stockpile.wood < town_center_archetype->spawn_worker_wood_cost) {
+        return false;
+    }
+
+    const auto* worker_archetype = data::find_unit_archetype(
+        content_pack.content,
+        std::string(constants::WORKER_UNIT_ID));
+    if (worker_archetype == nullptr) {
+        return false;
+    }
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    const core::GridPos depot_pos = registry.get<components::GridPosition>(town_center).cell;
+    const core::GridPos spawn_cell = find_adjacent_walkable(map, registry, depot_pos, entt::null);
+    if (spawn_cell == depot_pos || is_occupied(registry, spawn_cell, entt::null)) {
+        return false;
+    }
+
+    stockpile.wood -= town_center_archetype->spawn_worker_wood_cost;
+    (void)spawn::spawn_player_worker(registry, *worker_archetype, spawn_cell);
+    return true;
 }
 
 void issue_deposit_orders(entt::registry& registry, const std::vector<entt::entity>& entities)

@@ -29,6 +29,7 @@
 #include "sim/components/world_position.hpp"
 
 #include "sim/map/test_map.hpp"
+#include "sim/spawn/unit_spawn.hpp"
 
 #include <stdexcept>
 
@@ -194,25 +195,7 @@ void load_test_scenario(entt::registry& registry, const data::ContentDatabase& c
 
 
 
-    const entt::entity worker = spawn_unit(
-
-        registry,
-
-        std::string(constants::WORKER_UNIT_ID),
-
-        *worker_archetype,
-
-        core::GridPos{9, 8},
-
-        true);
-
-    registry.emplace<components::WorkerUnitTag>(worker);
-
-    registry.emplace<components::WorkerBrain>(worker);
-
-    registry.emplace<components::CarriedWood>(worker);
-
-
+    (void)spawn::spawn_player_worker(registry, *worker_archetype, core::GridPos{9, 8});
 
     const entt::entity player_militia = spawn_unit(
 

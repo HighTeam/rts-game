@@ -47,6 +47,10 @@ sim::player::PlayerCommandType parse_command_type(const std::string& type_text)
         return sim::player::PlayerCommandType::Deposit;
     }
 
+    if (type_text == "spawn_worker") {
+        return sim::player::PlayerCommandType::SpawnWorker;
+    }
+
     throw std::invalid_argument("Unknown command type: " + type_text);
 }
 

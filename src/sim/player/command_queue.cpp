@@ -23,6 +23,9 @@ void apply_player_command(entt::registry& registry, const PlayerCommand& command
     case PlayerCommandType::Deposit:
         issue_deposit_orders(registry, command.unit_ids);
         break;
+    case PlayerCommandType::SpawnWorker:
+        issue_spawn_worker_order(registry, command.target_entity);
+        break;
     }
 }
 

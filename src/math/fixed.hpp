@@ -128,15 +128,16 @@ inline int compute_move_segment_ticks(
     const Fixed to_y,
     const int move_ticks_per_tile)
 {
-    const Fixed delta_x = fixed_abs(to_x - from_x);
-    const Fixed delta_y = fixed_abs(to_y - from_y);
+    const Fixed delta_x = to_x - from_x;
+    const Fixed delta_y = to_y - from_y;
 
-    Fixed distance = Fixed::from_int(1);
-    if (delta_x.raw() > 0 && delta_y.raw() > 0) {
-        distance = fixed_diagonal_step_length();
+    const Fixed distance_squared = delta_x * delta_x + delta_y * delta_y;
+    if (distance_squared.raw() <= 0) {
+        return 1;
     }
 
-    const Fixed total_ticks = distance * Fixed::from_int(move_ticks_per_tile);
+    const float distance = std::sqrt(distance_squared.to_float());
+    const Fixed total_ticks = Fixed::from_float(distance) * Fixed::from_int(move_ticks_per_tile);
     const int ticks = total_ticks.to_int();
     return ticks < 1 ? 1 : ticks;
 }

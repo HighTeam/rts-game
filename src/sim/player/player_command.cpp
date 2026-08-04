@@ -76,6 +76,7 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
         append_pod(out, static_cast<std::int16_t>(command.cell.y));
         break;
     case PlayerCommandType::Attack:
+    case PlayerCommandType::SpawnWorker:
         append_pod(out, entity_to_wire(command.target_entity));
         break;
     case PlayerCommandType::Deposit:
@@ -107,7 +108,7 @@ std::optional<PlayerCommand> decode_player_command(const std::span<const std::by
         return std::nullopt;
     }
 
-    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::Deposit)) {
+    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::SpawnWorker)) {
         return std::nullopt;
     }
 
@@ -144,7 +145,8 @@ std::optional<PlayerCommand> decode_player_command(const std::span<const std::by
         command.cell = core::GridPos{static_cast<int>(cell_x), static_cast<int>(cell_y)};
         break;
     }
-    case PlayerCommandType::Attack: {
+    case PlayerCommandType::Attack:
+    case PlayerCommandType::SpawnWorker: {
         std::uint32_t wire_id = 0U;
         if (!read_pod(cursor, wire_id)) {
             return std::nullopt;
