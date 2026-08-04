@@ -38,19 +38,25 @@ cmake --preset x64-release
 cmake --build --preset x64-release
 ```
 
-## Headless mode
+## Headless mode and harness
 
 Same binary, no window — for desync/regression runs:
 
 ```powershell
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x2783280bd432b0c8
 .\build\x64-debug\Debug\aoa.exe --harness
 ```
 
-Scenario definitions: `data/scenarios/*.json` (expected per-tick state hash after N sim ticks).
+| Mode | Use |
+|------|-----|
+| `--headless` | Run the default Earth spawn for N ticks (optional hash print/assert) |
+| `--harness` | Run every `data/scenarios/*.json`, including command-replay scenarios |
 
-Default tick count without `--ticks`: see `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp`.
+Default tick count without `--ticks`: `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
+
+Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNESS.md).
 
 ## Assets
 
@@ -69,4 +75,4 @@ After `cmake --preset x64-debug`, open `build/x64-debug/age-of-affinities.sln` (
 
 GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) because hosted runners do not expose the Visual Studio generator the same way as a local VS install. Local development keeps **Visual Studio 2022** presets (`x64-debug`, `x64-release`).
 
-Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests.
+Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
