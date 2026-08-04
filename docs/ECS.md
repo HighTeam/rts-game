@@ -59,10 +59,11 @@ Simulation::tick()
 Input / render path:
 
 1. Local pick in `game_input` produces a semantic `PlayerCommand` (cell or target entity).
-2. `enqueue_player_command` sets `execute_tick = tick_count + PLAYER_COMMAND_DELAY_TICKS` (default 1) when unset.
-3. Render reads the registry after sim ticks; use `interpolation_alpha` from `FixedTimestepLoop` and `snapshot_world_positions_for_render()` for visuals only.
+2. Singleplayer: `enqueue_player_command` sets `execute_tick = tick_count + PLAYER_COMMAND_DELAY_TICKS` (default 1) when unset.
+3. Lockstep: `GameInput` routes to `LockstepSession::submit_local_command` (delay 2). The session sends `TickInputBatch`, waits for the peer batch, then `enqueue_network_command` before `tick()`. See [LOCKSTEP.md](LOCKSTEP.md).
+4. Render reads the registry after sim ticks; use `interpolation_alpha` from `FixedTimestepLoop` and `snapshot_world_positions_for_render()` for visuals only.
 
-Details: [DECISIONS.md](DECISIONS.md) (player commands), [HARNESS.md](HARNESS.md) (hash asserts).
+Details: [DECISIONS.md](DECISIONS.md) (player commands), [HARNESS.md](HARNESS.md) (hash asserts), [LOCKSTEP.md](LOCKSTEP.md) (2p sync).
 
 ## Data-driven content
 

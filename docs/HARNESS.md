@@ -137,4 +137,5 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 
 - [BUILD.md](BUILD.md) — presets and daily build commands
 - [ECS.md](ECS.md) — tick pipeline and system order
+- [LOCKSTEP.md](LOCKSTEP.md) — 2p ENet lockstep, hash exchange, desync pitfalls
 - [DECISIONS.md](DECISIONS.md) — command delay, combat tie-break, disconnect policy

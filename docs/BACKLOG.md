@@ -82,10 +82,10 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 ### [BLOCKING] Lockstep sync
 
 - [x] Turn/tick-based input collection: every client sends inputs for tick N; sim doesn't advance until all inputs for N are received
-- [x] Input delay buffer — uses `PLAYER_COMMAND_DELAY_TICKS` via `next_command_execute_tick()`
+- [x] Input delay buffer — lockstep uses `LOCKSTEP_COMMAND_DELAY_TICKS = 2` (singleplayer stays at `PLAYER_COMMAND_DELAY_TICKS = 1`); see [LOCKSTEP.md](LOCKSTEP.md)
 - [x] Full input log from game start — `CommandQueue::input_log()` + network `TickInputBatch`
 - [x] Live desync detection: exchange per-tick state hashes between clients
-- [x] Wire lockstep into graphical play — `--lockstep-host` / `--join` open window by default; inputs route through `LockstepSession`
+- [x] Wire lockstep into graphical play — `--lockstep-host` / `--lockstep-join` open window by default; inputs route through `LockstepSession`
 
 ### Reconnect
 

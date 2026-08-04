@@ -40,6 +40,7 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 - [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
 - [HARNESS.md](docs/HARNESS.md) — headless CLI, scenario JSON, command replay, hash updates
+- [LOCKSTEP.md](docs/LOCKSTEP.md) — ENet transport, 2p lockstep, hash exchange, desync runbook
 - [ECS.md](docs/ECS.md) — EnTT components, tick pipeline, systems, data-driven hooks
 - [TAXONOMY.md](docs/TAXONOMY.md) — world object terms and live archetype JSON
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
@@ -50,4 +51,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M1 landed on `main` (PR #27 + follow-up). M2 prep: tick-scoped player commands, binary command format, extended state hash, disconnect policy documented. Next: **M2 lockstep** (#7).
+M1 closed. M2 lockstep core is on `main` (transport, session, graphical host/join, live hash exchange; input-batch race fixed in PR #33). Still open on M2: reconnect/snapshot catch-up and a real two-machine LAN test (#7).
