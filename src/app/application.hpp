@@ -11,6 +11,7 @@ namespace aoa::app {
 struct LaunchOptions {
     bool headless{false};
     bool run_harness{false};
+    bool run_net_smoke{false};
     bool print_state_hash{false};
     std::uint64_t headless_ticks{0U};
     std::optional<std::uint64_t> expect_state_hash{};

@@ -76,8 +76,8 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 ### [BLOCKING] Transport layer
 
-- [ ] ENet integration: connect, send/receive reliable messages
-- [ ] Message serialization format for inputs (compact — you're sending player commands, not state) — wire format in `src/sim/player/player_command.hpp`; ENet transport pending
+- [x] ENet integration: connect, send/receive reliable messages
+- [x] Message serialization format for inputs (compact — player commands, not state) — wire format in `src/sim/player/player_command.hpp` + `src/net/net_message.hpp`; lockstep wiring pending
 
 ### [BLOCKING] Lockstep sync
 

@@ -49,6 +49,11 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--net-smoke") {
+            options.run_net_smoke = true;
+            continue;
+        }
+
         if (arg == "--print-hash") {
             options.print_state_hash = true;
             continue;
@@ -67,7 +72,8 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
 
         if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: aoa [--headless] [--ticks N] [--expect-hash HEX] [--print-hash]\n"
-                         "       aoa --harness\n";
+                         "       aoa --harness\n"
+                         "       aoa --net-smoke\n";
             std::exit(0);
         }
 

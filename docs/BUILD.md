@@ -45,14 +45,16 @@ Same binary, no window — for desync/regression runs:
 ```powershell
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x2783280bd432b0c8
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
 .\build\x64-debug\Debug\aoa.exe --harness
+.\build\x64-debug\Debug\aoa.exe --net-smoke
 ```
 
 | Mode | Use |
 |------|-----|
 | `--headless` | Run the default Earth spawn for N ticks (optional hash print/assert) |
 | `--harness` | Run every `data/scenarios/*.json`, including command-replay scenarios |
+| `--net-smoke` | In-process ENet host/client loopback; sends a `PlayerCommand` reliably |
 
 Default tick count without `--ticks`: `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
 
@@ -75,4 +77,4 @@ After `cmake --preset x64-debug`, open `build/x64-debug/age-of-affinities.sln` (
 
 GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) because hosted runners do not expose the Visual Studio generator the same way as a local VS install. Local development keeps **Visual Studio 2022** presets (`x64-debug`, `x64-release`).
 
-Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
+Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5` and `--net-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
