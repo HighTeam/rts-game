@@ -29,7 +29,7 @@ Constants live in `src/net/net_constants.hpp`.
 Build first ([BUILD.md](BUILD.md)), then:
 
 ```powershell
-# Transport only — loopback host/client on 27000, one reliable PlayerCommand
+# Transport only: loopback host/client on 27000, one reliable PlayerCommand
 .\build\x64-debug\Debug\aoa.exe --net-smoke
 
 # Two LockstepSessions in-process on 27001; host gather at tick_count 3 (execute 5); hash match
@@ -149,7 +149,7 @@ Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS
 
 ## Related
 
-- [BUILD.md](BUILD.md) — presets and short CLI table
-- [HARNESS.md](HARNESS.md) — scenario hashes and command replay
-- [ECS.md](ECS.md) — tick pipeline after commands apply
-- [DECISIONS.md](DECISIONS.md) — command timing, disconnect policy
+- [BUILD.md](BUILD.md). Presets and short CLI table.
+- [HARNESS.md](HARNESS.md). Scenario hashes and command replay.
+- [ECS.md](ECS.md). Tick pipeline after commands apply.
+- [DECISIONS.md](DECISIONS.md). Command timing, disconnect policy.
