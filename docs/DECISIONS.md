@@ -16,7 +16,7 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Unit position model | M1 → M2 prep | Done — `GridPosition` + sub-tile `Fixed` segments |
 | Player militia auto-AI | Pre-M2 harness | Done — removed; only enemy militia auto-attacks |
 | World object taxonomy (Option A) | M1 prep | Decided — see [`docs/TAXONOMY.md`](TAXONOMY.md) |
-| Disconnect / pause policy | M2 prep | Done — AI takeover on disconnect; see below |
+| Disconnect / pause policy | M2 prep | Decided (not implemented) — see below |
 | Lockstep input delay (2 ticks) | M2 #7 / PR #33 | Done — see below |
 | Host migration policy | M3 | Pending |
 
@@ -125,10 +125,12 @@ Runbook: [LOCKSTEP.md](LOCKSTEP.md).
 
 ## Disconnect / pause policy
 
-When a human player disconnects during a multiplayer match:
+**Status:** decided for M2, not implemented on `main` yet. Today's lockstep path stops advancing when the peer disconnects (`is_connected()` false). No AI takeover, snapshot catch-up, or resume path ships in this tree. Tracked under M2 Reconnect in [BACKLOG.md](BACKLOG.md).
 
-1. **No global pause** — the match continues for other players.
-2. **AI takeover** — the disconnected player's faction is controlled by the same rule-based AI used for enemies (move, gather, attack nearest threats) until they return.
-3. **Reconnect** — on reconnect, AI control **stops immediately** for that player; they resume issuing commands from their client. Catch-up uses snapshot + input log replay (M2 reconnect epic).
+Intended behavior when that epic lands:
+
+1. No global pause. The match continues for other players.
+2. AI takeover. The disconnected player's faction uses the same rule-based AI as enemies (move, gather, attack nearest threats) until they return.
+3. Reconnect. AI control stops immediately for that player; they resume issuing commands from their client. Catch-up uses snapshot + input log replay.
 
 Host disconnect / host migration remains a separate **M3** decision.

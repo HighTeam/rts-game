@@ -55,7 +55,7 @@ Same binary, no window — for desync/regression runs:
 | `--headless` | Run the default Earth spawn for N ticks (optional hash print/assert) |
 | `--harness` | Run every `data/scenarios/*.json`, including command-replay scenarios |
 | `--net-smoke` | In-process ENet host/client loopback; sends a `PlayerCommand` reliably |
-| `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather; verifies hash match |
+| `--lockstep-smoke` | Two lockstep sessions on port `27001`; host gather at `tick_count` 3 (execute 5); hash match |
 | `--lockstep-host` | Lockstep host (player slot 0); graphical unless `--headless` |
 | `--lockstep-join HOST:PORT` | Lockstep client (player slot 1); graphical unless `--headless` |
 

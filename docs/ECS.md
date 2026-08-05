@@ -33,6 +33,8 @@ Gameplay order in `run_gameplay_systems()` (do not reorder casually — hashes a
 6. `run_combat_system` — same-tick damage sorted by entity id (see [DECISIONS.md](DECISIONS.md))
 7. `run_death_cleanup`
 
+Pathfinding is 16-way A* (`src/sim/systems/pathfinding.cpp`). Step costs live in `src/core/constants.hpp`: cardinal `10`, diagonal `14`, knight `22` (`PATHFIND_*_STEP_COST`).
+
 Constraints:
 
 - One concern per system file when it grows.

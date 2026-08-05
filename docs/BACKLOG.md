@@ -90,7 +90,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 ### Reconnect
 
 - [ ] On reconnect: new client receives current sim state snapshot + resumes receiving live inputs; if you keep the full input log, replaying it is mostly free
-- [x] Disconnect policy decided: no global pause; AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](DECISIONS.md)
+- [x] Disconnect policy decided (not implemented yet): no global pause; AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](DECISIONS.md)
 
 ### Networking test scenarios
 
