@@ -38,6 +38,20 @@ cmake --preset x64-release
 cmake --build --preset x64-release
 ```
 
+## Mode dispatch
+
+`src/main.cpp` picks one path from `parse_launch_options` (`src/app/application.cpp`). First match wins:
+
+1. `--harness`
+2. `--net-smoke`
+3. `--lockstep-smoke`
+4. `--lockstep-host` (headless runner or graphical lockstep)
+5. `--lockstep-join HOST:PORT` (same)
+6. `--headless`
+7. Graphical singleplayer (default)
+
+`--help` / `-h` prints usage and exits 0. `--ticks N` sets both `headless_ticks` and `lockstep_ticks`. There is no mutual-exclusion check beyond that if-chain.
+
 ## Headless mode and harness
 
 Same binary, no window — for desync/regression runs:

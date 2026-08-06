@@ -48,7 +48,7 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 ### Data-driven civ definitions [BLOCKING for M4]
 
 - [x] Civ/unit/building stats loaded from JSON, not hardcoded in C++ classes
-- [x] Archetype JSON + loader (`data/archetypes/`, `content_loader.cpp`) — M4 content authoring ready
+- [x] Archetype JSON + loader (`data/archetypes/`, `content_loader.cpp`) — stats data-driven; new units still need C++ scenario/spawn (and harness role) wiring — see [TAXONOMY.md](TAXONOMY.md)
 
 ### Headless regression harness
 

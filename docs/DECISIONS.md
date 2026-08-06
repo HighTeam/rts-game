@@ -41,14 +41,12 @@ Evolution path: top-down debug quads (M1 prototype) → isometric projection →
 
 ## Camera view setting
 
-Players choose **Camera view** in Settings (Video tab):
+| Mode | Behavior | Status on `main` |
+|------|----------|------------------|
+| **Classic** | Locked isometric angle; pan + zoom only | Implemented; `active_camera_view()` always returns Classic |
+| **Full 3D** | Orbital / advanced camera (TBD) | Stub enum only; unavailable |
 
-| Mode | Behavior | When |
-|------|----------|------|
-| **Classic** | Locked isometric angle; pan + zoom only | **Implement now** (#26); **default until Full 3D ships** |
-| **Full 3D** | Orbital / advanced camera (TBD) | **Later**; becomes **default** once ready |
-
-Classic mode is the only implemented mode for now. Full 3D is reserved in settings UI and render architecture but not built yet.
+Settings UI (Video tab dropdown) is still an M5 item. Until that ships, Classic is the only live path: arrows + edge scroll pan, wheel zooms about window center, auto-frame until the user pans or zooms (`ClassicCamera::frame_map`).
 
 ---
 

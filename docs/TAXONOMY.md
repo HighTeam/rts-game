@@ -35,7 +35,7 @@ Trees in M1 are **resource node** tiles (forest on `MapGrid`), not separate regi
 
 ## Archetype JSON (live)
 
-Shipped under `data/archetypes/` and loaded by `src/data/content_loader.cpp` into `data::ArchetypeDefinition`. Earth civ wires them via `data/civs/earth.json`.
+Shipped under `data/archetypes/` and loaded by `src/data/content_loader.cpp` into `data::ArchetypeDefinition`. Earth civ wires them via `data/civs/earth.json` (the loader opens that path only; no civ discovery loop yet).
 
 | File | Kind | Used for |
 |------|------|----------|
@@ -43,6 +43,21 @@ Shipped under `data/archetypes/` and loaded by `src/data/content_loader.cpp` int
 | `militia.json` | unit | Melee combat |
 | `town_center.json` | structure | Stockpile + spawn cost fields |
 | `forest_patch.json` | resource_node | Wood capacity metadata |
+
+`ArchetypeDefinition` fields the loader accepts (`content_types.hpp`):
+
+| Field | Notes |
+|-------|-------|
+| `id`, `kind`, `display_name` | Required identity |
+| `max_hp` | Applied at spawn |
+| `move_ticks_per_tile` | Movement pacing |
+| `gather_per_tick`, `carry_capacity` | Workers |
+| `melee_attack` | Damage used by `run_combat_system` today |
+| `melee_armor`, `pierce_attack`, `pierce_armor` | Parsed; **not applied** in combat yet |
+| `attack_cooldown_ticks` | Melee cadence |
+| `spawn_worker_wood_cost` | Structures (TC = 50) |
+| `wood_capacity` | Resource nodes; stamped onto forest tiles in `create_test_map` |
+| `attack_damage` | Alias accepted for `melee_attack` |
 
 Example (`militia.json`):
 
@@ -64,8 +79,21 @@ Example (`militia.json`):
 Constraints verified in the loader:
 
 - `kind` must be `unit` \| `structure` \| `resource_node` \| `prop`
-- Civ manifest lists must resolve to archetypes of the matching kind
+- Civ manifest lists must resolve to archetypes of the matching kind (`validate_civ_archetypes`)
 - Owner is **not** in the JSON row; spawn code assigns `PlayerOwnedTag` / `EnemyTag` (and later player slots)
+
+### JSON is not the whole spawn story
+
+`load_test_scenario` (`src/sim/scenario/test_scenario.cpp`) hard-codes the Earth layout:
+
+| World object | Cell |
+|--------------|------|
+| Town Center | `(8, 8)` |
+| Player worker | `(9, 8)` |
+| Player militia | `(10, 8)` |
+| Enemy militia | `(45, 45)` |
+
+Player militia also gets a pre-issued `AttackOrder` on the enemy. Adding a new unit type still needs C++ spawn / role wiring (and harness roles if you want command replay). Archetype JSON alone is not enough.
 
 ## Naming debt
 
