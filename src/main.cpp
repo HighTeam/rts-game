@@ -34,6 +34,10 @@ int main(int argc, char** argv)
             return aoa::net::run_lockstep_reconnect_smoke();
         }
 
+        if (options.run_lockstep_4_smoke) {
+            return aoa::net::run_lockstep_4_smoke();
+        }
+
         if (options.run_snapshot_smoke) {
             return aoa::net::run_snapshot_smoke();
         }

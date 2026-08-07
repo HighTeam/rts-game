@@ -109,8 +109,8 @@ int run_net_smoke()
         host.poll(constants::NET_POLL_TIMEOUT_MS);
         client.poll(constants::NET_POLL_TIMEOUT_MS);
 
-        for (const std::vector<std::byte>& packet : host.drain_received()) {
-            const auto decoded_message = decode_net_message(packet);
+        for (const ReceivedPacket& received : host.drain_received()) {
+            const auto decoded_message = decode_net_message(received.data);
             if (!decoded_message.has_value()) {
                 continue;
             }

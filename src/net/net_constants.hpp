@@ -6,8 +6,11 @@
 namespace aoa::net::constants {
 
 inline constexpr std::uint16_t DEFAULT_PORT = 27000U;
-inline constexpr std::size_t MAX_PEERS = 2U;
+inline constexpr std::size_t MAX_PEERS = 8U;
 inline constexpr int LOCKSTEP_MAX_PLAYER_SLOTS = 8;
+inline constexpr std::uint8_t LOCKSTEP_DEFAULT_MAX_CLIENTS = 1U;
+inline constexpr std::uint8_t LOCKSTEP_4_PLAYER_COUNT = 4U;
+inline constexpr std::uint8_t LOCKSTEP_4_MAX_CLIENTS = 3U;
 inline constexpr std::size_t CHANNEL_COUNT = 2U;
 inline constexpr std::uint8_t CHANNEL_RELIABLE = 0U;
 inline constexpr std::uint8_t CHANNEL_UNRELIABLE = 1U;
@@ -53,5 +56,7 @@ inline constexpr int LOCKSTEP_RECONNECT_SMOKE_CYCLES = 3;
 inline constexpr std::uint64_t LOCKSTEP_RECONNECT_SMOKE_WARMUP_TICKS = 25U;
 inline constexpr std::uint64_t LOCKSTEP_RECONNECT_SMOKE_AI_TICKS = 15U;
 inline constexpr std::uint64_t LOCKSTEP_RECONNECT_SMOKE_LIVE_TICKS = 20U;
+inline constexpr std::uint16_t LOCKSTEP_4_SMOKE_PORT = 27202U;
+inline constexpr std::uint64_t LOCKSTEP_4_SMOKE_TICKS = 40U;
 
 } // namespace aoa::net::constants

@@ -77,6 +77,11 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-4-smoke") {
+            options.run_lockstep_4_smoke = true;
+            continue;
+        }
+
         if (arg == "--snapshot-smoke") {
             options.run_snapshot_smoke = true;
             continue;
@@ -147,6 +152,7 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
                          "       aoa --lockstep-smoke\n"
                          "       aoa --lockstep-disconnect-smoke\n"
                          "       aoa --lockstep-reconnect-smoke\n"
+                         "       aoa --lockstep-4-smoke\n"
                          "       aoa --snapshot-smoke\n"
                          "       aoa --lockstep-host [--port PORT] [--headless] [--ticks N] [--lockstep-debug]\n"
                          "       aoa --lockstep-join HOST:PORT [--headless] [--ticks N] [--lockstep-debug]\n";
