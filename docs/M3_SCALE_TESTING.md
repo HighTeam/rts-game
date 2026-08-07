@@ -91,7 +91,7 @@ Logs (with `--lockstep-debug`): `D:\aoa-lan\logs\lockstep_p1_host.log`, `lockste
 
 ---
 
-## 4. Four-player on two PCs (layout — when `--player-slot` ships)
+## 4. Four-player on two PCs
 
 Goal: **sync** without four monitors. One graphical host; other slots headless.
 
@@ -109,28 +109,28 @@ Goal: **sync** without four monitors. One graphical host; other slots headless.
 .\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --lockstep-players 4 --lockstep-debug
 
 # Terminal 2 — local headless P2 (connect after host is listening)
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 4 --headless --player-slot 2 --lockstep-debug
 ```
 
 **PC B** — `HOST_IP` = PC A’s IPv4:
 
 ```powershell
 # Terminal 1 — graphical P3
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 4 --player-slot 3 --lockstep-debug
 
 # Terminal 2 — headless P4
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 4 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 4 --headless --player-slot 4 --lockstep-debug
 ```
 
-**Connect order:** start host → join P2 → wait for “joined” → join P3 → join P4 (one client at a time).
+**Connect order:** start host → join P2 → wait for `lockstep-join: joined` → join P3 → join P4 (one client at a time, slots 2→3→4).
 
 **Pass:** all four advance ticks; no desync banner; gather/move on P1 and P3; 20+ minutes stable.
 
-*Flags `--lockstep-players` / `--player-slot` are planned; use §2a until merged.*
+Every join process must pass the same `--lockstep-players 4` as the host.
 
 ---
 
-## 5. Eight-player on two PCs (layout — when CLI + 8-smoke ship)
+## 5. Eight-player on two PCs
 
 | PC | Processes | Slots |
 |----|-----------|-------|
@@ -145,18 +145,18 @@ Optional: run **one** graphical client on PC B (e.g. P5) instead of headless for
 ```powershell
 .\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --lockstep-players 8 --lockstep-debug
 
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 2 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 3 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 4 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 8 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 8 --headless --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 8 --headless --player-slot 4 --lockstep-debug
 ```
 
 **PC B** — `HOST_IP` = PC A’s IPv4:
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 5 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 6 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 7 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 8 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 5 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 6 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 7 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 8 --lockstep-debug
 ```
 
 **Automated 8-player sync (planned):**
@@ -191,8 +191,8 @@ Run brutal **localhost + headless** first; then one **2-PC split soak** (§5) wi
 | Prove 4-way sync | `--lockstep-4-smoke` | 1 |
 | Prove 8-way sync | `--lockstep-8-smoke` (planned) | 1 |
 | Feel + LAN ping | §3 two-player graphical | 2 |
-| 4-player LAN sync | §4 (needs `--player-slot`) | 2 |
-| 8-player LAN sync | §5 (needs `--player-slot`) | 2 |
+| 4-player LAN sync | §4 | 2 |
+| 8-player LAN sync | §5 | 2 |
 | 60+ min stress | localhost headless soak script (planned) | 1 |
 
 ---
@@ -204,7 +204,7 @@ Run brutal **localhost + headless** first; then one **2-PC split soak** (§5) wi
 | Client cannot connect | Firewall on host, correct LAN IP, host listening first |
 | Only one “lockstep-join: joined” in 4-smoke | Re-run; ports 27202 must be free |
 | Desync | `logs/lockstep_*.log` at desync tick; compare hashes |
-| 4-smoke ok but LAN bad | Expected until multi-join CLI; LAN uses real ENet paths |
+| 4-smoke ok but LAN bad | Connect in slot order (P2→P3→P4); same `--lockstep-players` on every process |
 | Hash mismatch after sim change | Re-run smokes; update harness JSON if intentional |
 
 See also [BUILD.md](BUILD.md) for all CLI flags and [LAN_SOAK.md](LAN_SOAK.md) for M2 two-player soak.

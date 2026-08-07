@@ -1,5 +1,6 @@
 #pragma once
 
+#include "net/net_constants.hpp"
 #include "sim/simulation.hpp"
 
 #include <cstdint>
@@ -27,11 +28,16 @@ struct LaunchOptions {
     std::uint64_t lockstep_ticks{0U};
     std::uint16_t lockstep_port{0U};
     bool lockstep_debug{false};
+    std::uint8_t lockstep_player_count{
+        static_cast<std::uint8_t>(aoa::net::constants::LOCKSTEP_PLAYER_COUNT)};
+    std::optional<std::uint8_t> lockstep_player_number{};
     std::optional<std::uint64_t> expect_state_hash{};
     std::optional<std::string> lockstep_join_address{};
 };
 
 LaunchOptions parse_launch_options(int argc, char** argv);
+
+[[nodiscard]] std::uint8_t resolve_lockstep_join_player_slot(const LaunchOptions& options);
 
 int run_headless(sim::Simulation& simulation, const LaunchOptions& options);
 int run_graphical(sim::Simulation& simulation);

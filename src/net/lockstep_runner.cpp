@@ -923,7 +923,8 @@ int run_lockstep_host(const LockstepRunOptions& options)
     LockstepSession session{
         LockstepRole::Host,
         constants::LOCKSTEP_HOST_PLAYER_SLOT,
-        simulation};
+        simulation,
+        options.session_player_count};
 
     const std::uint16_t port =
         options.port == 0U ? constants::DEFAULT_PORT : options.port;
@@ -934,17 +935,22 @@ int run_lockstep_host(const LockstepRunOptions& options)
         return 1;
     }
 
-    std::cout << "lockstep-host: listening on port " << port << '\n';
+    std::cout << "lockstep-host: listening on port " << port << " for "
+              << static_cast<int>(options.session_player_count) << " players\n";
+
+    const std::uint8_t expected_clients =
+        static_cast<std::uint8_t>(options.session_player_count - 1U);
 
     for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
         session.poll();
-        if (session.is_connected() && session.is_session_ready()) {
+        if (session.connected_peer_count() >= expected_clients && session.is_session_ready()) {
             break;
         }
     }
 
-    if (!session.is_connected() || !session.is_session_ready()) {
-        std::cerr << "lockstep-host: timed out waiting for client\n";
+    if (session.connected_peer_count() < expected_clients || !session.is_session_ready()) {
+        std::cerr << "lockstep-host: timed out waiting for " << static_cast<int>(expected_clients)
+                  << " client(s)\n";
         EnetTransport::global_deinitialize();
         return 1;
     }
@@ -998,14 +1004,19 @@ int run_lockstep_join(const LockstepRunOptions& options)
     sim::Simulation simulation{};
     LockstepSession session{
         LockstepRole::Client,
-        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
-        simulation};
+        options.player_slot,
+        simulation,
+        options.session_player_count};
 
     if (!session.connect(parsed_address->first.c_str(), parsed_address->second)) {
         std::cerr << "lockstep-join: failed to connect to " << *options.join_address << '\n';
         EnetTransport::global_deinitialize();
         return 1;
     }
+
+    std::cout << "lockstep-join: connecting as player "
+              << static_cast<int>(options.player_slot + 1U) << " to " << *options.join_address
+              << '\n';
 
     for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
         session.poll();

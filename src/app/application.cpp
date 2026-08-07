@@ -38,7 +38,42 @@ std::uint64_t parse_hash_argument(const std::string& hash_text)
     return std::stoull(normalized, nullptr, 16);
 }
 
+void validate_lockstep_player_count(const std::uint8_t player_count)
+{
+    if (player_count < 2U
+        || player_count > static_cast<std::uint8_t>(net::constants::LOCKSTEP_MAX_PLAYER_SLOTS)) {
+        throw std::invalid_argument(
+            "Invalid --lockstep-players: " + std::to_string(player_count)
+            + " (expected 2-" + std::to_string(net::constants::LOCKSTEP_MAX_PLAYER_SLOTS) + ")");
+    }
+}
+
+[[nodiscard]] std::uint8_t resolve_lockstep_host_player_count(const LaunchOptions& options)
+{
+    validate_lockstep_player_count(options.lockstep_player_count);
+    return options.lockstep_player_count;
+}
+
+[[nodiscard]] std::uint8_t resolve_lockstep_join_player_slot_impl(const LaunchOptions& options)
+{
+    validate_lockstep_player_count(options.lockstep_player_count);
+
+    const std::uint8_t player_number = options.lockstep_player_number.value_or(2U);
+    if (player_number < 2U || player_number > options.lockstep_player_count) {
+        throw std::invalid_argument(
+            "Invalid --player-slot: " + std::to_string(player_number)
+            + " (expected 2-" + std::to_string(options.lockstep_player_count) + ")");
+    }
+
+    return static_cast<std::uint8_t>(player_number - 1U);
+}
+
 } // namespace
+
+std::uint8_t resolve_lockstep_join_player_slot(const LaunchOptions& options)
+{
+    return resolve_lockstep_join_player_slot_impl(options);
+}
 
 LaunchOptions parse_launch_options(const int argc, char** argv)
 {
@@ -145,6 +180,28 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-players" && arg_index + 1 < argc) {
+            const int player_count = std::stoi(argv[++arg_index]);
+            if (player_count < 2 || player_count > net::constants::LOCKSTEP_MAX_PLAYER_SLOTS) {
+                throw std::invalid_argument(
+                    "Invalid --lockstep-players: " + std::to_string(player_count));
+            }
+
+            options.lockstep_player_count = static_cast<std::uint8_t>(player_count);
+            continue;
+        }
+
+        if (arg == "--player-slot" && arg_index + 1 < argc) {
+            const int player_slot = std::stoi(argv[++arg_index]);
+            if (player_slot < 2 || player_slot > net::constants::LOCKSTEP_MAX_PLAYER_SLOTS) {
+                throw std::invalid_argument(
+                    "Invalid --player-slot: " + std::to_string(player_slot));
+            }
+
+            options.lockstep_player_number = static_cast<std::uint8_t>(player_slot);
+            continue;
+        }
+
         if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: aoa [--headless] [--ticks N] [--expect-hash HEX] [--print-hash]\n"
                          "       aoa --harness\n"
@@ -154,8 +211,10 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
                          "       aoa --lockstep-reconnect-smoke\n"
                          "       aoa --lockstep-4-smoke\n"
                          "       aoa --snapshot-smoke\n"
-                         "       aoa --lockstep-host [--port PORT] [--headless] [--ticks N] [--lockstep-debug]\n"
-                         "       aoa --lockstep-join HOST:PORT [--headless] [--ticks N] [--lockstep-debug]\n";
+                         "       aoa --lockstep-host [--port PORT] [--lockstep-players N]\n"
+                         "                           [--headless] [--ticks N] [--lockstep-debug]\n"
+                         "       aoa --lockstep-join HOST:PORT [--player-slot N]\n"
+                         "                            [--headless] [--ticks N] [--lockstep-debug]\n";
             std::exit(0);
         }
 
@@ -391,11 +450,13 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
 
     const net::LockstepRole role =
         options.lockstep_host ? net::LockstepRole::Host : net::LockstepRole::Client;
+    const std::uint8_t session_player_count = resolve_lockstep_host_player_count(options);
     const std::uint8_t player_slot = options.lockstep_host
         ? net::constants::LOCKSTEP_HOST_PLAYER_SLOT
-        : net::constants::LOCKSTEP_CLIENT_PLAYER_SLOT;
+        : resolve_lockstep_join_player_slot(options);
+    const std::uint8_t player_number = static_cast<std::uint8_t>(player_slot + 1U);
 
-    net::LockstepSession session{role, player_slot, simulation};
+    net::LockstepSession session{role, player_slot, simulation, session_player_count};
 
     if (options.lockstep_debug) {
         net::LockstepDebugLog::enable(player_slot, role);
@@ -410,7 +471,8 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
             return 1;
         }
 
-        std::cout << "lockstep-host: listening on port " << port << " (graphical)\n";
+        std::cout << "lockstep-host: listening on port " << port << " for "
+                  << static_cast<int>(session_player_count) << " players (graphical)\n";
     }
     else {
         if (!options.lockstep_join_address.has_value()) {
@@ -435,7 +497,7 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
         }
 
         std::cout << "lockstep-join: connecting to " << *options.lockstep_join_address
-                  << " (graphical)\n";
+                  << " as player " << static_cast<int>(player_number) << " (graphical)\n";
     }
 
     sf::ContextSettings context_settings{

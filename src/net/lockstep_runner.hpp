@@ -1,5 +1,7 @@
 #pragma once
 
+#include "net/net_constants.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -9,6 +11,9 @@ namespace aoa::net {
 struct LockstepRunOptions {
     std::uint64_t tick_count{0U};
     std::uint16_t port{0U};
+    std::uint8_t session_player_count{
+        static_cast<std::uint8_t>(constants::LOCKSTEP_PLAYER_COUNT)};
+    std::uint8_t player_slot{constants::LOCKSTEP_CLIENT_PLAYER_SLOT};
     std::optional<std::string> join_address{};
 };
 
