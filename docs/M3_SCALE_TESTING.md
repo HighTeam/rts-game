@@ -17,41 +17,35 @@ M2 proved **2-player** lockstep on LAN. M3 adds **multi-peer transport** (`MAX_P
 
 ## CI / daily dev (no LAN)
 
-After M3 multi-peer ships, add headless smokes (same pattern as `--lockstep-reconnect-smoke`):
+| Smoke | Status | Purpose |
+|-------|--------|---------|
+| `--lockstep-4-smoke` | **Shipped** (PR #38, in CI) | 4 peers in-process; empty batches; hash match after 40 ticks |
+| `--lockstep-8-smoke` | Not implemented | 8 peers; staggered join, one disconnect + AI + reconnect |
+| `--lockstep-8-disconnect-smoke` | Not implemented | Two non-host slots drop; AI for both; sim never freezes |
 
-| Smoke | Purpose |
-|-------|---------|
-| `--lockstep-4-smoke` | 4 peers in-process or 4 localhost processes; hash match + basic commands |
-| `--lockstep-8-smoke` | 8 peers; staggered join, one disconnect + AI + reconnect |
-| `--lockstep-8-disconnect-smoke` | Two non-host slots drop; AI for both; sim never freezes |
+`--lockstep-4-smoke` uses the in-process mesh path (host + 3 `LockstepSession` clients). Multi-process localhost with `--player-slot` is still the planned soak shape, not a live CLI flag.
 
-Implementation options (pick one for M3):
-
-1. **In-process mesh** — one test binary runs host + N−1 virtual `LockstepSession` clients (fastest CI, like today’s 2-player smoke).
-2. **Multi-process localhost** — test runner spawns `aoa --lockstep-join 127.0.0.1:PORT --headless --slot N` (closer to real ENet, slower CI).
-
-Both must pass before calling N-player sync “proven.”
+Graphical `--lockstep-host` / `--lockstep-join` remain **2-player** (`LOCKSTEP_PLAYER_COUNT`). N-way gating exists inside `LockstepSession`; daily play does not open 7 client slots yet. Disconnect AI still keys off the 2-player opponent helper.
 
 ---
 
 ## Single PC, 8 players (dev soak)
 
-One Windows box, Release build:
+Planned shape once host max-clients and slot CLI land:
 
 ```
 [Host P1]  --lockstep-host --port 27000
 [P2–P8]  --lockstep-join 127.0.0.1:27000 --headless --player-slot N
 ```
 
-Requires M3:
+Still required before this works end-to-end:
 
-- Host accepts **7** ENet peers (not 1).
-- `--player-slot` (or join handshake assigns slot 1–7).
-- Optional `--lockstep-bot` — headless client that only ACKs batches (no window); used to fill empty slots in soak scripts.
+- Graphical/headless host accepts **7** ENet peers (today: 1 client).
+- `--player-slot` CLI (not implemented; unknown args throw).
+- Optional `--lockstep-bot` — headless client that only ACKs batches.
+- Helper script: `scripts/run-scale-soak-localhost.ps1` (not in tree yet).
 
-Helper script (M3): `scripts/run-scale-soak-localhost.ps1 -Players 8 -Minutes 60`
-
-Graphical client optional (only P1 or P1+P2 with windows); P3–P8 headless is enough for **sync** testing.
+Until then, use `--lockstep-4-smoke` for N-way sync and [LAN_SOAK.md](LAN_SOAK.md) for 2-player feel.
 
 ---
 
@@ -67,7 +61,7 @@ Split headless clients across two LAN machines. **One host** on PC A; all joiner
 | **PC A** | 3× headless join | Players 2–4 |
 | **PC B** | 4× headless join | Players 5–8 |
 
-Commands (after M3):
+Commands (planned; `--player-slot` and multi-client host are not live yet):
 
 ```powershell
 # PC A — host
@@ -83,7 +77,7 @@ Commands (after M3):
 # … slots 6–8
 ```
 
-Firewall: allow **27000** on PC A from PC B. Each headless process is a real ENet client — same code path as human players.
+Firewall: allow **27000** on PC A from PC B. Each headless process is a real ENet client — same code path as human players. Today, stick to 2-player [LAN_SOAK.md](LAN_SOAK.md) plus `--lockstep-4-smoke`.
 
 ### 4-player layout (lighter)
 
@@ -105,12 +99,13 @@ Two-PC LAN confirms: routing, firewall, non-zero RTT, reconnect across machines.
 
 ## M3 implementation order (testing-aware)
 
-1. Multi-peer ENet host + slot assignment in join handshake  
-2. N-way input batch gating (all slots ready before tick)  
-3. `--lockstep-4-smoke` / `--lockstep-8-smoke` in CI  
-4. Headless multi-join CLI (`--player-slot`, soak scripts)  
-5. 2-PC scripted soak (`scripts/run-scale-soak-lan.ps1`)  
-6. Brutal checklist in [m2-tests.md](../scripts/issue-bodies/m2-tests.md) § 8-player — run once 8-smoke green + one 2-PC split soak  
+1. ~~Multi-peer ENet host capacity + N-way input batch gating~~ (session supports up to 8; 4-smoke uses it)
+2. ~~`--lockstep-4-smoke` in CI~~
+3. Wire graphical/headless host to `session_player_count > 2` and assign join slots
+4. `--lockstep-8-smoke` (+ disconnect variant) in CI
+5. Headless multi-join CLI (`--player-slot`, soak scripts)
+6. 2-PC scripted soak (`scripts/run-scale-soak-lan.ps1`)
+7. Brutal checklist in [m2-tests.md](../scripts/issue-bodies/m2-tests.md) § 8-player — run once 8-smoke green + one 2-PC split soak
 
 ---
 

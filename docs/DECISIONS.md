@@ -16,7 +16,7 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Unit position model | M1 → M2 prep | Done — `GridPosition` + sub-tile `Fixed` segments |
 | Player militia auto-AI | Pre-M2 harness | Done — removed; only enemy militia auto-attacks |
 | World object taxonomy (Option A) | M1 prep | Decided — see [`docs/TAXONOMY.md`](TAXONOMY.md) |
-| Disconnect / pause policy | M2 prep | Done — AI takeover on disconnect; see below |
+| Disconnect / pause policy | M2 | Done — AI takeover + snapshot reconnect; see below and [LOCKSTEP.md](LOCKSTEP.md) |
 | Host migration policy | M3 | Pending |
 
 Do **not** duplicate implementation work on #21. When a decision lands, update this table (optional), check the box on #21, and reference the PR that introduced it.
@@ -102,10 +102,11 @@ AoE-style free movement on a tile means sub-tile fixed-point coordinates, not fl
 | Topic | Choice |
 |-------|--------|
 | Application timing | Commands are **queued** with an `execute_tick` and applied at the **start** of that sim tick — never from the render/input loop directly |
-| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (command issued during tick *N* runs at tick *N+1*); network input delay buffer stacks on this in M2 |
+| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (command issued during tick *N* runs at tick *N+1*) |
+| Lockstep delay | `LOCKSTEP_COMMAND_DELAY_TICKS = 2` — separate constant, not stacked on the singleplayer delay. See [LOCKSTEP.md](LOCKSTEP.md) |
 | Wire format | Compact binary: sequence, execute tick, player slot, type, unit id list, payload (grid cell or attack target entity id) — see `src/sim/player/player_command.hpp` |
 | Pick → command | Screen pick runs locally; the **semantic result** (cell, entity id) is stored in the command payload for lockstep |
-| Input log | `CommandQueue::input_log()` retains every command from game start (M2 reconnect / save-load reuse) |
+| Input log | `CommandQueue::input_log()` retains every command from game start (reconnect / save-load reuse) |
 
 ---
 
