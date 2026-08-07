@@ -21,6 +21,15 @@ struct TickStateHashMessage {
     std::uint64_t state_hash{0U};
 };
 
+struct LatencyProbeMessage {
+    std::uint64_t send_time_ns{0U};
+    std::uint32_t sequence{0U};
+};
+
+[[nodiscard]] std::vector<std::byte> encode_latency_probe(const LatencyProbeMessage& message);
+
+[[nodiscard]] std::optional<LatencyProbeMessage> decode_latency_probe(std::span<const std::byte> bytes);
+
 [[nodiscard]] std::vector<std::byte> encode_tick_input_batch(const TickInputBatch& batch);
 
 [[nodiscard]] std::optional<TickInputBatch> decode_tick_input_batch(std::span<const std::byte> bytes);

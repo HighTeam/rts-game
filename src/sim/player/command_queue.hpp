@@ -18,6 +18,10 @@ public:
 
     [[nodiscard]] const std::vector<PlayerCommand>& input_log() const { return input_log_; }
 
+    void restore_input_log(std::vector<PlayerCommand> log, std::uint64_t next_sequence);
+
+    void clear_pending();
+
 private:
     std::uint64_t next_sequence_{1U};
     std::vector<PlayerCommand> pending_{};

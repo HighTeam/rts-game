@@ -1,5 +1,7 @@
 #include "sim/player/player_command.hpp"
 
+#include "math/fixed.hpp"
+
 #include <cstring>
 #include <limits>
 
@@ -55,7 +57,7 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
 
     std::vector<std::byte> out{};
     out.reserve(
-        PLAYER_COMMAND_HEADER_BYTES + command.unit_ids.size() * PLAYER_COMMAND_UNIT_ID_BYTES + 8U);
+        PLAYER_COMMAND_HEADER_BYTES + command.unit_ids.size() * PLAYER_COMMAND_UNIT_ID_BYTES + 12U);
 
     append_pod(out, command.sequence);
     append_pod(out, command.execute_tick);
@@ -71,6 +73,11 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
 
     switch (command.type) {
     case PlayerCommandType::Move:
+        append_pod(out, static_cast<std::int16_t>(command.cell.x));
+        append_pod(out, static_cast<std::int16_t>(command.cell.y));
+        append_pod(out, command.goal_world_x.raw());
+        append_pod(out, command.goal_world_y.raw());
+        break;
     case PlayerCommandType::Gather:
         append_pod(out, static_cast<std::int16_t>(command.cell.x));
         append_pod(out, static_cast<std::int16_t>(command.cell.y));
@@ -86,9 +93,8 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
     return out;
 }
 
-std::optional<PlayerCommand> decode_player_command(const std::span<const std::byte> bytes)
+std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byte>& cursor)
 {
-    std::span<const std::byte> cursor = bytes;
     PlayerCommand command{};
 
     if (!read_pod(cursor, command.sequence)) {
@@ -134,7 +140,22 @@ std::optional<PlayerCommand> decode_player_command(const std::span<const std::by
     }
 
     switch (command.type) {
-    case PlayerCommandType::Move:
+    case PlayerCommandType::Move: {
+        std::int16_t cell_x = 0;
+        std::int16_t cell_y = 0;
+        std::int32_t goal_world_x_raw = 0;
+        std::int32_t goal_world_y_raw = 0;
+        if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y) || !read_pod(cursor, goal_world_x_raw)
+            || !read_pod(cursor, goal_world_y_raw)) {
+            return std::nullopt;
+        }
+
+        command.cell = core::GridPos{static_cast<int>(cell_x), static_cast<int>(cell_y)};
+        command.has_goal_world = true;
+        command.goal_world_x = math::Fixed::from_raw(goal_world_x_raw);
+        command.goal_world_y = math::Fixed::from_raw(goal_world_y_raw);
+        break;
+    }
     case PlayerCommandType::Gather: {
         std::int16_t cell_x = 0;
         std::int16_t cell_y = 0;
@@ -159,7 +180,120 @@ std::optional<PlayerCommand> decode_player_command(const std::span<const std::by
         break;
     }
 
+    return command;
+}
+
+namespace {
+
+void append_entity_snapshot_key(std::vector<std::byte>& out, const snapshot::EntitySnapshotKey& key)
+{
+    append_pod(out, key.player_slot);
+    append_pod(out, static_cast<std::uint8_t>(key.category));
+    append_pod(out, key.ordinal);
+}
+
+[[nodiscard]] bool read_entity_snapshot_key(
+    std::span<const std::byte>& cursor,
+    snapshot::EntitySnapshotKey& key)
+{
+    std::uint8_t category_raw = 0U;
+    if (!read_pod(cursor, key.player_slot) || !read_pod(cursor, category_raw)
+        || !read_pod(cursor, key.ordinal)) {
+        return false;
+    }
+
+    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::TownCenter)) {
+        return false;
+    }
+
+    key.category = static_cast<snapshot::EntitySnapshotCategory>(category_raw);
+    return true;
+}
+
+} // namespace
+
+std::vector<std::byte> encode_player_command_with_keys(const PlayerCommand& command)
+{
+    std::vector<std::byte> out = encode_player_command(command);
+    if (out.empty()) {
+        return out;
+    }
+
+    if (command.unit_keys.size() != command.unit_ids.size()) {
+        return {};
+    }
+
+    const auto unit_key_count = static_cast<std::uint16_t>(command.unit_keys.size());
+    append_pod(out, unit_key_count);
+    for (const snapshot::EntitySnapshotKey& key : command.unit_keys) {
+        append_entity_snapshot_key(out, key);
+    }
+
+    const std::uint8_t has_target_key = command.target_entity_key.has_value() ? 1U : 0U;
+    append_pod(out, has_target_key);
+    if (has_target_key != 0U) {
+        append_entity_snapshot_key(out, *command.target_entity_key);
+    }
+
+    return out;
+}
+
+std::optional<PlayerCommand> decode_player_command_with_keys(const std::span<const std::byte> bytes)
+{
+    std::span<const std::byte> cursor = bytes;
+    const auto decoded_body = decode_player_command_body(cursor);
+    if (!decoded_body.has_value()) {
+        return std::nullopt;
+    }
+
+    PlayerCommand command = *decoded_body;
+
+    std::uint16_t unit_key_count = 0U;
+    if (!read_pod(cursor, unit_key_count)) {
+        return std::nullopt;
+    }
+
+    if (unit_key_count != command.unit_ids.size()) {
+        return std::nullopt;
+    }
+
+    command.unit_keys.clear();
+    command.unit_keys.reserve(unit_key_count);
+    for (std::uint16_t index = 0U; index < unit_key_count; ++index) {
+        snapshot::EntitySnapshotKey key{};
+        if (!read_entity_snapshot_key(cursor, key)) {
+            return std::nullopt;
+        }
+
+        command.unit_keys.push_back(key);
+    }
+
+    std::uint8_t has_target_key = 0U;
+    if (!read_pod(cursor, has_target_key)) {
+        return std::nullopt;
+    }
+
+    if (has_target_key != 0U) {
+        snapshot::EntitySnapshotKey key{};
+        if (!read_entity_snapshot_key(cursor, key)) {
+            return std::nullopt;
+        }
+
+        command.target_entity_key = key;
+    }
+
     if (!cursor.empty()) {
+        return std::nullopt;
+    }
+
+    return command;
+}
+
+std::optional<PlayerCommand> decode_player_command(const std::span<const std::byte> bytes)
+{
+    std::span<const std::byte> cursor = bytes;
+    const auto command = decode_player_command_body(cursor);
+    if (!command.has_value() || !cursor.empty()) {
         return std::nullopt;
     }
 

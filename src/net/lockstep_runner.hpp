@@ -14,6 +14,18 @@ struct LockstepRunOptions {
 
 [[nodiscard]] int run_lockstep_smoke();
 
+[[nodiscard]] int run_lockstep_disconnect_smoke();
+
+[[nodiscard]] int run_lockstep_reconnect_smoke();
+
+[[nodiscard]] int run_snapshot_smoke();
+
+[[nodiscard]] int run_snapshot_double_spawn_smoke();
+
+int run_snapshot_heavy_smoke();
+
+[[nodiscard]] int run_snapshot_reconnect_smoke();
+
 [[nodiscard]] int run_lockstep_host(const LockstepRunOptions& options);
 
 [[nodiscard]] int run_lockstep_join(const LockstepRunOptions& options);

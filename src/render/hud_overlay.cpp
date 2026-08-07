@@ -1,9 +1,11 @@
 #include "render/hud_overlay.hpp"
 
 #include "core/constants.hpp"
+#include "net/lockstep_network_hud.hpp"
 #include "sim/components/combat.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/resources.hpp"
+#include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
 
 #include <entt/entt.hpp>
@@ -11,7 +13,9 @@
 #include <glad/glad.h>
 
 #include <array>
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
@@ -143,11 +147,53 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_p_upper = {
         0U, 0x1EU, 0x11U, 0x1EU, 0x10U, 0x10U, 0x10U,
     };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_i_upper = {
+        0U, 0x04U, 0U, 0x04U, 0x04U, 0x04U, 0x0EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_n_upper = {
+        0U, 0x11U, 0x19U, 0x15U, 0x13U, 0x11U, 0x11U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_g_upper = {
+        0U, 0x0EU, 0x11U, 0x17U, 0x11U, 0x11U, 0x0EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_m_lower = {
+        0U, 0U, 0x1AU, 0x15U, 0x15U, 0x11U, 0x11U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_s_lower = {
+        0U, 0U, 0x0EU, 0x10U, 0x0EU, 0x01U, 0x1EU,
+    };
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_e_upper = {
         0U, 0x1EU, 0x10U, 0x1CU, 0x10U, 0x10U, 0x1EU,
     };
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_slash = {
         0U, 0x01U, 0x02U, 0x04U, 0x08U, 0x10U, 0x00U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_l_upper = {
+        0U, 0x10U, 0x10U, 0x10U, 0x10U, 0x10U, 0x1EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_o_upper = {
+        0U, 0x0EU, 0x11U, 0x11U, 0x11U, 0x11U, 0x0EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_a_upper = {
+        0U, 0x0EU, 0x11U, 0x1FU, 0x11U, 0x11U, 0x11U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_t_upper = {
+        0U, 0x1FU, 0x04U, 0x04U, 0x04U, 0x04U, 0x04U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_r_upper = {
+        0U, 0x1EU, 0x11U, 0x1EU, 0x14U, 0x12U, 0x11U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_y_upper = {
+        0U, 0x11U, 0x11U, 0x0AU, 0x04U, 0x04U, 0x04U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_u_upper = {
+        0U, 0x11U, 0x11U, 0x11U, 0x11U, 0x11U, 0x0EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_z_upper = {
+        0U, 0x1EU, 0x02U, 0x04U, 0x08U, 0x10U, 0x1EU,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_period = {
+        0U, 0U, 0U, 0U, 0U, 0x04U, 0U,
     };
 
     switch (character) {
@@ -197,8 +243,36 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
         return glyph_s_upper;
     case 'P':
         return glyph_p_upper;
+    case 'I':
+        return glyph_i_upper;
+    case 'N':
+        return glyph_n_upper;
+    case 'G':
+        return glyph_g_upper;
+    case 'm':
+        return glyph_m_lower;
+    case 's':
+        return glyph_s_lower;
     case 'E':
         return glyph_e_upper;
+    case 'L':
+        return glyph_l_upper;
+    case 'O':
+        return glyph_o_upper;
+    case 'A':
+        return glyph_a_upper;
+    case 'T':
+        return glyph_t_upper;
+    case 'R':
+        return glyph_r_upper;
+    case 'Y':
+        return glyph_y_upper;
+    case 'U':
+        return glyph_u_upper;
+    case 'Z':
+        return glyph_z_upper;
+    case '.':
+        return glyph_period;
     case '/':
         return glyph_slash;
     default:
@@ -266,21 +340,35 @@ void draw_screen_quad(
     glDeleteVertexArrays(1, &vao);
 }
 
+std::string format_zoom_line(const float camera_zoom)
+{
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "Zoom: %.2f", static_cast<double>(camera_zoom));
+    return buffer;
+}
+
 } // namespace
 
 unsigned int HudOverlay::hud_shader_program() const
 {
-    static unsigned int program = 0U;
-    if (program != 0U) {
-        return program;
+    if (hud_shader_program_ != 0U) {
+        return hud_shader_program_;
     }
 
     const unsigned int vertex_shader = compile_shader(GL_VERTEX_SHADER, HUD_VERTEX_SHADER);
     const unsigned int fragment_shader = compile_shader(GL_FRAGMENT_SHADER, HUD_FRAGMENT_SHADER);
-    program = link_program(vertex_shader, fragment_shader);
+    hud_shader_program_ = link_program(vertex_shader, fragment_shader);
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
-    return program;
+    return hud_shader_program_;
+}
+
+void HudOverlay::invalidate_gl_cache()
+{
+    if (hud_shader_program_ != 0U) {
+        glDeleteProgram(hud_shader_program_);
+        hud_shader_program_ = 0U;
+    }
 }
 
 void HudOverlay::draw_string(
@@ -292,9 +380,23 @@ void HudOverlay::draw_string(
     const float g,
     const float b) const
 {
+    draw_string_scaled(window_size, x, y, text, constants::HUD_PIXEL_SCALE, r, g, b);
+}
+
+void HudOverlay::draw_string_scaled(
+    const sf::Vector2u window_size,
+    const float x,
+    const float y,
+    const std::string& text,
+    const int pixel_scale,
+    const float r,
+    const float g,
+    const float b) const
+{
     const unsigned int shader_program = hud_shader_program();
-    const float pixel_scale = static_cast<float>(constants::HUD_PIXEL_SCALE);
-    const float char_step = static_cast<float>(GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * pixel_scale;
+    const float scale = static_cast<float>(pixel_scale);
+    const float char_step =
+        static_cast<float>(GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * scale;
 
     float cursor_x = x;
     for (const char character : text) {
@@ -306,15 +408,15 @@ void HudOverlay::draw_string(
                     continue;
                 }
 
-                const float pixel_x = cursor_x + static_cast<float>(column) * pixel_scale;
-                const float pixel_y = y + static_cast<float>(row) * pixel_scale;
+                const float pixel_x = cursor_x + static_cast<float>(column) * scale;
+                const float pixel_y = y + static_cast<float>(row) * scale;
                 draw_screen_quad(
                     window_size,
                     shader_program,
                     pixel_x,
                     pixel_y,
-                    pixel_scale,
-                    pixel_scale,
+                    scale,
+                    scale,
                     r,
                     g,
                     b);
@@ -325,24 +427,92 @@ void HudOverlay::draw_string(
     }
 }
 
+void HudOverlay::draw_waiting_overlay(
+    const sf::Vector2u window_size,
+    const std::string& title,
+    const std::string& subtitle) const
+{
+    if (window_size.x == 0U || window_size.y == 0U) {
+        return;
+    }
+
+    const float title_scale = static_cast<float>(constants::LOCKSTEP_WAITING_TITLE_PIXEL_SCALE);
+    const float subtitle_scale = static_cast<float>(constants::HUD_PIXEL_SCALE);
+    const float title_char_step =
+        static_cast<float>(GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * title_scale;
+    const float subtitle_char_step =
+        static_cast<float>(GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * subtitle_scale;
+    const float title_width =
+        static_cast<float>(title.size()) * title_char_step
+        - static_cast<float>(constants::HUD_CHAR_SPACING) * title_scale;
+    const float subtitle_width =
+        static_cast<float>(subtitle.size()) * subtitle_char_step
+        - static_cast<float>(constants::HUD_CHAR_SPACING) * subtitle_scale;
+    const float title_height = static_cast<float>(GLYPH_HEIGHT) * title_scale;
+    const float subtitle_height = static_cast<float>(GLYPH_HEIGHT) * subtitle_scale;
+    const float line_gap = 20.0F;
+    const float block_height = title_height + line_gap + subtitle_height;
+    const float block_top = (static_cast<float>(window_size.y) - block_height) * 0.5F;
+
+    const float title_x = (static_cast<float>(window_size.x) - title_width) * 0.5F;
+    const float subtitle_x = (static_cast<float>(window_size.x) - subtitle_width) * 0.5F;
+
+    draw_string_scaled(
+        window_size,
+        title_x,
+        block_top,
+        title,
+        constants::LOCKSTEP_WAITING_TITLE_PIXEL_SCALE,
+        1.0F,
+        1.0F,
+        1.0F);
+    draw_string_scaled(
+        window_size,
+        subtitle_x,
+        block_top + title_height + line_gap,
+        subtitle,
+        constants::HUD_PIXEL_SCALE,
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G,
+        constants::HUD_TEXT_B);
+}
+
 void HudOverlay::draw(
     const sim::Simulation& simulation,
     const sf::Vector2u window_size,
-    const float fps) const
+    const float fps,
+    const std::uint8_t local_player_slot,
+    const float camera_zoom,
+    const net::LockstepNetworkHudStats& network_stats) const
 {
     const auto& registry = simulation.registry();
 
     int town_wood = 0;
-    const auto town_center_view =
-        registry.view<sim::components::TownCenterTag, sim::components::Stockpile>();
-    if (const auto iterator = town_center_view.begin(); iterator != town_center_view.end()) {
-        town_wood = town_center_view.get<sim::components::Stockpile>(*iterator).wood;
+    const auto town_center_view = registry.view<
+        sim::components::TownCenterTag,
+        sim::components::PlayerOwnedTag,
+        sim::components::Stockpile>();
+    for (const entt::entity entity : town_center_view) {
+        if (sim::components::entity_player_slot(registry, entity) != local_player_slot) {
+            continue;
+        }
+
+        town_wood = town_center_view.get<sim::components::Stockpile>(entity).wood;
+        break;
     }
 
     int carried_wood = 0;
-    const auto worker_view = registry.view<sim::components::WorkerUnitTag, sim::components::CarriedWood>();
-    if (const auto iterator = worker_view.begin(); iterator != worker_view.end()) {
-        carried_wood = worker_view.get<sim::components::CarriedWood>(*iterator).amount;
+    const auto worker_view = registry.view<
+        sim::components::WorkerUnitTag,
+        sim::components::PlayerOwnedTag,
+        sim::components::CarriedWood>();
+    for (const entt::entity entity : worker_view) {
+        if (sim::components::entity_player_slot(registry, entity) != local_player_slot) {
+            continue;
+        }
+
+        carried_wood = worker_view.get<sim::components::CarriedWood>(entity).amount;
+        break;
     }
 
     const std::string stockpile_line = "Wood: " + std::to_string(town_wood);
@@ -369,50 +539,44 @@ void HudOverlay::draw(
         constants::HUD_TEXT_G * 0.9F,
         constants::HUD_TEXT_B * 0.7F);
 
-    int player_militia_hp = 0;
-    int player_militia_max_hp = 0;
-    const auto player_militia_view = registry.view<
-        sim::components::MilitiaUnitTag,
-        sim::components::PlayerOwnedTag,
-        sim::components::Health>();
-    for (const entt::entity entity : player_militia_view) {
-        const auto& health = player_militia_view.get<sim::components::Health>(entity);
-        if (health.current.raw() <= 0) {
-            continue;
+    auto read_militia_hp = [&](const std::uint8_t player_slot, int& hp, int& max_hp) {
+        const auto militia_view = registry.view<
+            sim::components::MilitiaUnitTag,
+            sim::components::PlayerOwnedTag,
+            sim::components::Health>();
+        for (const entt::entity entity : militia_view) {
+            if (sim::components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            const auto& health = militia_view.get<sim::components::Health>(entity);
+            if (health.current.raw() <= 0) {
+                continue;
+            }
+
+            hp = health.current.to_int();
+            max_hp = health.max.to_int();
+            return;
         }
+    };
 
-        player_militia_hp = health.current.to_int();
-        player_militia_max_hp = health.max.to_int();
-        break;
-    }
+    int player1_militia_hp = 0;
+    int player1_militia_max_hp = 0;
+    int player2_militia_hp = 0;
+    int player2_militia_max_hp = 0;
+    read_militia_hp(0U, player1_militia_hp, player1_militia_max_hp);
+    read_militia_hp(1U, player2_militia_hp, player2_militia_max_hp);
 
-    int enemy_militia_hp = 0;
-    int enemy_militia_max_hp = 0;
-    const auto enemy_militia_view = registry.view<
-        sim::components::MilitiaUnitTag,
-        sim::components::EnemyTag,
-        sim::components::Health>();
-    for (const entt::entity entity : enemy_militia_view) {
-        const auto& health = enemy_militia_view.get<sim::components::Health>(entity);
-        if (health.current.raw() <= 0) {
-            continue;
-        }
-
-        enemy_militia_hp = health.current.to_int();
-        enemy_militia_max_hp = health.max.to_int();
-        break;
-    }
-
-    const std::string player_militia_line =
-        "HP P: " + std::to_string(player_militia_hp) + "/" + std::to_string(player_militia_max_hp);
-    const std::string enemy_militia_line =
-        "HP E: " + std::to_string(enemy_militia_hp) + "/" + std::to_string(enemy_militia_max_hp);
+    const std::string player1_militia_line =
+        "HP P1: " + std::to_string(player1_militia_hp) + "/" + std::to_string(player1_militia_max_hp);
+    const std::string player2_militia_line =
+        "HP P2: " + std::to_string(player2_militia_hp) + "/" + std::to_string(player2_militia_max_hp);
 
     draw_string(
         window_size,
         constants::HUD_MARGIN_X,
         constants::HUD_MARGIN_Y + line_height * 2.0F,
-        player_militia_line,
+        player1_militia_line,
         0.55F,
         0.90F,
         0.45F);
@@ -421,7 +585,7 @@ void HudOverlay::draw(
         window_size,
         constants::HUD_MARGIN_X,
         constants::HUD_MARGIN_Y + line_height * 3.0F,
-        enemy_militia_line,
+        player2_militia_line,
         0.95F,
         0.45F,
         0.40F);
@@ -439,6 +603,126 @@ void HudOverlay::draw(
         constants::HUD_TEXT_R * 0.85F,
         constants::HUD_TEXT_G * 0.85F,
         constants::HUD_TEXT_B * 0.85F);
+
+    float top_right_y = constants::HUD_MARGIN_Y + line_height;
+    const auto draw_top_right_line = [&](const std::string& line) {
+        const float text_width = static_cast<float>(line.size()) * char_step;
+        const float x = static_cast<float>(window_size.x) - constants::HUD_MARGIN_X - text_width;
+        draw_string(
+            window_size,
+            x,
+            top_right_y,
+            line,
+            constants::HUD_TEXT_R * 0.75F,
+            constants::HUD_TEXT_G * 0.95F,
+            constants::HUD_TEXT_B * 0.75F);
+        top_right_y += line_height;
+    };
+
+    draw_top_right_line(format_zoom_line(camera_zoom));
+
+    if (network_stats.active) {
+        const int ping_ms = std::max(0, network_stats.local_ping_ms);
+        draw_top_right_line("PING: " + std::to_string(ping_ms) + "ms");
+    }
+}
+
+void HudOverlay::draw_snapshot(
+    const SimRenderSnapshot& snapshot,
+    const sf::Vector2u window_size,
+    const float fps,
+    const std::uint8_t local_player_slot,
+    const float camera_zoom,
+    const net::LockstepNetworkHudStats& network_stats) const
+{
+    const RenderHudPlayerStats& local_stats = snapshot.hud_by_player[local_player_slot];
+    const RenderHudPlayerStats& player1_stats = snapshot.hud_by_player[0U];
+    const RenderHudPlayerStats& player2_stats = snapshot.hud_by_player[1U];
+
+    const std::string stockpile_line = "Wood: " + std::to_string(local_stats.town_wood);
+    const std::string carried_line = "Carry: " + std::to_string(local_stats.carried_wood);
+
+    const float line_height =
+        static_cast<float>(GLYPH_HEIGHT * constants::HUD_PIXEL_SCALE + constants::HUD_LINE_SPACING);
+
+    draw_string(
+        window_size,
+        constants::HUD_MARGIN_X,
+        constants::HUD_MARGIN_Y,
+        stockpile_line,
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G,
+        constants::HUD_TEXT_B);
+
+    draw_string(
+        window_size,
+        constants::HUD_MARGIN_X,
+        constants::HUD_MARGIN_Y + line_height,
+        carried_line,
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G * 0.9F,
+        constants::HUD_TEXT_B * 0.7F);
+
+    const std::string player1_militia_line =
+        "HP P1: " + std::to_string(player1_stats.militia_hp) + "/"
+        + std::to_string(player1_stats.militia_max_hp);
+    const std::string player2_militia_line =
+        "HP P2: " + std::to_string(player2_stats.militia_hp) + "/"
+        + std::to_string(player2_stats.militia_max_hp);
+
+    draw_string(
+        window_size,
+        constants::HUD_MARGIN_X,
+        constants::HUD_MARGIN_Y + line_height * 2.0F,
+        player1_militia_line,
+        0.55F,
+        0.90F,
+        0.45F);
+
+    draw_string(
+        window_size,
+        constants::HUD_MARGIN_X,
+        constants::HUD_MARGIN_Y + line_height * 3.0F,
+        player2_militia_line,
+        0.95F,
+        0.45F,
+        0.40F);
+
+    const std::string fps_line = "FPS: " + std::to_string(static_cast<int>(fps + 0.5F));
+    const float char_step = static_cast<float>(
+        (GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
+    const float fps_text_width = static_cast<float>(fps_line.size()) * char_step;
+    const float fps_x = static_cast<float>(window_size.x) - constants::HUD_MARGIN_X - fps_text_width;
+    draw_string(
+        window_size,
+        fps_x,
+        constants::HUD_MARGIN_Y,
+        fps_line,
+        constants::HUD_TEXT_R * 0.85F,
+        constants::HUD_TEXT_G * 0.85F,
+        constants::HUD_TEXT_B * 0.85F);
+
+    float top_right_y = constants::HUD_MARGIN_Y + line_height;
+    const auto draw_top_right_line = [&](const std::string& line) {
+        const float text_width = static_cast<float>(line.size()) * char_step;
+        const float x = static_cast<float>(window_size.x) - constants::HUD_MARGIN_X - text_width;
+        draw_string(
+            window_size,
+            x,
+            top_right_y,
+            line,
+            constants::HUD_TEXT_R * 0.75F,
+            constants::HUD_TEXT_G * 0.95F,
+            constants::HUD_TEXT_B * 0.75F);
+        top_right_y += line_height;
+    };
+
+    draw_top_right_line(format_zoom_line(camera_zoom));
+
+    if (network_stats.active) {
+        const int ping_ms = std::max(0, network_stats.local_ping_ms);
+        draw_top_right_line("PING: " + std::to_string(ping_ms) + "ms");
+    }
 }
 
 } // namespace aoa::render

@@ -2,10 +2,12 @@
 
 #include "app/fps_tracker.hpp"
 #include "app/game_input.hpp"
+#include "app/window_display.hpp"
 #include "core/constants.hpp"
 #include "core/fixed_timestep_loop.hpp"
 #include "harness/regression_harness.hpp"
 #include "net/enet_transport.hpp"
+#include "net/lockstep_debug_log.hpp"
 #include "net/lockstep_runner.hpp"
 #include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
@@ -17,8 +19,10 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace aoa::app {
 
@@ -63,6 +67,36 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-disconnect-smoke") {
+            options.run_lockstep_disconnect_smoke = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-reconnect-smoke") {
+            options.run_lockstep_reconnect_smoke = true;
+            continue;
+        }
+
+        if (arg == "--snapshot-smoke") {
+            options.run_snapshot_smoke = true;
+            continue;
+        }
+
+        if (arg == "--snapshot-double-spawn-smoke") {
+            options.run_snapshot_double_spawn_smoke = true;
+            continue;
+        }
+
+        if (arg == "--snapshot-reconnect-smoke") {
+            options.run_snapshot_reconnect_smoke = true;
+            continue;
+        }
+
+        if (arg == "--snapshot-heavy-smoke") {
+            options.run_snapshot_heavy_smoke = true;
+            continue;
+        }
+
         if (arg == "--lockstep-host") {
             options.lockstep_host = true;
             continue;
@@ -101,13 +135,21 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-debug") {
+            options.lockstep_debug = true;
+            continue;
+        }
+
         if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: aoa [--headless] [--ticks N] [--expect-hash HEX] [--print-hash]\n"
                          "       aoa --harness\n"
                          "       aoa --net-smoke\n"
                          "       aoa --lockstep-smoke\n"
-                         "       aoa --lockstep-host [--port PORT] [--ticks N] [--headless]\n"
-                         "       aoa --lockstep-join HOST:PORT [--ticks N] [--headless]\n";
+                         "       aoa --lockstep-disconnect-smoke\n"
+                         "       aoa --lockstep-reconnect-smoke\n"
+                         "       aoa --snapshot-smoke\n"
+                         "       aoa --lockstep-host [--port PORT] [--headless] [--ticks N] [--lockstep-debug]\n"
+                         "       aoa --lockstep-join HOST:PORT [--headless] [--ticks N] [--lockstep-debug]\n";
             std::exit(0);
         }
 
@@ -121,6 +163,10 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
     if ((options.lockstep_host || options.lockstep_join) && options.headless
         && options.lockstep_ticks == 0U) {
         options.lockstep_ticks = aoa::net::constants::LOCKSTEP_DEFAULT_TICK_COUNT;
+    }
+
+    if (!options.headless) {
+        options.lockstep_ticks = 0U;
     }
 
     return options;
@@ -163,10 +209,18 @@ int run_graphical(sim::Simulation& simulation)
     window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
     (void)window.setActive(true);
 
+    WindowDisplaySettings display_settings{};
+    display_settings.title = std::string(constants::WINDOW_TITLE);
+    display_settings.context_settings = context_settings;
+    initialize_window_display_settings(window, display_settings);
+
     render::GameRenderer renderer{};
     renderer.resize(window.getSize());
+    renderer.set_local_player_slot(0U);
 
     GameInput game_input{};
+    game_input.set_local_player_slot(0U);
+    game_input.set_local_player_slot(0U);
     game_input.reset_frame_clock();
     FpsTracker fps_tracker{};
 
@@ -193,7 +247,7 @@ int run_graphical(sim::Simulation& simulation)
                 fps_tracker.fps());
             window.display();
         },
-        [&window, &renderer, &simulation, &game_input]() {
+        [&window, &renderer, &simulation, &game_input, &display_settings]() {
             while (const std::optional event = window.pollEvent()) {
                 if (event->is<sf::Event::Closed>()) {
                     window.close();
@@ -205,10 +259,15 @@ int run_graphical(sim::Simulation& simulation)
                     if (key_pressed->code == sf::Keyboard::Key::Escape) {
                         window.close();
                     }
+                    else {
+                        handle_display_key(window, renderer, display_settings, key_pressed->code);
+                    }
                 }
 
                 if (const auto* resized = event->getIf<sf::Event::Resized>()) {
-                    renderer.resize(resized->size);
+                    if (!display_settings.fullscreen) {
+                        renderer.resize(resized->size);
+                    }
                 }
             }
 
@@ -226,21 +285,93 @@ void update_lockstep_window_title(
     const net::LockstepSession& session,
     const std::uint8_t player_slot)
 {
+    std::string title = std::string(constants::WINDOW_TITLE);
+
     if (session.is_desynced()) {
-        window.setTitle(
-            std::string(constants::WINDOW_TITLE)
-            + " - DESYNC tick "
-            + std::to_string(session.desync_tick()));
+        title += " - DESYNC tick " + std::to_string(session.desync_tick());
+    }
+    else if (session.is_host_gone()) {
+        title += " - Host left the game";
+    }
+    else if (session.is_reconnecting()) {
+        title += " - Reconnecting to host...";
+    }
+    else if (!session.is_session_ready() && session.is_connected()) {
+        title += " - Joining match...";
+    }
+    else if (session.is_ai_fallback() && session.is_waiting_for_opponent_reconnect()) {
+        title += " - Player " + std::to_string(session.ai_controlled_slot() + 1U)
+            + " left — AI playing (waiting for reconnect)";
+    }
+    else if (session.is_ai_fallback()) {
+        title += " - Player " + std::to_string(session.ai_controlled_slot() + 1U)
+            + " disconnected, AI playing";
+    }
+    else if (session.is_waiting_for_opponent_reconnect()) {
+        title += " - Opponent disconnected, waiting for reconnect...";
+    }
+    else if (!session.is_connected()) {
+        title += " - Waiting for opponent...";
+    }
+    else {
+        title += " - Player " + std::to_string(player_slot + 1U);
+    }
+
+    static std::string last_title{};
+    if (title == last_title) {
         return;
     }
 
-    if (!session.is_connected()) {
-        window.setTitle(std::string(constants::WINDOW_TITLE) + " - Waiting for opponent...");
-        return;
+    last_title = std::move(title);
+    window.setTitle(last_title);
+}
+
+bool lockstep_should_show_waiting_overlay(
+    const net::LockstepSession& session,
+    const net::LockstepRole role)
+{
+    if (session.is_awaiting_reconnect_handshake()) {
+        return true;
     }
 
-    window.setTitle(
-        std::string(constants::WINDOW_TITLE) + " - Player " + std::to_string(player_slot + 1U));
+    if (role == net::LockstepRole::Host && !session.is_connected()) {
+        return true;
+    }
+
+    if (role == net::LockstepRole::Client) {
+        if (!session.is_connected()) {
+            return true;
+        }
+
+        if (!session.is_session_ready()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::pair<std::string, std::string> lockstep_waiting_overlay_text(
+    const net::LockstepSession& session,
+    const net::LockstepRole role)
+{
+    if (session.is_awaiting_reconnect_handshake()) {
+        return {"LOADING", "SYNCHRONIZING MATCH STATE"};
+    }
+
+    if (role == net::LockstepRole::Host && !session.is_connected()) {
+        return {"LOADING", "WAITING FOR PLAYER CONNECTION"};
+    }
+
+    if (role == net::LockstepRole::Client && !session.is_connected()) {
+        return {"LOADING", "CONNECTING TO HOST"};
+    }
+
+    if (role == net::LockstepRole::Client && !session.is_session_ready()) {
+        return {"LOADING", "WAITING FOR HOST"};
+    }
+
+    return {"", ""};
 }
 
 } // namespace
@@ -259,6 +390,10 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
         : net::constants::LOCKSTEP_CLIENT_PLAYER_SLOT;
 
     net::LockstepSession session{role, player_slot, simulation};
+
+    if (options.lockstep_debug) {
+        net::LockstepDebugLog::enable(player_slot, role);
+    }
 
     if (options.lockstep_host) {
         const std::uint16_t port =
@@ -314,49 +449,80 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
     (void)window.setActive(true);
     update_lockstep_window_title(window, session, player_slot);
 
+    WindowDisplaySettings display_settings{};
+    display_settings.title = std::string(constants::WINDOW_TITLE);
+    display_settings.context_settings = context_settings;
+    initialize_window_display_settings(window, display_settings);
+
     render::GameRenderer renderer{};
     renderer.resize(window.getSize());
+    renderer.set_local_player_slot(player_slot);
 
     GameInput game_input{};
     game_input.set_lockstep_session(&session);
+    game_input.set_local_player_slot(player_slot);
     game_input.reset_frame_clock();
     FpsTracker fps_tracker{};
 
     const std::uint64_t tick_limit = options.lockstep_ticks;
-    bool exit_after_desync = false;
 
-    core::FixedTimestepLoop loop{};
-    loop.run_realtime(
-        [&]() {
-            session.poll();
+    session.ensure_initial_render_snapshot();
+    session.start_background_tick_loop();
 
-            if (session.is_desynced()) {
-                exit_after_desync = true;
-                return;
-            }
+    while (window.isOpen()) {
+        update_lockstep_window_title(window, session, player_slot);
 
-            if (!session.is_connected()) {
-                return;
-            }
+        const std::shared_ptr<const render::SimRenderSnapshot> input_frame = session.render_snapshot();
+        const render::SimRenderSnapshot* input_snapshot = input_frame.get();
 
-            (void)session.try_advance_tick();
-
-            if (tick_limit > 0U && simulation.tick_count() >= tick_limit) {
+        while (const std::optional event = window.pollEvent()) {
+            if (event->is<sf::Event::Closed>()) {
                 window.close();
             }
-        },
-        [&renderer, &simulation, &window, &game_input, &fps_tracker, &session, player_slot](
-            const float interpolation_alpha) {
-            fps_tracker.record_frame();
-            game_input.update_continuous(window, renderer, simulation);
-            update_lockstep_window_title(window, session, player_slot);
-            (void)window.setActive(true);
-            const app::PlayerSelection& selection = game_input.selection();
-            const app::HoverHighlight& hover = game_input.hover();
-            renderer.draw(
-                simulation,
+
+            game_input.handle_event(*event, window, renderer, simulation, input_snapshot);
+
+            if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
+                if (key_pressed->code == sf::Keyboard::Key::Escape) {
+                    window.close();
+                }
+                else {
+                    handle_display_key(window, renderer, display_settings, key_pressed->code);
+                }
+            }
+
+            if (const auto* resized = event->getIf<sf::Event::Resized>()) {
+                if (!display_settings.fullscreen) {
+                    renderer.resize(resized->size, true);
+                }
+            }
+        }
+
+        fps_tracker.record_frame();
+
+        session.service_network_latency();
+
+        if (session.consume_snapshot_restored()) {
+            game_input.clear_selection();
+            renderer.reset_camera_frame();
+        }
+
+        game_input.update_continuous(window, renderer, simulation, input_snapshot);
+
+        app::PlayerSelection selection = game_input.selection();
+        app::HoverHighlight hover = game_input.hover();
+
+        const std::shared_ptr<const render::SimRenderSnapshot> frame = session.render_snapshot();
+        const bool show_waiting_overlay = lockstep_should_show_waiting_overlay(session, role);
+        const auto waiting_text = lockstep_waiting_overlay_text(session, role);
+
+        (void)window.setActive(true);
+
+        if (frame) {
+            renderer.draw_snapshot(
+                *frame,
                 selection.units,
-                interpolation_alpha,
+                session.render_interpolation_alpha(),
                 game_input.selection_box(),
                 hover.unit,
                 hover.unit_is_enemy,
@@ -364,44 +530,39 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
                 hover.resource_cell,
                 selection.resource_cell,
                 selection.building,
-                fps_tracker.fps());
-            window.display();
-        },
-        [&window, &renderer, &simulation, &game_input, &session, player_slot]() {
-            session.poll();
-            update_lockstep_window_title(window, session, player_slot);
+                fps_tracker.fps(),
+                session.network_hud_stats());
 
-            while (const std::optional event = window.pollEvent()) {
-                if (event->is<sf::Event::Closed>()) {
-                    window.close();
-                }
-
-                game_input.handle_event(*event, window, renderer, simulation);
-
-                if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
-                    if (key_pressed->code == sf::Keyboard::Key::Escape) {
-                        window.close();
-                    }
-                }
-
-                if (const auto* resized = event->getIf<sf::Event::Resized>()) {
-                    renderer.resize(resized->size);
-                }
+            if (tick_limit > 0U && frame->tick_count >= tick_limit) {
+                window.close();
             }
+        }
+        else {
+            renderer.clear_frame();
+        }
 
-            if (session.is_desynced()) {
-                return false;
-            }
+        if (show_waiting_overlay) {
+            renderer.draw_waiting_overlay(waiting_text.first, waiting_text.second);
+        }
 
-            return window.isOpen();
-        },
-        [&simulation]() { simulation.snapshot_world_positions_for_render(); });
+        window.display();
+    }
+
+    session.stop_background_tick_loop();
+
+    if (options.lockstep_debug) {
+        net::LockstepDebugLog::disable();
+    }
 
     net::EnetTransport::global_deinitialize();
 
-    if (exit_after_desync || session.is_desynced()) {
-        std::cerr << "lockstep: desync at tick " << session.desync_tick() << '\n';
-        return 1;
+    if (session.is_desynced()) {
+        std::cerr << "lockstep: desync at tick " << session.desync_tick()
+                  << " (window closed manually)\n";
+    }
+
+    if (session.is_host_gone()) {
+        std::cout << "lockstep: host left the game at tick " << simulation.tick_count() << '\n';
     }
 
     return 0;

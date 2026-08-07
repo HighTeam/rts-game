@@ -7,15 +7,21 @@
 #include "sim/components/combat.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
+#include "sim/components/fog_of_war.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/resources.hpp"
+#include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
 #include "sim/spawn/unit_spawn.hpp"
+#include "sim/systems/gameplay_systems.hpp"
+#include "sim/systems/visibility_system.hpp"
 #include "sim/systems/pathfinding.hpp"
+
+#include "math/fixed.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -68,35 +74,6 @@ core::GridPos find_adjacent_walkable(
     }
 
     return target;
-}
-
-void sync_grid_from_world(entt::registry& registry, const entt::entity entity)
-{
-    if (!registry.all_of<components::WorldPosition, components::GridPosition>(entity)) {
-        return;
-    }
-
-    const auto& world = registry.get<components::WorldPosition>(entity);
-    auto& grid = registry.get<components::GridPosition>(entity);
-    grid.cell.x = world.x.to_int();
-    grid.cell.y = world.y.to_int();
-}
-
-void assign_path(
-    entt::registry& registry,
-    const entt::entity entity,
-    const components::MapGrid& map,
-    const core::GridPos goal)
-{
-    if (registry.any_of<components::WorldPosition>(entity)) {
-        sync_grid_from_world(registry, entity);
-    }
-
-    const auto& pos = registry.get<components::GridPosition>(entity).cell;
-    auto& path = registry.get_or_emplace<components::MovePath>(entity);
-    path.cells = systems::find_path(map, pos, goal, registry, entity, false);
-    path.next_index = 0;
-    registry.remove<components::MoveSegment>(entity);
 }
 
 void mark_manual_control(entt::registry& registry, const entt::entity entity)
@@ -182,7 +159,13 @@ entt::entity pick_enemy_at(entt::registry& registry, const core::GridPos cell)
     return best;
 }
 
-bool issue_move_order(entt::registry& registry, const entt::entity entity, const core::GridPos goal)
+bool issue_move_order(
+    entt::registry& registry,
+    const entt::entity entity,
+    const core::GridPos goal,
+    const bool has_goal_world,
+    const math::Fixed goal_world_x,
+    const math::Fixed goal_world_y)
 {
     if (!is_alive_player_unit(registry, entity)) {
         return false;
@@ -206,10 +189,36 @@ bool issue_move_order(entt::registry& registry, const entt::entity entity, const
         return false;
     }
 
+    math::Fixed move_goal_x = goal_world_x;
+    math::Fixed move_goal_y = goal_world_y;
+    if (has_goal_world) {
+        const math::Fixed inset = math::Fixed::from_float(constants::MOVE_GOAL_TILE_EDGE_INSET);
+        move_goal_x = std::max(
+            math::Fixed::from_int(goal.x) + inset,
+            std::min(math::Fixed::from_int(goal.x + 1) - inset, goal_world_x));
+        move_goal_y = std::max(
+            math::Fixed::from_int(goal.y) + inset,
+            std::min(math::Fixed::from_int(goal.y + 1) - inset, goal_world_y));
+
+        const components::WorldPosition goal_world{move_goal_x, move_goal_y};
+        if (systems::is_world_position_movement_blocked(registry, map, goal_world, entity, false)) {
+            return false;
+        }
+    }
+
     mark_manual_control(registry, entity);
     registry.remove<components::AttackOrder>(entity);
     registry.remove<components::GatherTarget>(entity);
-    assign_path(registry, entity, map, goal);
+    systems::assign_unit_path(
+        registry,
+        entity,
+        map,
+        goal,
+        entt::null,
+        true,
+        has_goal_world,
+        move_goal_x,
+        move_goal_y);
     return true;
 }
 
@@ -230,7 +239,8 @@ bool issue_attack_order(
         return false;
     }
 
-    if (!registry.any_of<components::EnemyTag>(target)) {
+    if (!registry.any_of<components::EnemyTag>(target)
+        && !components::is_valid_attack_target(registry, entity, target)) {
         return false;
     }
 
@@ -239,13 +249,37 @@ bool issue_attack_order(
         return false;
     }
 
+    const std::uint8_t attacker_slot = components::entity_player_slot(registry, entity);
+    if (registry.any_of<components::FogOfWarState>(world)) {
+        const auto& fog = registry.get<components::FogOfWarState>(world);
+        if (!systems::is_opponent_entity_visible_to_slot(registry, fog, target, attacker_slot)) {
+            return false;
+        }
+    }
+
     const auto& map = registry.get<components::MapGrid>(world);
     const core::GridPos target_pos = registry.get<components::GridPosition>(target).cell;
-    const core::GridPos stand_tile = find_adjacent_walkable(map, registry, target_pos, entity);
+    const core::GridPos stand_tile =
+        systems::find_best_melee_stand_tile(map, registry, target_pos, entity, target);
+    if (stand_tile == target_pos) {
+        return false;
+    }
 
     mark_manual_control(registry, entity);
-    registry.get_or_emplace<components::AttackOrder>(entity).target = target;
-    assign_path(registry, entity, map, stand_tile);
+    auto& attack_order = registry.get_or_emplace<components::AttackOrder>(entity);
+    attack_order.target = target;
+    attack_order.last_known_cell = target_pos;
+    systems::assign_unit_path(
+        registry,
+        entity,
+        map,
+        stand_tile,
+        entt::null,
+        true,
+        false,
+        {},
+        {},
+        true);
     return true;
 }
 
@@ -278,7 +312,7 @@ bool issue_gather_order(
     registry.remove<components::AttackOrder>(entity);
     registry.get_or_emplace<components::GatherTarget>(entity).cell = forest_cell;
     registry.get_or_emplace<components::WorkerBrain>(entity).state = components::WorkerState::MovingToResource;
-    assign_path(registry, entity, map, stand_tile);
+    systems::assign_unit_path(registry, entity, map, stand_tile);
     return true;
 }
 
@@ -340,7 +374,8 @@ bool issue_spawn_worker_order(entt::registry& registry, const entt::entity town_
     }
 
     stockpile.wood -= town_center_archetype->spawn_worker_wood_cost;
-    (void)spawn::spawn_player_worker(registry, *worker_archetype, spawn_cell);
+    const std::uint8_t player_slot = components::entity_player_slot(registry, town_center);
+    (void)spawn::spawn_player_worker(registry, *worker_archetype, spawn_cell, player_slot);
     return true;
 }
 
@@ -353,18 +388,6 @@ void issue_deposit_orders(entt::registry& registry, const std::vector<entt::enti
 
     const auto& map = registry.get<components::MapGrid>(world);
 
-    entt::entity town_center = entt::null;
-    const auto town_center_view = registry.view<components::TownCenterTag, components::GridPosition>();
-    if (town_center_view.begin() != town_center_view.end()) {
-        town_center = *town_center_view.begin();
-    }
-
-    if (town_center == entt::null) {
-        return;
-    }
-
-    const core::GridPos depot_pos = registry.get<components::GridPosition>(town_center).cell;
-
     for (const entt::entity entity : entities) {
         if (!is_alive_player_unit(registry, entity)) {
             continue;
@@ -374,6 +397,24 @@ void issue_deposit_orders(entt::registry& registry, const std::vector<entt::enti
             continue;
         }
 
+        const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
+        entt::entity town_center = entt::null;
+        const auto town_center_view =
+            registry.view<components::TownCenterTag, components::PlayerOwnedTag, components::GridPosition>();
+        for (const entt::entity candidate : town_center_view) {
+            if (components::entity_player_slot(registry, candidate) != player_slot) {
+                continue;
+            }
+
+            town_center = candidate;
+            break;
+        }
+
+        if (town_center == entt::null) {
+            continue;
+        }
+
+        const core::GridPos depot_pos = registry.get<components::GridPosition>(town_center).cell;
         const core::GridPos stand_tile = find_adjacent_walkable(map, registry, depot_pos, entity);
         if (stand_tile == depot_pos || is_occupied(registry, stand_tile, entity)) {
             continue;
@@ -408,7 +449,8 @@ entt::entity pick_unit_at_screen_any_team(
     const render::GameRenderer& renderer,
     const sf::Vector2f screen_position,
     const float pick_radius_px,
-    const bool player_only)
+    const std::uint8_t local_player_slot,
+    const bool pick_opponent)
 {
     entt::entity best = entt::null;
     float best_distance_sq = pick_radius_px * pick_radius_px;
@@ -419,11 +461,21 @@ entt::entity pick_unit_at_screen_any_team(
         components::Health>();
 
     for (const entt::entity entity : view) {
-        if (player_only && !registry.any_of<components::PlayerOwnedTag>(entity)) {
-            continue;
-        }
+        if (pick_opponent) {
+            if (!components::is_opponent_entity(registry, entity, local_player_slot)) {
+                continue;
+            }
 
-        if (!player_only && !registry.any_of<components::EnemyTag>(entity)) {
+            const entt::entity world = find_world_entity(registry);
+            if (world != entt::null && registry.any_of<components::FogOfWarState>(world)) {
+                const auto& fog = registry.get<components::FogOfWarState>(world);
+                if (!systems::is_opponent_entity_visible_to_slot(registry, fog, entity, local_player_slot)) {
+                    continue;
+                }
+            }
+        }
+        else if (!registry.any_of<components::PlayerOwnedTag>(entity)
+            || components::entity_player_slot(registry, entity) != local_player_slot) {
             continue;
         }
 
@@ -457,28 +509,49 @@ entt::entity pick_player_unit_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     const sf::Vector2f screen_position,
-    const float pick_radius_px)
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
 {
-    return pick_unit_at_screen_any_team(registry, renderer, screen_position, pick_radius_px, true);
+    return pick_unit_at_screen_any_team(
+        registry,
+        renderer,
+        screen_position,
+        pick_radius_px,
+        local_player_slot,
+        false);
 }
 
 entt::entity pick_enemy_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     const sf::Vector2f screen_position,
-    const float pick_radius_px)
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
 {
-    return pick_unit_at_screen_any_team(registry, renderer, screen_position, pick_radius_px, false);
+    return pick_unit_at_screen_any_team(
+        registry,
+        renderer,
+        screen_position,
+        pick_radius_px,
+        local_player_slot,
+        true);
 }
 
 entt::entity pick_hovered_unit_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     const sf::Vector2f screen_position,
-    const float pick_radius_px)
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
 {
     entt::entity best = entt::null;
     float best_distance_sq = pick_radius_px * pick_radius_px;
+
+    const entt::entity world = find_world_entity(registry);
+    const components::FogOfWarState* fog = nullptr;
+    if (world != entt::null && registry.any_of<components::FogOfWarState>(world)) {
+        fog = &registry.get<components::FogOfWarState>(world);
+    }
 
     const auto view = registry.view<
         components::UnitTag,
@@ -488,6 +561,11 @@ entt::entity pick_hovered_unit_at_screen(
     for (const entt::entity entity : view) {
         const auto& health = view.get<components::Health>(entity);
         if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (fog != nullptr
+            && !systems::is_entity_visible_to_slot(registry, *fog, entity, local_player_slot)) {
             continue;
         }
 
@@ -514,7 +592,8 @@ entt::entity pick_player_building_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     const sf::Vector2f screen_position,
-    const float pick_radius_px)
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
 {
     const auto grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
     if (!grid_cell.has_value()) {
@@ -531,6 +610,9 @@ entt::entity pick_player_building_at_screen(
         components::Health>();
 
     for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != local_player_slot) {
+            continue;
+        }
         const auto& health = view.get<components::Health>(entity);
         if (health.current.raw() <= 0) {
             continue;
@@ -567,7 +649,8 @@ std::vector<entt::entity> pick_player_units_in_screen_rect(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     const sf::Vector2f rect_min,
-    const sf::Vector2f rect_max)
+    const sf::Vector2f rect_max,
+    const std::uint8_t local_player_slot)
 {
     const float min_x = std::min(rect_min.x, rect_max.x);
     const float max_x = std::max(rect_min.x, rect_max.x);
@@ -581,6 +664,9 @@ std::vector<entt::entity> pick_player_units_in_screen_rect(
         components::Health>();
 
     for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != local_player_slot) {
+            continue;
+        }
         const auto& health = view.get<components::Health>(entity);
         if (health.current.raw() <= 0) {
             continue;
@@ -642,10 +728,13 @@ void apply_selection(
 void issue_move_orders(
     entt::registry& registry,
     const std::vector<entt::entity>& entities,
-    const core::GridPos goal)
+    const core::GridPos goal,
+    const bool has_goal_world,
+    const math::Fixed goal_world_x,
+    const math::Fixed goal_world_y)
 {
     for (const entt::entity entity : entities) {
-        issue_move_order(registry, entity, goal);
+        issue_move_order(registry, entity, goal, has_goal_world, goal_world_x, goal_world_y);
     }
 }
 
@@ -701,11 +790,20 @@ std::optional<core::GridPos> pick_resource_forest_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     const sf::Vector2f screen_position,
-    const float pick_radius_px)
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
 {
     const auto grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
     if (!grid_cell.has_value()) {
         return std::nullopt;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world != entt::null && registry.any_of<components::FogOfWarState>(world)) {
+        const auto& fog = registry.get<components::FogOfWarState>(world);
+        if (!systems::is_cell_visible_to_slot(fog, *grid_cell, local_player_slot)) {
+            return std::nullopt;
+        }
     }
 
     if (pick_resource_forest_at(registry, *grid_cell).has_value()) {

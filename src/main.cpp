@@ -26,6 +26,30 @@ int main(int argc, char** argv)
             return aoa::net::run_lockstep_smoke();
         }
 
+        if (options.run_lockstep_disconnect_smoke) {
+            return aoa::net::run_lockstep_disconnect_smoke();
+        }
+
+        if (options.run_lockstep_reconnect_smoke) {
+            return aoa::net::run_lockstep_reconnect_smoke();
+        }
+
+        if (options.run_snapshot_smoke) {
+            return aoa::net::run_snapshot_smoke();
+        }
+
+        if (options.run_snapshot_double_spawn_smoke) {
+            return aoa::net::run_snapshot_double_spawn_smoke();
+        }
+
+        if (options.run_snapshot_reconnect_smoke) {
+            return aoa::net::run_snapshot_reconnect_smoke();
+        }
+
+        if (options.run_snapshot_heavy_smoke) {
+            return aoa::net::run_snapshot_heavy_smoke();
+        }
+
         if (options.lockstep_host) {
             if (options.headless) {
                 aoa::net::LockstepRunOptions lockstep_options{};

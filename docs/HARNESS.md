@@ -118,7 +118,7 @@ Never “fix” a hash without understanding the gameplay delta. Hash churn is a
 
 ## What the hash covers
 
-`compute_state_hash` mixes map tiles / forest wood, then every non-world entity with `GridPosition`, sorted by entity id. Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order/cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
+`compute_state_hash` mixes map tiles / forest wood, then every non-world entity with `GridPosition`, sorted by stable snapshot key (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
 
 Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 

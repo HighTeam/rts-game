@@ -1,11 +1,14 @@
 #pragma once
 
+#include "core/grid.hpp"
+
 #include <entt/entt.hpp>
 
 namespace aoa::sim::components {
 
 struct AttackOrder {
     entt::entity target{entt::null};
+    core::GridPos last_known_cell{-1, -1};
 };
 
 struct AttackCooldown {

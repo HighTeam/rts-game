@@ -20,24 +20,30 @@ find_package(glad CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
 find_package(unofficial-enet CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 add_executable(aoa
     src/main.cpp
     src/app/application.cpp
     src/app/game_input.cpp
+    src/app/window_display.cpp
+    src/core/runtime_paths.cpp
     src/core/fixed_timestep_loop.cpp
     src/data/content_loader.cpp
     src/harness/regression_harness.cpp
     src/net/enet_transport.cpp
+    src/net/lockstep_debug_log.cpp
     src/net/lockstep_runner.cpp
     src/net/lockstep_session.cpp
     src/net/lockstep_wire.cpp
     src/net/net_message.cpp
     src/net/net_smoke.cpp
+    src/net/reconnect_wire.cpp
     src/render/camera.cpp
     src/render/camera_settings.cpp
     src/render/game_renderer.cpp
     src/render/hud_overlay.cpp
+    src/render/sim_render_snapshot.cpp
     src/sim/map/test_map.cpp
     src/sim/player/player_commands.cpp
     src/sim/player/player_command.cpp
@@ -45,13 +51,17 @@ add_executable(aoa
     src/sim/scenario/test_scenario.cpp
     src/sim/spawn/unit_spawn.cpp
     src/sim/simulation.cpp
+    src/sim/snapshot/entity_snapshot_key.cpp
+    src/sim/snapshot/sim_snapshot.cpp
+    src/sim/systems/disconnected_player_ai.cpp
     src/sim/systems/gameplay_systems.cpp
     src/sim/systems/pathfinding.cpp
     src/sim/systems/sim_systems.cpp
+    src/sim/systems/visibility_system.cpp
 )
 
 target_include_directories(aoa PRIVATE src)
-target_compile_definitions(aoa PRIVATE AOA_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
+target_compile_definitions(aoa PRIVATE AOA_RUNTIME_ROOT="${CMAKE_SOURCE_DIR}")
 
 target_link_libraries(aoa PRIVATE
     SFML::System
@@ -60,6 +70,7 @@ target_link_libraries(aoa PRIVATE
     EnTT::EnTT
     unofficial::enet::enet
     nlohmann_json::nlohmann_json
+    Threads::Threads
 )
 
 if(WIN32)

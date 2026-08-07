@@ -1,5 +1,7 @@
 #include "data/content_loader.hpp"
 
+#include "core/runtime_paths.hpp"
+
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -23,6 +25,7 @@ ArchetypeDefinition parse_archetype_definition(const nlohmann::json& json)
     archetype.pierce_attack = json.value("pierce_attack", 0);
     archetype.pierce_armor = json.value("pierce_armor", 0);
     archetype.attack_cooldown_ticks = json.value("attack_cooldown_ticks", 1);
+    archetype.vision_range = json.value("vision_range", 0);
     archetype.spawn_worker_wood_cost = json.value("spawn_worker_wood_cost", 0);
     archetype.wood_capacity = json.value("wood_capacity", 0);
     return archetype;
@@ -177,11 +180,7 @@ ContentDatabase load_content_database(const std::filesystem::path& data_director
 
 std::filesystem::path default_data_directory()
 {
-#ifdef AOA_DATA_DIR
-    return std::filesystem::path(AOA_DATA_DIR);
-#else
-    return std::filesystem::path("data");
-#endif
+    return core::default_data_directory();
 }
 
 } // namespace aoa::data
