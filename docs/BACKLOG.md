@@ -89,13 +89,28 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 ### Reconnect
 
-- [ ] On reconnect: new client receives current sim state snapshot + resumes receiving live inputs; if you keep the full input log, replaying it is mostly free
-- [x] Disconnect policy decided: no global pause; AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](DECISIONS.md)
+- [x] On reconnect: client receives tick count + input log snapshot, replays to catch up, resumes live lockstep (`ReconnectRequest` / `ReconnectSnapshot` / `JoinAccepted` / `ResyncReady`)
+- [x] Disconnect policy decided: no global pause; **immediate** AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](DECISIONS.md)
+- [x] AI takeover on disconnect — deterministic `generate_ai_commands_for_slot()`; match continues in `ai_fallback` mode (no sim freeze during reconnect grace)
+
+### Multiplayer polish (M2)
+
+- [x] Immediate AI on client disconnect — host sim never freezes waiting for reconnect
+- [x] Lockstep render timing — interpolation alpha driven by tick-thread clock; snapshot on sim tick
+- [x] Automated disconnect regression — `--lockstep-disconnect-smoke`
+- [x] Automated reconnect regression — `--lockstep-reconnect-smoke` (3× disconnect/reconnect in-process)
+
+### Gameplay (deferred — not M2 blocking)
+
+- [ ] **Combat attack pathfinding** — dog-leg / double-diagonal near enemy when not 8-aligned; see [scripts/issue-bodies/pathfinding-combat.md](scripts/issue-bodies/pathfinding-combat.md)
+- [ ] **Unit collision** — units can walk through each other; see [scripts/issue-bodies/unit-collision.md](scripts/issue-bodies/unit-collision.md)
 
 ### Networking test scenarios
 
 - [x] Two local instances (localhost) as the daily dev-loop test — `--lockstep-host` / `--lockstep-join`
-- [ ] One test with actual two-machine LAN play before calling M2 done — localhost hides real latency/packet-loss bugs
+- [x] **LAN soak — 2 players** — 30+ min, disconnect/reconnect, no desync ([scripts/issue-bodies/m2-tests.md](scripts/issue-bodies/m2-tests.md))
+- [ ] **LAN soak — 4 players** — after M3 multi-peer lockstep ships
+- [ ] **LAN brutal — 8 players** — 60+ min, multi-disconnect, bad-connection client; required before calling multiplayer proven at scale ([scripts/issue-bodies/m2-tests.md](scripts/issue-bodies/m2-tests.md))
 
 ---
 
@@ -177,7 +192,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 - [ ] Fixed-point math (M0) — expensive to retrofit
 - [ ] Data-driven civ/unit/building definitions (M1) — expensive to retrofit
 - [ ] Host migration policy (M3) — affects network code shape
-- [ ] Disconnect/pause policy (M2) — affects UI and netcode together
+- [x] Disconnect/pause policy (M2) — affects UI and netcode together
 - [ ] Tick rate — pick once, changing it later touches balance, netcode timing, and input feel simultaneously
 - [x] Render style — AoE2 DE-like 2.5D/3D hybrid (M1 #26)
 - [x] Camera view — Classic now, Full 3D later default (M1 #26 + M5 Settings)

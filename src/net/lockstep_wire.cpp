@@ -45,7 +45,8 @@ std::vector<std::byte> encode_tick_input_batch(const TickInputBatch& batch)
     append_pod(out, command_count);
 
     for (const sim::player::PlayerCommand& command : batch.commands) {
-        const std::vector<std::byte> command_bytes = sim::player::encode_player_command(command);
+        const std::vector<std::byte> command_bytes =
+            sim::player::encode_player_command_with_keys(command);
         if (command_bytes.empty()) {
             return {};
         }
@@ -94,7 +95,7 @@ std::optional<TickInputBatch> decode_tick_input_batch(const std::span<const std:
         const std::span<const std::byte> command_bytes = cursor.subspan(0U, command_length);
         cursor = cursor.subspan(command_length);
 
-        const auto decoded_command = sim::player::decode_player_command(command_bytes);
+        const auto decoded_command = sim::player::decode_player_command_with_keys(command_bytes);
         if (!decoded_command.has_value()) {
             return std::nullopt;
         }
@@ -133,6 +134,35 @@ std::optional<TickStateHashMessage> decode_tick_state_hash(const std::span<const
     }
 
     if (!read_pod(cursor, message.state_hash)) {
+        return std::nullopt;
+    }
+
+    if (!cursor.empty()) {
+        return std::nullopt;
+    }
+
+    return message;
+}
+
+std::vector<std::byte> encode_latency_probe(const LatencyProbeMessage& message)
+{
+    std::vector<std::byte> out{};
+    out.reserve(sizeof(LatencyProbeMessage));
+    append_pod(out, message.send_time_ns);
+    append_pod(out, message.sequence);
+    return out;
+}
+
+std::optional<LatencyProbeMessage> decode_latency_probe(const std::span<const std::byte> bytes)
+{
+    LatencyProbeMessage message{};
+    std::span<const std::byte> cursor = bytes;
+
+    if (!read_pod(cursor, message.send_time_ns)) {
+        return std::nullopt;
+    }
+
+    if (!read_pod(cursor, message.sequence)) {
         return std::nullopt;
     }
 

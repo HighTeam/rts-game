@@ -10,5 +10,6 @@
   "melee_armor": 0,
   "pierce_attack": 0,
   "pierce_armor": 0,
-  "attack_cooldown_ticks": 15
+  "attack_cooldown_ticks": 15,
+  "vision_range": 3
 }

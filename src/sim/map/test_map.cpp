@@ -23,14 +23,14 @@ components::MapGrid create_test_map(const int forest_patch_wood)
         map.forest_wood[static_cast<std::size_t>(index)] = forest_patch_wood;
     };
 
-    for (int y = 12; y <= 18; ++y) {
-        for (int x = 20; x <= 28; ++x) {
+    for (int y = constants::SCENARIO_PLAYER1_FOREST_MIN_Y; y <= constants::SCENARIO_PLAYER1_FOREST_MAX_Y; ++y) {
+        for (int x = constants::SCENARIO_PLAYER1_FOREST_MIN_X; x <= constants::SCENARIO_PLAYER1_FOREST_MAX_X; ++x) {
             mark_forest({x, y});
         }
     }
 
-    for (int y = 30; y <= 36; ++y) {
-        for (int x = 40; x <= 48; ++x) {
+    for (int y = constants::SCENARIO_PLAYER2_FOREST_MIN_Y; y <= constants::SCENARIO_PLAYER2_FOREST_MAX_Y; ++y) {
+        for (int x = constants::SCENARIO_PLAYER2_FOREST_MIN_X; x <= constants::SCENARIO_PLAYER2_FOREST_MAX_X; ++x) {
             mark_forest({x, y});
         }
     }

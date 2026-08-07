@@ -3,6 +3,7 @@
 #include "net/enet_transport.hpp"
 #include "net/net_constants.hpp"
 #include "net/net_message.hpp"
+#include "net/lockstep_wire.hpp"
 #include "sim/player/player_command.hpp"
 
 #include <iostream>
@@ -25,10 +26,35 @@ bool wait_for_connection(EnetTransport& host, EnetTransport& client)
     return false;
 }
 
+[[nodiscard]] bool verify_latency_wire_message_kinds()
+{
+    LatencyProbeMessage probe{};
+    probe.send_time_ns = 123U;
+    probe.sequence = 456U;
+
+    const std::vector<std::byte> payload = encode_latency_probe(probe);
+    const std::vector<std::byte> probe_wire =
+        encode_net_message(NetMessageKind::LatencyProbe, payload);
+    const auto decoded_probe = decode_net_message(probe_wire);
+    if (!decoded_probe.has_value() || decoded_probe->first != NetMessageKind::LatencyProbe) {
+        return false;
+    }
+
+    const std::vector<std::byte> pong_wire =
+        encode_net_message(NetMessageKind::LatencyPong, payload);
+    const auto decoded_pong = decode_net_message(pong_wire);
+    return decoded_pong.has_value() && decoded_pong->first == NetMessageKind::LatencyPong;
+}
+
 } // namespace
 
 int run_net_smoke()
 {
+    if (!verify_latency_wire_message_kinds()) {
+        std::cerr << "net-smoke: latency wire message decode failed\n";
+        return 1;
+    }
+
     if (!EnetTransport::global_initialize()) {
         std::cerr << "net-smoke: enet_initialize failed\n";
         return 1;

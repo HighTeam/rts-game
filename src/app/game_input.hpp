@@ -2,11 +2,13 @@
 
 #include "app/selection_state.hpp"
 #include "render/game_renderer.hpp"
+#include "render/sim_render_snapshot.hpp"
 #include "sim/player/player_commands.hpp"
 
 #include <SFML/Window/Window.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 
 namespace aoa::sim {
@@ -27,25 +29,37 @@ class GameInput {
 public:
     void reset_frame_clock();
     void set_lockstep_session(net::LockstepSession* session) { lockstep_session_ = session; }
-    void update_continuous(const sf::Window& window, render::GameRenderer& renderer, sim::Simulation& simulation);
+    void set_local_player_slot(const std::uint8_t player_slot) { local_player_slot_ = player_slot; }
+    void update_continuous(
+        const sf::Window& window,
+        render::GameRenderer& renderer,
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot = nullptr);
     void handle_event(
         const sf::Event& event,
         const sf::Window& window,
         render::GameRenderer& renderer,
-        sim::Simulation& simulation);
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot = nullptr);
 
     [[nodiscard]] const PlayerSelection& selection() const { return selection_; }
+    void clear_selection() { selection_.clear(); }
     [[nodiscard]] HoverHighlight hover() const { return hover_; }
     [[nodiscard]] render::SelectionBoxOverlay selection_box() const { return selection_box_; }
 
 private:
     [[nodiscard]] sim::player::SelectionModifyMode current_modify_mode() const;
-    void update_hover(const sf::Window& window, render::GameRenderer& renderer, sim::Simulation& simulation);
+    void update_hover(
+        const sf::Window& window,
+        render::GameRenderer& renderer,
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot);
     void finalize_left_release(
         const sf::Window& window,
         render::GameRenderer& renderer,
         sim::Simulation& simulation,
-        sf::Vector2i mouse_position);
+        sf::Vector2i mouse_position,
+        const render::SimRenderSnapshot* render_snapshot);
 
     void submit_player_command(sim::Simulation& simulation, sim::player::PlayerCommand command);
 
@@ -57,6 +71,7 @@ private:
     std::chrono::steady_clock::time_point previous_frame_time_{};
     bool frame_clock_initialized_{false};
     net::LockstepSession* lockstep_session_{nullptr};
+    std::uint8_t local_player_slot_{0U};
 };
 
 } // namespace aoa::app

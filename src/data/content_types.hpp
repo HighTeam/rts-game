@@ -28,6 +28,7 @@ struct ArchetypeDefinition {
     int pierce_attack{0};
     int pierce_armor{0};
     int attack_cooldown_ticks{1};
+    int vision_range{0};
     int spawn_worker_wood_cost{0};
     int wood_capacity{0};
 };

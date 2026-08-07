@@ -12,6 +12,12 @@ enum class NetMessageKind : std::uint8_t {
     PlayerCommand = 1,
     TickStateHash = 2,
     TickInputBatch = 3,
+    ReconnectRequest = 4,
+    ReconnectSnapshot = 5,
+    JoinAccepted = 6,
+    ResyncReady = 7,
+    LatencyProbe = 8,
+    LatencyPong = 9,
 };
 
 [[nodiscard]] std::vector<std::byte> encode_net_message(

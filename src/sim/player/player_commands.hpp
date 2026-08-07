@@ -1,9 +1,11 @@
 #pragma once
 
 #include "core/grid.hpp"
+#include "math/fixed.hpp"
 #include "render/game_renderer.hpp"
 
 #include <SFML/System/Vector2.hpp>
+#include <cstdint>
 #include <entt/entt.hpp>
 
 #include <vector>
@@ -22,19 +24,22 @@ enum class SelectionModifyMode {
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f screen_position,
-    float pick_radius_px);
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
 
 [[nodiscard]] std::vector<entt::entity> pick_player_units_in_screen_rect(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f rect_min,
-    sf::Vector2f rect_max);
+    sf::Vector2f rect_max,
+    std::uint8_t local_player_slot);
 
 [[nodiscard]] entt::entity pick_enemy_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f screen_position,
-    float pick_radius_px);
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
 
 [[nodiscard]] entt::entity pick_enemy_at(entt::registry& registry, core::GridPos cell);
 
@@ -44,12 +49,21 @@ void apply_selection(
     const std::vector<entt::entity>& picked,
     SelectionModifyMode mode);
 
-bool issue_move_order(entt::registry& registry, entt::entity entity, core::GridPos goal);
+bool issue_move_order(
+    entt::registry& registry,
+    entt::entity entity,
+    core::GridPos goal,
+    bool has_goal_world = false,
+    math::Fixed goal_world_x = {},
+    math::Fixed goal_world_y = {});
 
 void issue_move_orders(
     entt::registry& registry,
     const std::vector<entt::entity>& entities,
-    core::GridPos goal);
+    core::GridPos goal,
+    bool has_goal_world = false,
+    math::Fixed goal_world_x = {},
+    math::Fixed goal_world_y = {});
 
 bool issue_attack_order(entt::registry& registry, entt::entity entity, entt::entity target);
 
@@ -75,13 +89,15 @@ void prune_dead_selection(std::vector<entt::entity>& selected, entt::registry& r
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f screen_position,
-    float pick_radius_px);
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
 
 [[nodiscard]] entt::entity pick_player_building_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f screen_position,
-    float pick_radius_px);
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
 
 [[nodiscard]] std::optional<core::GridPos> pick_resource_forest_at(
     entt::registry& registry,
@@ -91,6 +107,7 @@ void prune_dead_selection(std::vector<entt::entity>& selected, entt::registry& r
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f screen_position,
-    float pick_radius_px);
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
 
 } // namespace aoa::sim::player

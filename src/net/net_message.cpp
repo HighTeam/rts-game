@@ -10,7 +10,13 @@ namespace {
 {
     return kind_raw == static_cast<std::uint8_t>(NetMessageKind::PlayerCommand)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::TickStateHash)
-        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::TickInputBatch);
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::TickInputBatch)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::ReconnectRequest)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::ReconnectSnapshot)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::JoinAccepted)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::ResyncReady)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LatencyProbe)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LatencyPong);
 }
 
 } // namespace

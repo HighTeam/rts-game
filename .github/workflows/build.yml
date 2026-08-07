@@ -49,6 +49,11 @@ jobs:
           & $exe --headless --ticks 5
           & $exe --net-smoke
           & $exe --lockstep-smoke
+          Start-Sleep -Milliseconds 500
+          & $exe --lockstep-disconnect-smoke
+          Start-Sleep -Milliseconds 500
+          & $exe --lockstep-reconnect-smoke
+          & $exe --snapshot-smoke
 
       - name: Regression harness
         if: matrix.preset == 'ci-x64-debug'

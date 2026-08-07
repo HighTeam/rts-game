@@ -5,22 +5,201 @@
 #include "sim/components/combat.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
+#include "sim/components/fog_of_war.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/movement.hpp"
+#include "sim/components/fog_of_war.hpp"
+#include "sim/components/player_slot.hpp"
 #include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/snapshot/entity_snapshot_key.hpp"
 #include "sim/systems/pathfinding.hpp"
+#include "sim/systems/visibility_system.hpp"
 
 #include "math/fixed.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
 namespace aoa::sim::systems {
+
+namespace detail {
+
+math::Fixed clamp_fixed(const math::Fixed value, const math::Fixed min_value, const math::Fixed max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+
+    if (value > max_value) {
+        return max_value;
+    }
+
+    return value;
+}
+
+std::pair<math::Fixed, math::Fixed> clamp_world_goal_to_cell(
+    const math::Fixed world_x,
+    const math::Fixed world_y,
+    const core::GridPos cell)
+{
+    const math::Fixed inset = math::Fixed::from_float(constants::MOVE_GOAL_TILE_EDGE_INSET);
+    const math::Fixed min_x = math::Fixed::from_int(cell.x) + inset;
+    const math::Fixed max_x = math::Fixed::from_int(cell.x + 1) - inset;
+    const math::Fixed min_y = math::Fixed::from_int(cell.y) + inset;
+    const math::Fixed max_y = math::Fixed::from_int(cell.y + 1) - inset;
+    return {
+        clamp_fixed(world_x, min_x, max_x),
+        clamp_fixed(world_y, min_y, max_y),
+    };
+}
+
+void path_step_destination(
+    const components::MovePath& path,
+    const core::GridPos step,
+    const bool is_last_step,
+    math::Fixed& out_x,
+    math::Fixed& out_y)
+{
+    if (is_last_step && path.has_goal_world) {
+        out_x = path.goal_world_x;
+        out_y = path.goal_world_y;
+        return;
+    }
+
+    out_x = math::tile_center_coord(step.x);
+    out_y = math::tile_center_coord(step.y);
+}
+
+void sync_grid_from_world(entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.all_of<components::WorldPosition, components::GridPosition>(entity)) {
+        return;
+    }
+
+    const auto& world = registry.get<components::WorldPosition>(entity);
+    auto& grid = registry.get<components::GridPosition>(entity);
+    grid.cell.x = world.x.to_int();
+    grid.cell.y = world.y.to_int();
+}
+
+void sync_previous_world_position_from_current(
+    entt::registry& registry,
+    const entt::entity entity)
+{
+    if (!registry.any_of<components::WorldPosition>(entity)) {
+        return;
+    }
+
+    const auto& world = registry.get<components::WorldPosition>(entity);
+    auto& previous = registry.get_or_emplace<components::PreviousWorldPosition>(entity);
+    previous.x = world.x;
+    previous.y = world.y;
+}
+
+void cancel_move_segment_for_repath(entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.any_of<components::MoveSegment>(entity)) {
+        return;
+    }
+
+    if (registry.all_of<components::MoveSegment, components::WorldPosition>(entity)) {
+        auto& segment = registry.get<components::MoveSegment>(entity);
+        auto& world = registry.get<components::WorldPosition>(entity);
+
+        if (segment.ticks_total > 0) {
+            const int lookahead_ticks = std::min(
+                segment.ticks_elapsed + constants::MOVE_REPATH_SEGMENT_LOOKAHEAD_TICKS,
+                segment.ticks_total);
+            const math::Fixed progress = math::Fixed::from_int(lookahead_ticks)
+                / math::Fixed::from_int(segment.ticks_total);
+            world.x = math::fixed_lerp(segment.from_x, segment.to_x, progress);
+            world.y = math::fixed_lerp(segment.from_y, segment.to_y, progress);
+        }
+    }
+
+    registry.remove<components::MoveSegment>(entity);
+    sync_grid_from_world(registry, entity);
+}
+
+void advance_path_past_reached_steps(entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.all_of<components::MovePath, components::WorldPosition>(entity)) {
+        return;
+    }
+
+    auto& path = registry.get<components::MovePath>(entity);
+    const auto& world = registry.get<components::WorldPosition>(entity);
+    const math::Fixed reach_threshold = math::Fixed::from_float(
+        constants::MOVE_PATH_STEP_REACHED_TILE_DISTANCE);
+    const math::Fixed reach_threshold_squared = reach_threshold * reach_threshold;
+
+    while (path.next_index < static_cast<int>(path.cells.size())) {
+        const core::GridPos step = path.cells[static_cast<std::size_t>(path.next_index)];
+        const bool is_last_step = path.next_index + 1 >= static_cast<int>(path.cells.size());
+        math::Fixed step_x = math::tile_center_coord(step.x);
+        math::Fixed step_y = math::tile_center_coord(step.y);
+        path_step_destination(path, step, is_last_step, step_x, step_y);
+        const math::Fixed delta_x = world.x - step_x;
+        const math::Fixed delta_y = world.y - step_y;
+        const math::Fixed distance_squared = delta_x * delta_x + delta_y * delta_y;
+        if (distance_squared > reach_threshold_squared) {
+            break;
+        }
+
+        ++path.next_index;
+    }
+
+    if (path.next_index >= static_cast<int>(path.cells.size())) {
+        registry.remove<components::MovePath>(entity);
+    }
+}
+
+} // namespace detail
+
+void assign_unit_path(
+    entt::registry& registry,
+    const entt::entity entity,
+    const components::MapGrid& map,
+    const core::GridPos goal,
+    const entt::entity also_ignore,
+    const bool allow_knight_steps,
+    const bool has_goal_world,
+    const math::Fixed goal_world_x,
+    const math::Fixed goal_world_y,
+    const bool use_attack_pathfinding)
+{
+    detail::cancel_move_segment_for_repath(registry, entity);
+    detail::sync_grid_from_world(registry, entity);
+
+    const core::GridPos start = unit_movement_grid_cell(registry, entity);
+    auto& path = registry.get_or_emplace<components::MovePath>(entity);
+    if (use_attack_pathfinding) {
+        path.cells = find_attack_path(map, start, goal, registry, entity, false, also_ignore);
+    }
+    else {
+        path.cells = find_path(map, start, goal, registry, entity, false, also_ignore, allow_knight_steps);
+    }
+    path.next_index = 0;
+    path.has_goal_world = has_goal_world;
+    if (has_goal_world) {
+        const auto [clamped_x, clamped_y] = detail::clamp_world_goal_to_cell(goal_world_x, goal_world_y, goal);
+        path.goal_world_x = clamped_x;
+        path.goal_world_y = clamped_y;
+    }
+
+    if (path.cells.empty() && start == goal && has_goal_world) {
+        path.cells.push_back(goal);
+    }
+
+    detail::advance_path_past_reached_steps(registry, entity);
+    detail::sync_previous_world_position_from_current(registry, entity);
+}
 
 namespace {
 
@@ -39,6 +218,23 @@ const data::ArchetypeDefinition* find_unit_archetype_from_ref(
     const components::DefinitionRef& definition_ref)
 {
     return data::find_unit_archetype(content_pack.content, definition_ref.id);
+}
+
+entt::entity find_town_center_for_player_slot(
+    entt::registry& registry,
+    const std::uint8_t player_slot)
+{
+    const auto town_center_view =
+        registry.view<components::TownCenterTag, components::PlayerOwnedTag, components::GridPosition>();
+    for (const entt::entity candidate : town_center_view) {
+        if (components::entity_player_slot(registry, candidate) != player_slot) {
+            continue;
+        }
+
+        return candidate;
+    }
+
+    return entt::null;
 }
 
 void deplete_forest_tile(components::MapGrid& map, const core::GridPos cell)
@@ -127,26 +323,32 @@ core::GridPos find_adjacent_walkable(
     return target;
 }
 
-void sync_grid_from_world(entt::registry& registry, const entt::entity entity);
-
 void assign_path(
     entt::registry& registry,
     const entt::entity entity,
     const components::MapGrid& map,
-    const core::GridPos goal)
+    const core::GridPos goal,
+    const entt::entity also_ignore = entt::null,
+    const bool allow_knight_steps = true,
+    const bool use_attack_pathfinding = false)
 {
-    if (registry.all_of<components::WorldPosition, components::GridPosition>(entity)) {
-        sync_grid_from_world(registry, entity);
-    }
-
-    const auto& pos = registry.get<components::GridPosition>(entity).cell;
-    auto& path = registry.get_or_emplace<components::MovePath>(entity);
-    path.cells = find_path(map, pos, goal, registry, entity, false);
-    path.next_index = 0;
-    registry.remove<components::MoveSegment>(entity);
+    assign_unit_path(
+        registry,
+        entity,
+        map,
+        goal,
+        also_ignore,
+        allow_knight_steps,
+        false,
+        {},
+        {},
+        use_attack_pathfinding);
 }
 
-bool is_next_path_step_blocked(entt::registry& registry, const entt::entity entity)
+bool is_next_path_step_blocked(
+    entt::registry& registry,
+    const components::MapGrid& map,
+    const entt::entity entity)
 {
     if (!registry.any_of<components::MovePath>(entity)) {
         return false;
@@ -157,8 +359,9 @@ bool is_next_path_step_blocked(entt::registry& registry, const entt::entity enti
         return false;
     }
 
+    const core::GridPos current = unit_movement_grid_cell(registry, entity);
     const core::GridPos next_cell = path.cells[static_cast<std::size_t>(path.next_index)];
-    return is_occupied(registry, next_cell, entity);
+    return is_step_movement_blocked(registry, map, current, next_cell, entity, false);
 }
 
 void replan_path_if_blocked(
@@ -170,7 +373,7 @@ void replan_path_if_blocked(
         return;
     }
 
-    if (!is_next_path_step_blocked(registry, entity)) {
+    if (!is_next_path_step_blocked(registry, map, entity)) {
         return;
     }
 
@@ -180,7 +383,16 @@ void replan_path_if_blocked(
     }
 
     const core::GridPos goal = path.cells.back();
-    assign_path(registry, entity, map, goal);
+    const bool use_attack_pathfinding = registry.any_of<components::AttackOrder>(entity);
+    assign_path(registry, entity, map, goal, entt::null, true, use_attack_pathfinding);
+
+    if (!registry.any_of<components::MovePath>(entity)) {
+        return;
+    }
+
+    if (path.cells.empty() || is_next_path_step_blocked(registry, map, entity)) {
+        registry.remove<components::MovePath>(entity);
+    }
 }
 
 bool reassign_worker_forest_target(
@@ -203,18 +415,6 @@ bool reassign_worker_forest_target(
     return true;
 }
 
-void sync_grid_from_world(entt::registry& registry, const entt::entity entity)
-{
-    if (!registry.all_of<components::WorldPosition, components::GridPosition>(entity)) {
-        return;
-    }
-
-    const auto& world = registry.get<components::WorldPosition>(entity);
-    auto& grid = registry.get<components::GridPosition>(entity);
-    grid.cell.x = world.x.to_int();
-    grid.cell.y = world.y.to_int();
-}
-
 void snapshot_previous_world_positions(entt::registry& registry)
 {
     const auto view = registry.view<components::WorldPosition>();
@@ -228,15 +428,16 @@ void snapshot_previous_world_positions(entt::registry& registry)
 void begin_move_segment(
     entt::registry& registry,
     const entt::entity entity,
-    const core::GridPos next_cell,
+    const math::Fixed to_x,
+    const math::Fixed to_y,
     const int move_ticks_per_tile)
 {
     auto& world = registry.get<components::WorldPosition>(entity);
     auto& segment = registry.get_or_emplace<components::MoveSegment>(entity);
     segment.from_x = world.x;
     segment.from_y = world.y;
-    segment.to_x = math::tile_center_coord(next_cell.x);
-    segment.to_y = math::tile_center_coord(next_cell.y);
+    segment.to_x = to_x;
+    segment.to_y = to_y;
     segment.ticks_elapsed = 0;
     segment.ticks_total = math::compute_move_segment_ticks(
         segment.from_x,
@@ -244,11 +445,16 @@ void begin_move_segment(
         segment.to_x,
         segment.to_y,
         move_ticks_per_tile);
+
+    auto& previous = registry.get_or_emplace<components::PreviousWorldPosition>(entity);
+    previous.x = segment.from_x;
+    previous.y = segment.from_y;
 }
 
 bool try_begin_next_path_step(
     entt::registry& registry,
     const entt::entity entity,
+    const components::MapGrid& map,
     const int move_ticks_per_tile)
 {
     if (registry.any_of<components::MoveSegment>(entity)) {
@@ -259,24 +465,43 @@ bool try_begin_next_path_step(
         return false;
     }
 
+    detail::advance_path_past_reached_steps(registry, entity);
+    if (!registry.any_of<components::MovePath>(entity)) {
+        return false;
+    }
+
     auto& path = registry.get<components::MovePath>(entity);
     if (path.next_index >= static_cast<int>(path.cells.size())) {
         registry.remove<components::MovePath>(entity);
         return false;
     }
 
-    const core::GridPos next_cell = path.cells[static_cast<std::size_t>(path.next_index)];
-    if (is_occupied(registry, next_cell, entity)) {
+    const core::GridPos current = unit_movement_grid_cell(registry, entity);
+    const core::GridPos path_target = path.cells[static_cast<std::size_t>(path.next_index)];
+    if (is_step_movement_blocked(registry, map, current, path_target, entity, false)) {
+        if (registry.any_of<components::AttackOrder>(entity)) {
+            const entt::entity attack_target = registry.get<components::AttackOrder>(entity).target;
+            if (attack_target != entt::null && registry.valid(attack_target)
+                && unit_in_melee_range(registry, entity, attack_target)) {
+                registry.remove<components::MovePath>(entity);
+            }
+        }
+
         return false;
     }
 
-    begin_move_segment(registry, entity, next_cell, move_ticks_per_tile);
+    const bool is_last_step = path.next_index + 1 >= static_cast<int>(path.cells.size());
+    math::Fixed to_x = math::tile_center_coord(path_target.x);
+    math::Fixed to_y = math::tile_center_coord(path_target.y);
+    detail::path_step_destination(path, path_target, is_last_step, to_x, to_y);
+    begin_move_segment(registry, entity, to_x, to_y, move_ticks_per_tile);
     return true;
 }
 
 void advance_move_segment(
     entt::registry& registry,
     const entt::entity entity,
+    const components::MapGrid& map,
     const int move_ticks_per_tile)
 {
     auto& segment = registry.get<components::MoveSegment>(entity);
@@ -297,23 +522,41 @@ void advance_move_segment(
     world.y = math::fixed_lerp(segment.from_y, segment.to_y, progress);
 
     if (segment.ticks_elapsed < segment.ticks_total) {
+        if (is_world_segment_movement_blocked(
+                registry,
+                map,
+                segment.from_x,
+                segment.from_y,
+                world.x,
+                world.y,
+                entity,
+                false)) {
+            detail::sync_grid_from_world(registry, entity);
+            registry.remove<components::MoveSegment>(entity);
+            registry.remove<components::MovePath>(entity);
+        }
+
         return;
     }
 
     world.x = segment.to_x;
     world.y = segment.to_y;
-    sync_grid_from_world(registry, entity);
+    detail::sync_grid_from_world(registry, entity);
+    const core::GridPos reached_cell = move_segment_destination_cell(segment.to_x, segment.to_y);
     registry.remove<components::MoveSegment>(entity);
 
     if (registry.any_of<components::MovePath>(entity)) {
         auto& path = registry.get<components::MovePath>(entity);
-        ++path.next_index;
-        if (path.next_index >= static_cast<int>(path.cells.size())) {
-            registry.remove<components::MovePath>(entity);
+        const core::GridPos path_target = path.cells[static_cast<std::size_t>(path.next_index)];
+        if (reached_cell == path_target) {
+            ++path.next_index;
+            if (path.next_index >= static_cast<int>(path.cells.size())) {
+                registry.remove<components::MovePath>(entity);
+            }
         }
     }
 
-    if (!try_begin_next_path_step(registry, entity, move_ticks_per_tile)) {
+    if (!try_begin_next_path_step(registry, entity, map, move_ticks_per_tile)) {
         return;
     }
 }
@@ -328,25 +571,24 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
         components::DefinitionRef,
         components::Health>();
 
-    for (const entt::entity worker : view) {
+    const std::vector<entt::entity> workers =
+        snapshot::sort_entities_by_snapshot_key(registry, std::vector<entt::entity>(view.begin(), view.end()));
+
+    for (const entt::entity worker : workers) {
         const bool manual = registry.any_of<components::ManualControlTag>(worker);
         const bool has_gather_target = registry.any_of<components::GatherTarget>(worker);
 
-        auto& brain = view.get<components::WorkerBrain>(worker);
-        auto& carried = view.get<components::CarriedWood>(worker);
-        const auto& definition_ref = view.get<components::DefinitionRef>(worker);
+        auto& brain = registry.get<components::WorkerBrain>(worker);
+        auto& carried = registry.get<components::CarriedWood>(worker);
+        const auto& definition_ref = registry.get<components::DefinitionRef>(worker);
         const auto* definition = find_unit_archetype_from_ref(content, definition_ref);
         if (definition == nullptr) {
             continue;
         }
 
-        const auto& worker_pos = view.get<components::GridPosition>(worker).cell;
-
-        entt::entity town_center = entt::null;
-        const auto town_center_view = registry.view<components::TownCenterTag, components::GridPosition>();
-        if (town_center_view.begin() != town_center_view.end()) {
-            town_center = *town_center_view.begin();
-        }
+        const auto& worker_pos = registry.get<components::GridPosition>(worker).cell;
+        const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
+        const entt::entity town_center = find_town_center_for_player_slot(registry, player_slot);
 
         if (town_center == entt::null) {
             continue;
@@ -442,9 +684,11 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
         }
 
         if (brain.state == components::WorkerState::Depositing) {
-            auto& stockpile = registry.get<components::Stockpile>(town_center);
-            stockpile.wood += carried.amount;
-            carried.amount = 0;
+            if (core::chebyshev_distance(worker_pos, depot_pos) > 1) {
+                brain.state = components::WorkerState::MovingToDeposit;
+                continue;
+            }
+
             registry.remove<components::MovePath>(worker);
             brain.state = components::WorkerState::Idle;
         }
@@ -453,20 +697,22 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
 
 void run_attack_chase_system(entt::registry& registry, const components::MapGrid& map)
 {
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::FogOfWarState>(world)) {
+        return;
+    }
+
+    const auto& fog = registry.get<components::FogOfWarState>(world);
+
     const auto view = registry.view<
         components::UnitTag,
         components::GridPosition,
         components::Health,
-        components::AttackOrder>();
+        components::AttackOrder,
+        components::PlayerOwnedTag>();
 
-    std::vector<entt::entity> attackers{};
-    for (const entt::entity attacker : view) {
-        attackers.push_back(attacker);
-    }
-
-    std::sort(attackers.begin(), attackers.end(), [](const entt::entity left, const entt::entity right) {
-        return static_cast<entt::id_type>(left) < static_cast<entt::id_type>(right);
-    });
+    std::vector<entt::entity> attackers(view.begin(), view.end());
+    attackers = snapshot::sort_entities_by_snapshot_key(registry, std::move(attackers));
 
     for (const entt::entity attacker : attackers) {
         const auto& attacker_health = registry.get<components::Health>(attacker);
@@ -474,7 +720,8 @@ void run_attack_chase_system(entt::registry& registry, const components::MapGrid
             continue;
         }
 
-        const entt::entity target = registry.get<components::AttackOrder>(attacker).target;
+        auto& attack_order = registry.get<components::AttackOrder>(attacker);
+        const entt::entity target = attack_order.target;
         if (target == entt::null || !registry.valid(target)
             || !registry.all_of<components::Health, components::GridPosition>(target)) {
             registry.remove<components::AttackOrder>(attacker);
@@ -487,16 +734,38 @@ void run_attack_chase_system(entt::registry& registry, const components::MapGrid
             continue;
         }
 
-        const core::GridPos attacker_pos = registry.get<components::GridPosition>(attacker).cell;
+        const std::uint8_t attacker_slot = components::entity_player_slot(registry, attacker);
         const core::GridPos target_pos = registry.get<components::GridPosition>(target).cell;
-        if (core::chebyshev_distance(attacker_pos, target_pos) <= 1) {
+        const bool target_visible =
+            is_opponent_entity_visible_to_slot(registry, fog, target, attacker_slot);
+
+        core::GridPos chase_cell = target_pos;
+        if (target_visible) {
+            attack_order.last_known_cell = target_pos;
+        }
+        else if (attack_order.last_known_cell.x >= 0 && attack_order.last_known_cell.y >= 0) {
+            chase_cell = attack_order.last_known_cell;
+        }
+        else {
+            registry.remove<components::AttackOrder>(attacker);
+            continue;
+        }
+
+        if (unit_in_melee_range(registry, attacker, target)) {
             registry.remove<components::MovePath>(attacker);
             registry.remove<components::MoveSegment>(attacker);
             continue;
         }
 
-        const core::GridPos stand_tile = find_adjacent_walkable(map, registry, target_pos, attacker);
-        if (stand_tile == target_pos) {
+        if (unit_grid_adjacent(registry, attacker, target)) {
+            registry.remove<components::MovePath>(attacker);
+            registry.remove<components::MoveSegment>(attacker);
+            continue;
+        }
+
+        const core::GridPos stand_tile =
+            find_best_melee_stand_tile(map, registry, chase_cell, attacker, target);
+        if (stand_tile == chase_cell) {
             continue;
         }
 
@@ -504,28 +773,35 @@ void run_attack_chase_system(entt::registry& registry, const components::MapGrid
             continue;
         }
 
-        bool path_reaches_target = false;
         if (registry.any_of<components::MovePath>(attacker)) {
             const auto& path = registry.get<components::MovePath>(attacker);
-            if (!path.cells.empty() && path.next_index < static_cast<int>(path.cells.size())) {
+            if (!path.cells.empty()) {
                 const core::GridPos path_goal = path.cells.back();
-                path_reaches_target = core::chebyshev_distance(path_goal, target_pos) <= 1;
+                if (path_goal == stand_tile) {
+                    const core::GridPos current = unit_movement_grid_cell(registry, attacker);
+                    const bool path_is_direct = attack_path_follows_direct_line(
+                        current,
+                        stand_tile,
+                        path.cells,
+                        path.next_index);
+                    if (path_is_direct && !is_next_path_step_blocked(registry, map, attacker)) {
+                        continue;
+                    }
+                }
             }
         }
 
-        if (path_reaches_target) {
-            continue;
-        }
-
-        assign_path(registry, attacker, map, stand_tile);
+        assign_path(registry, attacker, map, stand_tile, entt::null, true, true);
     }
 }
 
 void run_enemy_militia_ai(entt::registry& registry)
 {
     const auto view = registry.view<components::MilitiaUnitTag, components::EnemyTag, components::GridPosition>();
+    const std::vector<entt::entity> militia_units =
+        snapshot::sort_entities_by_snapshot_key(registry, std::vector<entt::entity>(view.begin(), view.end()));
 
-    for (const entt::entity militia : view) {
+    for (const entt::entity militia : militia_units) {
         entt::entity target = entt::null;
         int best_distance = std::numeric_limits<int>::max();
         const core::GridPos militia_pos = view.get<components::GridPosition>(militia).cell;
@@ -555,6 +831,10 @@ void run_enemy_militia_ai(entt::registry& registry)
         }
 
         registry.get_or_emplace<components::AttackOrder>(militia).target = target;
+        if (target != entt::null && registry.any_of<components::GridPosition>(target)) {
+            registry.get<components::AttackOrder>(militia).last_known_cell =
+                registry.get<components::GridPosition>(target).cell;
+        }
     }
 }
 
@@ -569,51 +849,64 @@ void run_movement_system(
         components::GridPosition,
         components::DefinitionRef>();
 
-    for (const entt::entity entity : view) {
-        const auto& definition_ref = view.get<components::DefinitionRef>(entity);
+    const std::vector<entt::entity> units =
+        snapshot::sort_entities_by_snapshot_key(registry, std::vector<entt::entity>(view.begin(), view.end()));
+
+    for (const entt::entity entity : units) {
+        const auto& definition_ref = registry.get<components::DefinitionRef>(entity);
         const auto* definition = find_unit_archetype_from_ref(content, definition_ref);
         if (definition == nullptr) {
             continue;
         }
 
         if (registry.any_of<components::MoveSegment>(entity)) {
-            advance_move_segment(registry, entity, definition->move_ticks_per_tile);
+            advance_move_segment(registry, entity, map, definition->move_ticks_per_tile);
             continue;
         }
 
         replan_path_if_blocked(registry, entity, map);
-        try_begin_next_path_step(registry, entity, definition->move_ticks_per_tile);
+        try_begin_next_path_step(registry, entity, map, definition->move_ticks_per_tile);
     }
 }
 
 void run_worker_deposit_system(entt::registry& registry)
 {
-    const auto town_center_view = registry.view<components::TownCenterTag, components::GridPosition, components::Stockpile>();
+    const auto town_center_view =
+        registry.view<components::TownCenterTag, components::PlayerOwnedTag, components::GridPosition, components::Stockpile>();
     if (town_center_view.begin() == town_center_view.end()) {
         return;
     }
 
-    const entt::entity town_center = *town_center_view.begin();
-    const core::GridPos depot_pos = town_center_view.get<components::GridPosition>(town_center).cell;
-
     const auto worker_view = registry.view<
         components::WorkerUnitTag,
+        components::PlayerOwnedTag,
         components::GridPosition,
         components::CarriedWood,
         components::Health>();
 
-    for (const entt::entity worker : worker_view) {
-        const auto& health = worker_view.get<components::Health>(worker);
+    const std::vector<entt::entity> workers = snapshot::sort_entities_by_snapshot_key(
+        registry,
+        std::vector<entt::entity>(worker_view.begin(), worker_view.end()));
+
+    for (const entt::entity worker : workers) {
+        const auto& health = registry.get<components::Health>(worker);
         if (health.current.raw() <= 0) {
             continue;
         }
 
-        auto& carried = worker_view.get<components::CarriedWood>(worker);
+        auto& carried = registry.get<components::CarriedWood>(worker);
         if (carried.amount <= 0) {
             continue;
         }
 
-        const core::GridPos worker_pos = worker_view.get<components::GridPosition>(worker).cell;
+        const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
+        const entt::entity town_center = find_town_center_for_player_slot(registry, player_slot);
+        if (town_center == entt::null) {
+            continue;
+        }
+
+        const core::GridPos depot_pos = registry.get<components::GridPosition>(town_center).cell;
+        const core::GridPos worker_pos = registry.get<components::GridPosition>(worker).cell;
         if (core::chebyshev_distance(worker_pos, depot_pos) > 1) {
             continue;
         }
@@ -630,6 +923,89 @@ void run_worker_deposit_system(entt::registry& registry)
     }
 }
 
+void run_melee_contact_system(entt::registry& registry)
+{
+    const auto view = registry.view<
+        components::UnitTag,
+        components::WorldPosition,
+        components::GridPosition,
+        components::AttackOrder,
+        components::Health>();
+
+    std::vector<entt::entity> units(view.begin(), view.end());
+    units = snapshot::sort_entities_by_snapshot_key(registry, std::move(units));
+
+    const math::Fixed max_contact_distance = math::Fixed::from_float(
+        constants::MELEE_CONTACT_CENTER_DISTANCE_TILES);
+    const math::Fixed max_contact_distance_sq = max_contact_distance * max_contact_distance;
+
+    for (const entt::entity unit : units) {
+        if (view.get<components::Health>(unit).current.raw() <= 0) {
+            continue;
+        }
+
+        const entt::entity target = view.get<components::AttackOrder>(unit).target;
+        if (target == entt::null || !registry.valid(target) || !registry.any_of<components::WorldPosition>(target)) {
+            continue;
+        }
+
+        if (!registry.any_of<components::Health>(target)
+            || registry.get<components::Health>(target).current.raw() <= 0) {
+            continue;
+        }
+
+        if (!unit_grid_adjacent(registry, unit, target)) {
+            continue;
+        }
+
+        auto& world = view.get<components::WorldPosition>(unit);
+        const auto& target_world = registry.get<components::WorldPosition>(target);
+
+        const math::Fixed delta_x = target_world.x - world.x;
+        const math::Fixed delta_y = target_world.y - world.y;
+        const math::Fixed distance_sq = delta_x * delta_x + delta_y * delta_y;
+        if (distance_sq.raw() <= max_contact_distance_sq.raw()) {
+            continue;
+        }
+
+        const float distance = std::sqrt(distance_sq.to_float());
+        if (distance <= 0.0001F) {
+            continue;
+        }
+
+        if (distance <= constants::MELEE_STRIKE_MAX_CENTER_DISTANCE_TILES) {
+            const float contact = constants::MELEE_CONTACT_CENTER_DISTANCE_TILES;
+            const float nx = delta_x.to_float() / distance;
+            const float nz = delta_y.to_float() / distance;
+            world.x = target_world.x - math::Fixed::from_float(nx * contact);
+            world.y = target_world.y - math::Fixed::from_float(nz * contact);
+            continue;
+        }
+
+        const float excess = distance - constants::MELEE_CONTACT_CENTER_DISTANCE_TILES;
+        if (excess <= 0.0F) {
+            continue;
+        }
+
+        bool target_attacks_back = false;
+        if (registry.any_of<components::AttackOrder>(target)) {
+            const entt::entity target_attack = registry.get<components::AttackOrder>(target).target;
+            target_attacks_back = target_attack == unit;
+        }
+
+        const float share = target_attacks_back ? 0.5F : 1.0F;
+        const float close_by = std::min(constants::MELEE_CONTACT_SLIDE_PER_TICK, excess * share);
+        if (close_by <= 0.0F) {
+            continue;
+        }
+
+        const float step_x = delta_x.to_float() / distance * close_by;
+        const float step_z = delta_y.to_float() / distance * close_by;
+        world.x = world.x + math::Fixed::from_float(step_x);
+        world.y = world.y + math::Fixed::from_float(step_z);
+    }
+}
+
 void run_combat_system(entt::registry& registry, const components::ContentPack& content)
 {
     const auto view = registry.view<
@@ -640,14 +1016,8 @@ void run_combat_system(entt::registry& registry, const components::ContentPack& 
         components::AttackCooldown,
         components::Health>();
 
-    std::vector<entt::entity> attackers{};
-    for (const entt::entity attacker : view) {
-        attackers.push_back(attacker);
-    }
-
-    std::sort(attackers.begin(), attackers.end(), [](const entt::entity left, const entt::entity right) {
-        return static_cast<entt::id_type>(left) < static_cast<entt::id_type>(right);
-    });
+    std::vector<entt::entity> attackers(view.begin(), view.end());
+    attackers = snapshot::sort_entities_by_snapshot_key(registry, std::move(attackers));
 
     for (const entt::entity attacker : attackers) {
         auto& cooldown = registry.get<components::AttackCooldown>(attacker);
@@ -666,9 +1036,7 @@ void run_combat_system(entt::registry& registry, const components::ContentPack& 
             continue;
         }
 
-        const core::GridPos attacker_pos = registry.get<components::GridPosition>(attacker).cell;
-        const core::GridPos target_pos = registry.get<components::GridPosition>(target).cell;
-        if (core::chebyshev_distance(attacker_pos, target_pos) > 1) {
+        if (!unit_in_melee_range(registry, attacker, target)) {
             continue;
         }
 
@@ -719,11 +1087,13 @@ void run_gameplay_systems(entt::registry& registry)
     auto& map = registry.get<components::MapGrid>(world);
     const auto& content = registry.get<components::ContentPack>(world);
 
+    run_visibility_system(registry);
     run_worker_system(registry, map, content);
     run_worker_deposit_system(registry);
     run_enemy_militia_ai(registry);
     run_attack_chase_system(registry, map);
     run_movement_system(registry, map, content);
+    run_melee_contact_system(registry);
     run_combat_system(registry, content);
     run_death_cleanup(registry);
 }
@@ -756,6 +1126,21 @@ void compute_state_hash(entt::registry& registry)
         mix(static_cast<std::uint64_t>(wood));
     }
 
+    if (registry.any_of<components::FogOfWarState>(world)) {
+        const auto& fog = registry.get<components::FogOfWarState>(world);
+        mix(static_cast<std::uint64_t>(fog.width));
+        mix(static_cast<std::uint64_t>(fog.height));
+        for (std::size_t index = 0U; index < fog.explored.size(); ++index) {
+            mix(static_cast<std::uint64_t>(fog.explored[index]));
+            if (fog.explored[index] != 0U && index < fog.memory_tiles.size()) {
+                mix(static_cast<std::uint64_t>(fog.memory_tiles[index]));
+            }
+            if (fog.explored[index] != 0U && index < fog.memory_forest_wood.size()) {
+                mix(static_cast<std::uint64_t>(fog.memory_forest_wood[index]));
+            }
+        }
+    }
+
     std::vector<entt::entity> entities{};
     for (const entt::entity entity : registry.view<components::GridPosition>()) {
         if (registry.all_of<components::WorldTag>(entity)) {
@@ -764,10 +1149,38 @@ void compute_state_hash(entt::registry& registry)
 
         entities.push_back(entity);
     }
-    std::sort(entities.begin(), entities.end());
+
+    std::sort(entities.begin(), entities.end(), [&registry](const entt::entity left, const entt::entity right) {
+        const std::optional<snapshot::EntitySnapshotKey> left_key =
+            snapshot::compute_entity_snapshot_key(registry, left);
+        const std::optional<snapshot::EntitySnapshotKey> right_key =
+            snapshot::compute_entity_snapshot_key(registry, right);
+
+        if (left_key.has_value() && right_key.has_value()) {
+            return snapshot::compare_entity_snapshot_keys(*left_key, *right_key);
+        }
+
+        if (left_key.has_value() != right_key.has_value()) {
+            return left_key.has_value();
+        }
+
+        const core::GridPos left_cell = registry.get<components::GridPosition>(left).cell;
+        const core::GridPos right_cell = registry.get<components::GridPosition>(right).cell;
+        if (left_cell.x != right_cell.x) {
+            return left_cell.x < right_cell.x;
+        }
+
+        return left_cell.y < right_cell.y;
+    });
 
     for (const entt::entity entity : entities) {
-        mix(static_cast<std::uint64_t>(entity));
+        const std::optional<snapshot::EntitySnapshotKey> entity_key =
+            snapshot::compute_entity_snapshot_key(registry, entity);
+        if (!entity_key.has_value()) {
+            continue;
+        }
+
+        snapshot::mix_entity_snapshot_key(hash, *entity_key);
 
         if (registry.any_of<components::GridPosition>(entity)) {
             const auto& pos = registry.get<components::GridPosition>(entity).cell;
@@ -796,8 +1209,20 @@ void compute_state_hash(entt::registry& registry)
         }
 
         if (registry.any_of<components::AttackOrder>(entity)) {
-            mix(static_cast<std::uint64_t>(
-                entt::to_integral(registry.get<components::AttackOrder>(entity).target)));
+            const auto& attack_order = registry.get<components::AttackOrder>(entity);
+            const entt::entity target = attack_order.target;
+            if (target != entt::null && registry.valid(target)) {
+                const std::optional<snapshot::EntitySnapshotKey> target_key =
+                    snapshot::compute_entity_snapshot_key(registry, target);
+                if (target_key.has_value()) {
+                    snapshot::mix_entity_snapshot_key(hash, *target_key);
+                }
+            }
+
+            if (attack_order.last_known_cell.x >= 0 && attack_order.last_known_cell.y >= 0) {
+                mix(static_cast<std::uint64_t>(attack_order.last_known_cell.x));
+                mix(static_cast<std::uint64_t>(attack_order.last_known_cell.y));
+            }
         }
 
         if (registry.any_of<components::AttackCooldown>(entity)) {
@@ -820,6 +1245,10 @@ void compute_state_hash(entt::registry& registry)
             mix(1U);
         }
 
+        if (registry.any_of<components::PlayerSlot>(entity)) {
+            mix(static_cast<std::uint64_t>(registry.get<components::PlayerSlot>(entity).value));
+        }
+
         if (registry.any_of<components::MovePath>(entity)) {
             const auto& path = registry.get<components::MovePath>(entity);
             mix(static_cast<std::uint64_t>(path.next_index));
@@ -827,6 +1256,11 @@ void compute_state_hash(entt::registry& registry)
             for (const core::GridPos cell : path.cells) {
                 mix(static_cast<std::uint64_t>(cell.x));
                 mix(static_cast<std::uint64_t>(cell.y));
+            }
+            mix(path.has_goal_world ? 1U : 0U);
+            if (path.has_goal_world) {
+                mix(static_cast<std::uint64_t>(path.goal_world_x.raw()));
+                mix(static_cast<std::uint64_t>(path.goal_world_y.raw()));
             }
         }
 
