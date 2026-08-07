@@ -14,6 +14,7 @@ struct LockstepRunOptions {
     std::uint8_t session_player_count{
         static_cast<std::uint8_t>(constants::LOCKSTEP_PLAYER_COUNT)};
     std::uint8_t player_slot{constants::LOCKSTEP_CLIENT_PLAYER_SLOT};
+    bool lockstep_debug{false};
     std::optional<std::string> join_address{};
 };
 

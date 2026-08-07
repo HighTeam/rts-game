@@ -1,3 +1,4 @@
+#include "net/lockstep_debug_log.hpp"
 #include "net/lockstep_runner.hpp"
 
 #include "core/constants.hpp"
@@ -20,8 +21,11 @@
 #include "sim/systems/disconnected_player_ai.hpp"
 #include "sim/systems/gameplay_systems.hpp"
 
+#include <chrono>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace aoa::net {
 
@@ -367,6 +371,94 @@ bool wait_for_lockstep_connection(LockstepSession& host, LockstepSession& client
     const std::uint64_t host_hash = host_simulation.state_hash();
     return host_hash == client_one_simulation.state_hash() && host_hash == client_two_simulation.state_hash()
         && host_hash == client_three_simulation.state_hash();
+}
+
+[[nodiscard]] bool wait_for_lockstep_session_ready(
+    LockstepSession& session,
+    const std::chrono::milliseconds timeout_ms)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (session.is_desynced() || session.is_host_gone()) {
+            return false;
+        }
+
+        if (session.is_connected() && session.is_session_ready()) {
+            return true;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(constants::LOCKSTEP_TICK_IDLE_SLEEP_MS));
+    }
+
+    return session.is_connected() && session.is_session_ready();
+}
+
+[[nodiscard]] bool wait_for_lockstep_host_clients(
+    LockstepSession& session,
+    const std::uint8_t expected_clients,
+    const std::chrono::milliseconds timeout_ms)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (session.is_desynced()) {
+            return false;
+        }
+
+        if (session.connected_peer_count() >= expected_clients && session.is_session_ready()) {
+            return true;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(constants::LOCKSTEP_TICK_IDLE_SLEEP_MS));
+    }
+
+    return session.connected_peer_count() >= expected_clients && session.is_session_ready();
+}
+
+[[nodiscard]] bool advance_lockstep_session_ticks(
+    LockstepSession& session,
+    sim::Simulation& simulation,
+    const std::uint64_t ticks_to_advance,
+    const std::chrono::milliseconds timeout_ms)
+{
+    std::uint64_t start_tick = 0U;
+    {
+        std::lock_guard lock(session.simulation_access_mutex());
+        start_tick = simulation.tick_count();
+    }
+
+    const std::uint64_t target_tick = start_tick + ticks_to_advance;
+    const auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (session.is_desynced()) {
+            return false;
+        }
+
+        if (session.is_peer_disconnected() && !session.is_ai_fallback()) {
+            return false;
+        }
+
+        if (session.is_host_gone() || session.is_reconnecting()) {
+            return false;
+        }
+
+        {
+            std::lock_guard lock(session.simulation_access_mutex());
+            if (simulation.tick_count() >= target_tick) {
+                return true;
+            }
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(constants::LOCKSTEP_TICK_IDLE_SLEEP_MS));
+    }
+
+    std::lock_guard lock(session.simulation_access_mutex());
+    return simulation.tick_count() >= target_tick;
 }
 
 bool advance_lockstep_session(LockstepSession& session, const std::uint64_t target_ticks)
@@ -926,6 +1018,10 @@ int run_lockstep_host(const LockstepRunOptions& options)
         simulation,
         options.session_player_count};
 
+    if (options.lockstep_debug) {
+        LockstepDebugLog::enable(constants::LOCKSTEP_HOST_PLAYER_SLOT, LockstepRole::Host);
+    }
+
     const std::uint16_t port =
         options.port == 0U ? constants::DEFAULT_PORT : options.port;
 
@@ -938,17 +1034,14 @@ int run_lockstep_host(const LockstepRunOptions& options)
     std::cout << "lockstep-host: listening on port " << port << " for "
               << static_cast<int>(options.session_player_count) << " players\n";
 
+    session.start_background_tick_loop();
+
     const std::uint8_t expected_clients =
         static_cast<std::uint8_t>(options.session_player_count - 1U);
+    const auto join_timeout = std::chrono::milliseconds(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS);
 
-    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
-        session.poll();
-        if (session.connected_peer_count() >= expected_clients && session.is_session_ready()) {
-            break;
-        }
-    }
-
-    if (session.connected_peer_count() < expected_clients || !session.is_session_ready()) {
+    if (!wait_for_lockstep_host_clients(session, expected_clients, join_timeout)) {
+        session.stop_background_tick_loop();
         std::cerr << "lockstep-host: timed out waiting for " << static_cast<int>(expected_clients)
                   << " client(s)\n";
         EnetTransport::global_deinitialize();
@@ -958,7 +1051,13 @@ int run_lockstep_host(const LockstepRunOptions& options)
     const std::uint64_t target_ticks =
         options.tick_count == 0U ? constants::LOCKSTEP_DEFAULT_TICK_COUNT : options.tick_count;
 
-    if (!advance_lockstep_session(session, target_ticks)) {
+    const auto advance_timeout = std::chrono::milliseconds(
+        static_cast<long long>(target_ticks) * 1000LL
+        / static_cast<long long>(aoa::constants::SIM_TICKS_PER_SECOND)
+        + static_cast<long long>(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS));
+
+    if (!advance_lockstep_session_ticks(session, simulation, target_ticks, advance_timeout)) {
+        session.stop_background_tick_loop();
         if (session.is_desynced()) {
             std::cerr << "lockstep-host: desync at tick " << session.desync_tick() << '\n';
         }
@@ -975,6 +1074,8 @@ int run_lockstep_host(const LockstepRunOptions& options)
         EnetTransport::global_deinitialize();
         return 1;
     }
+
+    session.stop_background_tick_loop();
 
     std::cout << "lockstep-host: ok ticks=" << target_ticks << " hash=0x" << std::hex
               << simulation.state_hash() << std::dec << '\n';
@@ -1008,6 +1109,10 @@ int run_lockstep_join(const LockstepRunOptions& options)
         simulation,
         options.session_player_count};
 
+    if (options.lockstep_debug) {
+        LockstepDebugLog::enable(options.player_slot, LockstepRole::Client);
+    }
+
     if (!session.connect(parsed_address->first.c_str(), parsed_address->second)) {
         std::cerr << "lockstep-join: failed to connect to " << *options.join_address << '\n';
         EnetTransport::global_deinitialize();
@@ -1018,14 +1123,11 @@ int run_lockstep_join(const LockstepRunOptions& options)
               << static_cast<int>(options.player_slot + 1U) << " to " << *options.join_address
               << '\n';
 
-    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
-        session.poll();
-        if (session.is_connected() && session.is_session_ready()) {
-            break;
-        }
-    }
+    session.start_background_tick_loop();
 
-    if (!session.is_connected() || !session.is_session_ready()) {
+    const auto join_timeout = std::chrono::milliseconds(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS);
+    if (!wait_for_lockstep_session_ready(session, join_timeout)) {
+        session.stop_background_tick_loop();
         std::cerr << "lockstep-join: timed out waiting for host\n";
         EnetTransport::global_deinitialize();
         return 1;
@@ -1034,7 +1136,13 @@ int run_lockstep_join(const LockstepRunOptions& options)
     const std::uint64_t target_ticks =
         options.tick_count == 0U ? constants::LOCKSTEP_DEFAULT_TICK_COUNT : options.tick_count;
 
-    if (!advance_lockstep_session(session, target_ticks)) {
+    const auto advance_timeout = std::chrono::milliseconds(
+        static_cast<long long>(target_ticks) * 1000LL
+        / static_cast<long long>(aoa::constants::SIM_TICKS_PER_SECOND)
+        + static_cast<long long>(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS));
+
+    if (!advance_lockstep_session_ticks(session, simulation, target_ticks, advance_timeout)) {
+        session.stop_background_tick_loop();
         if (session.is_desynced()) {
             std::cerr << "lockstep-join: desync at tick " << session.desync_tick() << '\n';
         }
@@ -1056,6 +1164,8 @@ int run_lockstep_join(const LockstepRunOptions& options)
         EnetTransport::global_deinitialize();
         return 1;
     }
+
+    session.stop_background_tick_loop();
 
     std::cout << "lockstep-join: ok ticks=" << target_ticks << " hash=0x" << std::hex
               << simulation.state_hash() << std::dec << '\n';

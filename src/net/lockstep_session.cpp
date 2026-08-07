@@ -577,21 +577,21 @@ void LockstepSession::enqueue_inbound_packets(std::vector<ReceivedPacket> packet
     std::lock_guard lock(inbound_packet_mutex_);
     inbound_packet_queue_.reserve(inbound_packet_queue_.size() + packets.size());
     for (ReceivedPacket& packet : packets) {
-        inbound_packet_queue_.push_back(std::move(packet.data));
+        inbound_packet_queue_.push_back(std::move(packet));
     }
 }
 
 void LockstepSession::drain_inbound_packet_queue_locked()
 {
-    std::vector<std::vector<std::byte>> packets{};
+    std::vector<ReceivedPacket> packets{};
     {
         std::lock_guard lock(inbound_packet_mutex_);
         packets = std::move(inbound_packet_queue_);
         inbound_packet_queue_.clear();
     }
 
-    for (const std::vector<std::byte>& packet : packets) {
-        process_received_packet(packet);
+    for (const ReceivedPacket& packet : packets) {
+        process_received_packet(packet.data, packet.sender_slot);
     }
 }
 
@@ -687,7 +687,7 @@ bool LockstepSession::try_process_latency_packet(const std::vector<std::byte>& p
 
 void LockstepSession::process_inbound_latency_packets()
 {
-    std::vector<std::vector<std::byte>> packets{};
+    std::vector<ReceivedPacket> packets{};
     {
         std::lock_guard lock(inbound_packet_mutex_);
         packets = std::move(inbound_packet_queue_);
@@ -698,11 +698,11 @@ void LockstepSession::process_inbound_latency_packets()
         return;
     }
 
-    std::vector<std::vector<std::byte>> game_packets{};
+    std::vector<ReceivedPacket> game_packets{};
     game_packets.reserve(packets.size());
 
-    for (std::vector<std::byte>& packet : packets) {
-        if (try_process_latency_packet(packet)) {
+    for (ReceivedPacket& packet : packets) {
+        if (try_process_latency_packet(packet.data)) {
             continue;
         }
 
@@ -1184,20 +1184,24 @@ void LockstepSession::maybe_send_pending_reconnect_snapshot()
         "tick=" + std::to_string(simulation_.tick_count()));
 }
 
-void LockstepSession::send_join_accepted(const std::uint8_t target_client_slot)
+void LockstepSession::send_join_accepted(
+    const std::uint8_t player_slot,
+    const std::uint8_t enet_client_slot)
 {
     const std::vector<std::byte> wire_message =
         encode_net_message(NetMessageKind::JoinAccepted, {});
 
     if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
         (void)transport_.send_reliable_to_client(
-            target_client_slot,
+            enet_client_slot,
             wire_message,
             constants::CHANNEL_RELIABLE);
     }
     else {
         (void)transport_.send_reliable(wire_message, constants::CHANNEL_RELIABLE);
     }
+
+    (void)player_slot;
 
     session_ready_ = true;
     awaiting_reconnect_handshake_ = false;
@@ -1350,7 +1354,9 @@ bool LockstepSession::should_send_reconnect_snapshot() const
     return ai_fallback_ || opponent_needs_snapshot_;
 }
 
-void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
+void LockstepSession::handle_reconnect_request(
+    const std::uint8_t player_slot,
+    const std::uint8_t enet_client_slot)
 {
     if (role_ != LockstepRole::Host) {
         return;
@@ -1361,6 +1367,14 @@ void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
     }
 
     if (session_player_count_ == 2U && player_slot != opponent_player_slot()) {
+        return;
+    }
+
+    if (session_player_count_ > 2U && enet_client_slot != player_slot) {
+        LockstepDebugLog::log_event(
+            "reconnect_request_rejected",
+            "player_slot=" + std::to_string(player_slot) + " enet_slot="
+            + std::to_string(enet_client_slot) + " connect_in_order");
         return;
     }
 
@@ -1397,7 +1411,7 @@ void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
     }
 
     opponent_reconnect_pending_ = false;
-    send_join_accepted(player_slot);
+    send_join_accepted(player_slot, enet_client_slot);
 }
 
 void LockstepSession::handle_reconnect_snapshot(const std::vector<std::byte>& payload)
@@ -1858,7 +1872,9 @@ void LockstepSession::flush_pending_local_commands_to_input_log()
     local_outbox_.clear();
 }
 
-void LockstepSession::process_received_packet(const std::vector<std::byte>& packet)
+void LockstepSession::process_received_packet(
+    const std::vector<std::byte>& packet,
+    const std::uint8_t sender_slot)
 {
     const auto decoded_message = decode_net_message(packet);
     if (!decoded_message.has_value()) {
@@ -1873,7 +1889,7 @@ void LockstepSession::process_received_packet(const std::vector<std::byte>& pack
             return;
         }
 
-        handle_reconnect_request(message->player_slot);
+        handle_reconnect_request(message->player_slot, sender_slot);
         return;
     }
 

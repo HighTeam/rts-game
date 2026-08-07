@@ -60,6 +60,7 @@ int main(int argc, char** argv)
                 lockstep_options.tick_count = options.lockstep_ticks;
                 lockstep_options.port = options.lockstep_port;
                 lockstep_options.session_player_count = options.lockstep_player_count;
+                lockstep_options.lockstep_debug = options.lockstep_debug;
                 return aoa::net::run_lockstep_host(lockstep_options);
             }
 
@@ -73,6 +74,7 @@ int main(int argc, char** argv)
                 lockstep_options.join_address = options.lockstep_join_address;
                 lockstep_options.session_player_count = options.lockstep_player_count;
                 lockstep_options.player_slot = aoa::app::resolve_lockstep_join_player_slot(options);
+                lockstep_options.lockstep_debug = options.lockstep_debug;
                 return aoa::net::run_lockstep_join(lockstep_options);
             }
 
