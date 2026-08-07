@@ -120,7 +120,8 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 ### 8-player scaling
 
-- [ ] Bandwidth/perf test with 8 simulated clients (can fake most as bots on one machine for dev testing)
+- [ ] Multi-peer ENet + N-way lockstep (see [scripts/issue-bodies/m3-8player.md](scripts/issue-bodies/m3-8player.md))
+- [ ] Scale testing without 8 PCs — [docs/M3_SCALE_TESTING.md](M3_SCALE_TESTING.md) (CI smokes + headless peers + 2-PC split LAN)
 - [ ] Host migration policy decision: if host disconnects, does the match end, or does another client take over hosting? (Decide now — affects lobby/network code shape; retrofitting host migration later is painful)
 
 ### Save/load
