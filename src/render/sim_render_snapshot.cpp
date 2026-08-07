@@ -580,22 +580,16 @@ std::optional<core::GridPos> pick_resource_forest_at_screen(
     const GameRenderer& renderer,
     const sf::Vector2f screen_position,
     const float pick_radius_px,
-    const std::uint8_t local_player_slot)
+    [[maybe_unused]] const std::uint8_t local_player_slot)
 {
     const auto grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
     if (!grid_cell.has_value()) {
         return std::nullopt;
     }
 
-    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)) {
+    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)
+        || !snapshot_cell_is_visible(snapshot, *grid_cell)) {
         return std::nullopt;
-    }
-
-    if (!snapshot.fog_visible.empty()) {
-        const std::size_t index = static_cast<std::size_t>(grid_cell->y * snapshot.map_width + grid_cell->x);
-        if (index >= snapshot.fog_visible.size() || snapshot.fog_visible[index] == 0U) {
-            return std::nullopt;
-        }
     }
 
     if (pick_resource_forest_at(snapshot, *grid_cell).has_value()) {

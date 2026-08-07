@@ -69,9 +69,9 @@ namespace {
 
 #ifdef AOA_RUNTIME_ROOT
     return std::filesystem::path(AOA_RUNTIME_ROOT) / relative_name;
-#endif
-
+#else
     return std::filesystem::path(relative_name);
+#endif
 }
 
 } // namespace
