@@ -1,122 +1,210 @@
-# M3 scale testing (4–8 players, two PCs)
+# 4–8 player testing instructions
 
-M2 proved **2-player** lockstep on LAN. M3 adds **multi-peer transport** (`MAX_PEERS` > 2, N-way input gating). You do **not** need 4–8 physical machines to validate scale.
+You do **not** need 4–8 physical PCs. Use **automated smokes** on one machine for sync proof, and **two PCs** only for a short LAN spot-check (firewall + real ping).
 
-## What we test where
-
-| Layer | Where | Needs extra PCs? |
-|-------|--------|-------------------|
-| **Determinism / desync** | CI headless smokes (`--lockstep-N-smoke`) | No |
-| **Reconnect / AI / snapshot** | Same smokes + existing 2-player LAN | No (CI) / 2 PCs (LAN spot-check) |
-| **Subjective feel** (FPS, interpolation) | 1–2 graphical clients | 2 PCs enough |
-| **Long soak (60+ min)** | Script spawning headless peers | No (1 PC) or split (2 PCs) |
-
-**Rule:** Automate N-player sync on **one machine in CI**. Use **two PCs** only for a short LAN spot-check (firewall, real RTT, one graphical client per machine).
+Default game port: **27000**. Build path below assumes Release at `build\x64-release\Release\aoa.exe`.
 
 ---
 
-## CI / daily dev (no LAN)
-
-After M3 multi-peer ships, add headless smokes (same pattern as `--lockstep-reconnect-smoke`):
-
-| Smoke | Purpose |
-|-------|---------|
-| `--lockstep-4-smoke` | 4 peers in-process or 4 localhost processes; hash match + basic commands |
-| `--lockstep-8-smoke` | 8 peers; staggered join, one disconnect + AI + reconnect |
-| `--lockstep-8-disconnect-smoke` | Two non-host slots drop; AI for both; sim never freezes |
-
-Implementation options (pick one for M3):
-
-1. **In-process mesh** — one test binary runs host + N−1 virtual `LockstepSession` clients (fastest CI, like today’s 2-player smoke).
-2. **Multi-process localhost** — test runner spawns `aoa --lockstep-join 127.0.0.1:PORT --headless --slot N` (closer to real ENet, slower CI).
-
-Both must pass before calling N-player sync “proven.”
-
----
-
-## Single PC, 8 players (dev soak)
-
-One Windows box, Release build:
-
-```
-[Host P1]  --lockstep-host --port 27000
-[P2–P8]  --lockstep-join 127.0.0.1:27000 --headless --player-slot N
-```
-
-Requires M3:
-
-- Host accepts **7** ENet peers (not 1).
-- `--player-slot` (or join handshake assigns slot 1–7).
-- Optional `--lockstep-bot` — headless client that only ACKs batches (no window); used to fill empty slots in soak scripts.
-
-Helper script (M3): `scripts/run-scale-soak-localhost.ps1 -Players 8 -Minutes 60`
-
-Graphical client optional (only P1 or P1+P2 with windows); P3–P8 headless is enough for **sync** testing.
-
----
-
-## Two PCs, up to 8 players (your setup)
-
-Split headless clients across two LAN machines. **One host** on PC A; all joiners use PC A’s LAN IP.
-
-### 8-player layout
-
-| Machine | Processes | Role |
-|---------|-----------|------|
-| **PC A** | 1× graphical host | Player 1, port 27000 |
-| **PC A** | 3× headless join | Players 2–4 |
-| **PC B** | 4× headless join | Players 5–8 |
-
-Commands (after M3):
+## 0. Build (both machines, same commit)
 
 ```powershell
-# PC A — host
-.\aoa.exe --lockstep-host --port 27000 --lockstep-debug
-
-# PC A — local headless (3 windows or scripted)
-.\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 2
-.\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 3
-.\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 4
-
-# PC B — remote headless (HOST_IP = PC A)
-.\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 5
-# … slots 6–8
+cd D:\Projects\rts-game
+cmake --build build\x64-release --config Release
 ```
 
-Firewall: allow **27000** on PC A from PC B. Each headless process is a real ENet client — same code path as human players.
-
-### 4-player layout (lighter)
-
-| PC A | Host + 1 headless join (P2) |
-| PC B | Graphical join (P3) + 1 headless (P4) |
-
-One graphical client per PC preserves “does it feel good on LAN” without four monitors.
+Optional: tag or note commit hash so host and join PCs match (e.g. `git checkout m2` for M2 baseline, or `main` after M3 merge).
 
 ---
 
-## What 2-PC LAN cannot replace
+## 1. Automated smokes — run first (one PC, ~1 min)
 
-- **CI smokes** — must run on every push (already in `.github/workflows/build.yml`).
-- **8-way edge cases** — simultaneous double-disconnect, bad link on slot 7: script on **one** PC with optional `tc netem`-style latency injection later; not all scenarios need two homes.
+From repo root, in order:
 
-Two-PC LAN confirms: routing, firewall, non-zero RTT, reconnect across machines. Not a substitute for `--lockstep-8-smoke` in CI.
+```powershell
+$exe = ".\build\x64-release\Release\aoa.exe"
+
+& $exe --harness
+& $exe --lockstep-smoke
+& $exe --lockstep-disconnect-smoke
+Start-Sleep -Milliseconds 500
+& $exe --lockstep-reconnect-smoke
+Start-Sleep -Milliseconds 500
+& $exe --lockstep-4-smoke
+```
+
+**Pass criteria**
+
+| Command | Expected |
+|---------|----------|
+| `--harness` | `All scenarios passed` |
+| `--lockstep-smoke` | `ok ticks=40 hash=0x...` |
+| `--lockstep-disconnect-smoke` | `ok ai_at_tick=... continued_to=...` |
+| `--lockstep-reconnect-smoke` | `ok cycles=3 ticks=130 hash=0x...` |
+| `--lockstep-4-smoke` | `ok ticks=40 hash=0x74adf4a4c1592f59` (hash must match across 4 peers) |
+
+If any fail, fix before LAN or long soaks.
 
 ---
 
-## M3 implementation order (testing-aware)
+## 2. Four-player sync (available today)
 
-1. Multi-peer ENet host + slot assignment in join handshake  
-2. N-way input batch gating (all slots ready before tick)  
-3. `--lockstep-4-smoke` / `--lockstep-8-smoke` in CI  
-4. Headless multi-join CLI (`--player-slot`, soak scripts)  
-5. 2-PC scripted soak (`scripts/run-scale-soak-lan.ps1`)  
-6. Brutal checklist in [m2-tests.md](../scripts/issue-bodies/m2-tests.md) § 8-player — run once 8-smoke green + one 2-PC split soak  
+### 2a. Headless CI-style (what you already ran)
+
+```powershell
+.\build\x64-release\Release\aoa.exe --lockstep-4-smoke
+```
+
+One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check** until manual multi-join CLI lands.
+
+### 2b. Graphical / multi-process 4-player (not yet)
+
+Manual “host + 3 join windows” needs **`--lockstep-players 4`** on the host and **`--player-slot N`** on each join (next M3 slice). Until then, use **§2a** for 4-player sync and **§3** for 2-player LAN feel.
 
 ---
 
-## Pass criteria (8-player “proven”)
+## 3. Two-player LAN (graphical — your two PCs)
 
-- CI: `--lockstep-8-smoke` and disconnect variant green on `ci-x64-debug` + `ci-x64-release`
-- Local: 60+ min localhost script with 7 headless + 1 host, zero desyncs
-- LAN: 30+ min with 2-PC split layout above, at least 2 graphical clients, reconnect once for a non-host slot
-- Deferred: full “4 real graphical clients on 4 machines” — optional; not required for solo dev with 2 PCs
+Full checklist and portable copy steps: [LAN_SOAK.md](LAN_SOAK.md) **§2–§4**.
+
+**Recommended:** stage `D:\aoa-lan` on the build PC (exe + DLLs + `data\` + `assets\`), copy that folder to the second PC, then run with explicit flags only.
+
+**PC A (host)** — start first:
+
+```powershell
+cd D:\aoa-lan
+.\aoa.exe --lockstep-host --port 27000 --lockstep-debug
+```
+
+**PC B (client)** — replace `192.168.x.x` with PC A’s LAN IP (`ipconfig`):
+
+```powershell
+cd D:\aoa-lan
+.\aoa.exe --lockstep-join 192.168.x.x:27000 --lockstep-debug
+```
+
+Logs (with `--lockstep-debug`): `D:\aoa-lan\logs\lockstep_p1_host.log`, `lockstep_p2_client.log`.
+
+**Repo-only optional helpers** (both machines have the full checkout): `.\scripts\run-lan-host.ps1` / `.\scripts\run-lan-join.ps1` — see [LAN_SOAK.md](LAN_SOAK.md) §5.
+
+**Checklist:** 30+ min play, disconnect/reconnect, alt-tab — see [LAN_SOAK.md](LAN_SOAK.md) §6.
+
+---
+
+## 4. Four-player on two PCs (layout — when `--player-slot` ships)
+
+Goal: **sync** without four monitors. One graphical host; other slots headless.
+
+| PC | Processes | Slots |
+|----|-----------|-------|
+| **A** | 1× graphical host | P1 |
+| **A** | 1× headless join | P2 |
+| **B** | 1× graphical join | P3 |
+| **B** | 1× headless join | P4 |
+
+**PC A** — allow port **27000** in Windows Firewall (private network).
+
+```powershell
+# Terminal 1 — host
+.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --lockstep-players 4 --lockstep-debug
+
+# Terminal 2 — local headless P2 (connect after host is listening)
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 2 --lockstep-debug
+```
+
+**PC B** — `HOST_IP` = PC A’s IPv4:
+
+```powershell
+# Terminal 1 — graphical P3
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --player-slot 3 --lockstep-debug
+
+# Terminal 2 — headless P4
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 4 --lockstep-debug
+```
+
+**Connect order:** start host → join P2 → wait for “joined” → join P3 → join P4 (one client at a time).
+
+**Pass:** all four advance ticks; no desync banner; gather/move on P1 and P3; 20+ minutes stable.
+
+*Flags `--lockstep-players` / `--player-slot` are planned; use §2a until merged.*
+
+---
+
+## 5. Eight-player on two PCs (layout — when CLI + 8-smoke ship)
+
+| PC | Processes | Slots |
+|----|-----------|-------|
+| **A** | 1× graphical host | P1 |
+| **A** | 3× headless join | P2, P3, P4 |
+| **B** | 4× headless join | P5, P6, P7, P8 |
+
+Optional: run **one** graphical client on PC B (e.g. P5) instead of headless for feel testing.
+
+**PC A**
+
+```powershell
+.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --lockstep-players 8 --lockstep-debug
+
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --player-slot 4 --lockstep-debug
+```
+
+**PC B** — `HOST_IP` = PC A’s IPv4:
+
+```powershell
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 5 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 6 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 7 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --headless --player-slot 8 --lockstep-debug
+```
+
+**Automated 8-player sync (planned):**
+
+```powershell
+.\build\x64-release\Release\aoa.exe --lockstep-8-smoke
+```
+
+**Single-PC 8-player soak (planned):** seven headless joins to `127.0.0.1:27000` + one host; script `scripts/run-scale-soak-localhost.ps1 -Players 8 -Minutes 60`.
+
+---
+
+## 6. Eight-player “brutal” checklist (after 8-smoke green)
+
+From [m2-tests.md](../scripts/issue-bodies/m2-tests.md) § 8-player:
+
+- 60+ min continuous match, zero desyncs
+- Two non-host disconnects → AI for both, sim never freezes
+- Staggered reconnect of both
+- One degraded client (optional latency/loss) — brief stalls only, no whole-match freeze
+- Document CPU/bandwidth per client
+
+Run brutal **localhost + headless** first; then one **2-PC split soak** (§5) with 2 graphical clients.
+
+---
+
+## 7. What to use when (quick reference)
+
+| Goal | Method | PCs |
+|------|--------|-----|
+| Daily dev / CI | §1 smokes | 1 |
+| Prove 4-way sync | `--lockstep-4-smoke` | 1 |
+| Prove 8-way sync | `--lockstep-8-smoke` (planned) | 1 |
+| Feel + LAN ping | §3 two-player graphical | 2 |
+| 4-player LAN sync | §4 (needs `--player-slot`) | 2 |
+| 8-player LAN sync | §5 (needs `--player-slot`) | 2 |
+| 60+ min stress | localhost headless soak script (planned) | 1 |
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Check |
+|---------|--------|
+| Client cannot connect | Firewall on host, correct LAN IP, host listening first |
+| Only one “lockstep-join: joined” in 4-smoke | Re-run; ports 27202 must be free |
+| Desync | `logs/lockstep_*.log` at desync tick; compare hashes |
+| 4-smoke ok but LAN bad | Expected until multi-join CLI; LAN uses real ENet paths |
+| Hash mismatch after sim change | Re-run smokes; update harness JSON if intentional |
+
+See also [BUILD.md](BUILD.md) for all CLI flags and [LAN_SOAK.md](LAN_SOAK.md) for M2 two-player soak.
