@@ -31,7 +31,11 @@ enum class LockstepRole {
 
 class LockstepSession {
 public:
-    LockstepSession(LockstepRole role, std::uint8_t player_slot, sim::Simulation& simulation);
+    LockstepSession(
+        LockstepRole role,
+        std::uint8_t player_slot,
+        sim::Simulation& simulation,
+        std::uint8_t session_player_count = static_cast<std::uint8_t>(constants::LOCKSTEP_PLAYER_COUNT));
     ~LockstepSession();
 
     LockstepSession(const LockstepSession&) = delete;
@@ -61,6 +65,8 @@ public:
     [[nodiscard]] bool is_reconnecting() const;
     [[nodiscard]] bool is_host_gone() const;
     [[nodiscard]] bool is_session_ready() const;
+    [[nodiscard]] std::uint8_t session_player_count() const;
+    [[nodiscard]] std::uint8_t connected_peer_count() const;
     [[nodiscard]] bool is_waiting_for_opponent_reconnect() const;
     [[nodiscard]] bool is_awaiting_reconnect_handshake() const;
     [[nodiscard]] bool is_desynced() const;
@@ -77,10 +83,13 @@ private:
     [[nodiscard]] std::uint64_t next_execute_tick() const;
     [[nodiscard]] bool has_local_sent(std::uint64_t execute_tick) const;
     [[nodiscard]] bool has_remote_ready(std::uint64_t execute_tick) const;
+    [[nodiscard]] bool is_remote_slot_ready(std::uint64_t execute_tick, std::uint8_t remote_slot) const;
+    [[nodiscard]] std::uint8_t required_remote_slots_mask() const;
+    void note_remote_slot_ready(std::uint64_t execute_tick, std::uint8_t remote_slot);
 
     void send_reconnect_request();
     void send_resync_ready();
-    void send_join_accepted();
+    void send_join_accepted(std::uint8_t target_client_slot);
     void send_reconnect_snapshot();
     void maybe_retry_reconnect_handshake();
     void maybe_retry_resync_ready();
@@ -105,7 +114,7 @@ private:
     void check_opponent_reconnect_timeout();
     void background_tick_loop();
     void process_polled_messages_locked();
-    void enqueue_inbound_packets(std::vector<std::vector<std::byte>> packets);
+    void enqueue_inbound_packets(std::vector<ReceivedPacket> packets);
     void process_inbound_latency_packets();
     [[nodiscard]] InboundLatencyHandleResult handle_inbound_latency_packet(std::span<const std::byte> packet);
     [[nodiscard]] bool try_process_latency_packet(const std::vector<std::byte>& packet);
@@ -158,6 +167,7 @@ private:
 
     LockstepRole role_{LockstepRole::Host};
     std::uint8_t player_slot_{0U};
+    std::uint8_t session_player_count_{static_cast<std::uint8_t>(constants::LOCKSTEP_PLAYER_COUNT)};
     sim::Simulation& simulation_;
     EnetTransport transport_{};
 
@@ -169,7 +179,7 @@ private:
     std::uint16_t reconnect_port_{0U};
 
     std::unordered_set<std::uint64_t> local_sent_ticks_{};
-    std::unordered_set<std::uint64_t> remote_ready_ticks_{};
+    std::unordered_map<std::uint64_t, std::uint8_t> remote_ready_slots_by_tick_{};
     std::unordered_map<std::uint64_t, std::vector<sim::player::PlayerCommand>> local_outbox_{};
     std::uint64_t local_command_sequence_{1U};
     std::uint64_t ai_command_sequence_{1U};
@@ -199,7 +209,10 @@ private:
     bool desynced_{false};
     std::uint64_t desync_tick_{0U};
     std::unordered_map<std::uint64_t, std::uint64_t> local_state_hashes_{};
-    std::unordered_map<std::uint64_t, std::uint64_t> remote_state_hashes_{};
+    std::unordered_map<
+        std::uint64_t,
+        std::array<std::optional<std::uint64_t>, constants::LOCKSTEP_MAX_PLAYER_SLOTS>>
+        remote_state_hashes_by_slot_{};
 
     std::uint64_t waiting_remote_execute_tick_{0U};
     bool waiting_remote_active_{false};

@@ -58,6 +58,7 @@ Same binary, no window — for desync/regression runs:
 | `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
 | `--lockstep-disconnect-smoke` | Client disconnect mid-match; host enters AI immediately and sim keeps advancing |
 | `--lockstep-reconnect-smoke` | Three disconnect → AI → reconnect → live lockstep cycles in-process; verifies hash match each time |
+| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks |
 | `--snapshot-smoke` | Encode sim snapshot + input log, restore via replay, verify hash match |
 | `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
 | `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
