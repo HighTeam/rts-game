@@ -40,6 +40,9 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 - [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
 - [HARNESS.md](docs/HARNESS.md) — headless CLI, scenario JSON, command replay, hash updates
+- [LOCKSTEP.md](docs/LOCKSTEP.md) — ENet lockstep, reconnect/AI fallback, desync runbook
+- [LAN_SOAK.md](docs/LAN_SOAK.md) — two-PC LAN soak checklist
+- [M3_SCALE_TESTING.md](docs/M3_SCALE_TESTING.md) — 4–8 player scale testing without 8 PCs
 - [ECS.md](docs/ECS.md) — EnTT components, tick pipeline, systems, data-driven hooks
 - [TAXONOMY.md](docs/TAXONOMY.md) — world object terms and live archetype JSON
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
@@ -50,4 +53,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M1 landed on `main` (PR #27 + follow-up). M2 prep: tick-scoped player commands, binary command format, extended state hash, disconnect policy documented. Next: **M2 lockstep** (#7).
+M2 is on `main`: 2-player lockstep, graphical host/join, disconnect AI fallback, snapshot reconnect, and CI smokes through `--lockstep-reconnect-smoke`. M3 started with multi-peer transport and `--lockstep-4-smoke` (PR #38). Next: finish N-way graphical play, 8-player smokes, and save/load.

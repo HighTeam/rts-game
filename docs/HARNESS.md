@@ -86,14 +86,16 @@ Adding a new id requires a code change in `src/harness/regression_harness.cpp` u
 
 ### Scenario roles
 
-Resolved by `sim::scenario::find_scenario_entity`:
+Resolved by `sim::scenario::find_scenario_entity` (slot-aware):
 
 | Role | Lookup |
 |------|--------|
-| `player_worker` | `WorkerUnitTag` + `PlayerOwnedTag` |
-| `player_militia` | `MilitiaUnitTag` + `PlayerOwnedTag` |
-| `enemy_militia` | `MilitiaUnitTag` + `EnemyTag` |
-| `town_center` | `TownCenterTag` |
+| `player_worker` | `WorkerUnitTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_worker` | `WorkerUnitTag` + `PlayerOwnedTag`, slot 1 |
+| `player_militia` | `MilitiaUnitTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_militia` / `enemy_militia` | `MilitiaUnitTag` + `PlayerOwnedTag`, slot 1 |
+| `town_center` / `player1_town_center` | `TownCenterTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_town_center` | `TownCenterTag` + `PlayerOwnedTag`, slot 1 |
 
 ## How a harness tick works
 
@@ -136,5 +138,6 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 ## Related
 
 - [BUILD.md](BUILD.md) — presets and daily build commands
+- [LOCKSTEP.md](LOCKSTEP.md) — multiplayer smokes, reconnect, desync runbook
 - [ECS.md](ECS.md) — tick pipeline and system order
 - [DECISIONS.md](DECISIONS.md) — command delay, combat tie-break, disconnect policy
