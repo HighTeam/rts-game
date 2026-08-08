@@ -47,7 +47,25 @@ Constraints:
 
 - Created during scenario setup or spawning — not every frame.
 - Prefer tags + views over storing entity IDs in components when possible.
-- Scenario roles for the harness (`player_worker`, `player_militia`, `enemy_militia`, `town_center`) resolve via tags in `find_scenario_entity()`.
+- Scenario roles for the harness resolve via tags + `PlayerSlot` in `find_scenario_entity()`. Slot 0 roles: `player_worker`, `player_militia`, `town_center`. Slot 1 roles: `player2_worker`, `player2_militia` (alias `enemy_militia`), `player2_town_center`. Full table: [HARNESS.md](HARNESS.md).
+
+## Fog of war
+
+`FogOfWarState` lives on the world entity (`src/sim/components/fog_of_war.hpp`). Arrays are planar per slot:
+
+`index = player_slot * width * height + y * width + x`
+
+| Field | Meaning |
+|-------|---------|
+| `explored` | Ever seen by that slot |
+| `visible` | Currently in vision this tick |
+| `memory_tiles` / `memory_forest_wood` | Last seen terrain/wood for explored cells |
+
+`run_visibility_system` clears `visible`, then reveals circles from living `PlayerOwnedTag` units/buildings sorted by snapshot key. Vision range comes from archetype `vision_range` when set, else defaults in `src/core/constants.hpp` (worker 3, unit 4, structure 6, town center 8), plus `FOG_VISION_RADIUS_TILE_PADDING` (0.35).
+
+Gameplay uses fog for attack targeting (`is_opponent_entity_visible_to_slot`). Render helpers also distinguish shroud vs live vision. `compute_state_hash` mixes fog width/height, `explored`, and memory for explored cells. It does **not** mix `visible`; that plane is rebuilt every tick.
+
+Codepaths: `src/sim/systems/visibility_system.*`, hash loop in `gameplay_systems.cpp`.
 
 ## Simulation loop
 
