@@ -69,6 +69,9 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 .\build\x64-release\Release\aoa.exe --lockstep-reconnect-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-4-smoke
 .\build\x64-release\Release\aoa.exe --snapshot-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-double-spawn-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-reconnect-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-heavy-smoke
 ```
 
-Pass these before spending time on the LAN soak. Full wire/reconnect details: [LOCKSTEP.md](LOCKSTEP.md).
+Pass these before spending time on the LAN soak. CI covers through `--snapshot-smoke`; the extra snapshot flags are local stress only. Full wire/reconnect details: [LOCKSTEP.md](LOCKSTEP.md).

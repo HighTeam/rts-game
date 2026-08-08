@@ -49,8 +49,11 @@ Build first ([BUILD.md](BUILD.md)), then:
 # Four peers in-process; empty batches; hash match after 40 ticks
 .\build\x64-debug\Debug\aoa.exe --lockstep-4-smoke
 
-# Snapshot encode/restore (no network)
+# Snapshot encode/restore suite (no network)
 .\build\x64-debug\Debug\aoa.exe --snapshot-smoke
+.\build\x64-debug\Debug\aoa.exe --snapshot-double-spawn-smoke
+.\build\x64-debug\Debug\aoa.exe --snapshot-reconnect-smoke
+.\build\x64-debug\Debug\aoa.exe --snapshot-heavy-smoke
 
 # Graphical 2p
 .\build\x64-debug\Debug\aoa.exe --lockstep-host --port 27000
@@ -68,7 +71,10 @@ Build first ([BUILD.md](BUILD.md)), then:
 | `--lockstep-disconnect-smoke` | Client drops; host enters AI immediately and keeps ticking |
 | `--lockstep-reconnect-smoke` | 3× disconnect → AI → snapshot reconnect → live lockstep |
 | `--lockstep-4-smoke` | Host + 3 clients on `27202`, 40 ticks, hash match |
-| `--snapshot-smoke` | Encode/restore sim snapshot + input log; no ENet |
+| `--snapshot-smoke` | Encode/restore after gather, AI, and map mutation; hash match for 10 more ticks |
+| `--snapshot-double-spawn-smoke` | Host self-apply + client restore, then two wire-encoded `SpawnWorker`s stay in sync |
+| `--snapshot-reconnect-smoke` | Long run (~999 ticks) with spawns + AI, then encode/restore once |
+| `--snapshot-heavy-smoke` | Busy two-slot workload (~760 ticks), then encode/restore |
 | `--lockstep-host` | Listen; graphical unless `--headless` |
 | `--lockstep-join HOST:PORT` | Connect; graphical unless `--headless` |
 | `--port PORT` | Host listen port (default `27000`) |
@@ -76,7 +82,9 @@ Build first ([BUILD.md](BUILD.md)), then:
 | `--headless` | No window |
 | `--lockstep-debug` | Write `logs/lockstep_*.log` next to the binary |
 
-CI runs `--net-smoke`, `--lockstep-smoke`, `--lockstep-disconnect-smoke`, `--lockstep-reconnect-smoke`, `--lockstep-4-smoke`, and `--snapshot-smoke` on both x64 presets (see `.github/workflows/build.yml`).
+CI runs `--net-smoke`, `--lockstep-smoke`, `--lockstep-disconnect-smoke`, `--lockstep-reconnect-smoke`, `--lockstep-4-smoke`, and `--snapshot-smoke` on both x64 presets (see `.github/workflows/build.yml`). The other `--snapshot-*-smoke` flags are local-only stress checks in `src/net/lockstep_runner.cpp`; they are not in the workflow yet.
+
+`main.cpp` dispatches exclusive modes in this order: harness → net/lockstep/snapshot smokes → lockstep host/join → headless → graphical. The first matching flag wins.
 
 Graphical host/join wait until the peer connects. Headless host/join and smokes give up after `LOCKSTEP_CONNECT_ATTEMPTS` polls.
 
@@ -166,9 +174,22 @@ Mid-match reconnect:
 
 `JoinAccepted` is not part of the normal mid-match snapshot path.
 
-Snapshot payload includes tick count, state hash, command sequence, AI-control metadata, full `input_log`, map/fog, and entity records (`src/sim/snapshot/sim_snapshot.cpp`, magic `0x414F4153`, version `9`).
+Snapshot payload includes tick count, state hash, command sequence, AI-control metadata, full `input_log`, map/fog, and entity records (`src/sim/snapshot/sim_snapshot.cpp`, magic `0x414F4153`, version `9`). Before sending, the host validates a local roundtrip and applies the same bytes to itself so both peers share one checkpoint.
 
 Client reconnect pacing: every `LOCKSTEP_RECONNECT_INTERVAL_MS` (500), up to `LOCKSTEP_RECONNECT_MAX_ATTEMPTS` (20).
+
+### Peer targeting today
+
+`player_slot` is game identity. ENet client index is transport identity. They are not always equal when clients connect out of order.
+
+Current host send rules in `lockstep_session.cpp`:
+
+| Message | `session_player_count_ == 2` | `session_player_count_ > 2` |
+|---------|------------------------------|-----------------------------|
+| `JoinAccepted` | `send_reliable()` (only one client) | `send_reliable_to_client(target_client_slot, …)` |
+| `ReconnectSnapshot` | `send_reliable()` | still `send_reliable()` |
+
+`send_reliable()` delivers to the first connected client peer. That is fine for 2-player. With 3+ peers still connected, a mid-match reconnect can deliver the snapshot to the wrong client. `--lockstep-4-smoke` does not exercise reconnect, so CI can stay green while this path is broken. Track the fix separately; do not treat 4-peer reconnect as proven yet.
 
 ## Wire messages
 
@@ -218,6 +239,8 @@ Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS
 | Expecting 4 graphical clients via `--lockstep-host` | Not yet. Host still uses 2-player session; use `--lockstep-4-smoke` for N-way gating |
 | `--player-slot` rejected | Flag not implemented; only slots 0/1 via host/join |
 | Hash mismatch with no local commands | Non-deterministic sim change, spawn order, or float in sim state |
+| Slot 2/3 reconnect hangs or corrupts another peer | Host still broadcasts `ReconnectSnapshot` with untargeted `send_reliable()`; see Peer targeting today |
+| Snapshot smoke fails after sim change | Entity keys / fog / AI metadata must roundtrip; run the full local snapshot suite before LAN |
 
 ## Related
 
