@@ -89,15 +89,15 @@ private:
 
     void send_reconnect_request();
     void send_resync_ready();
-    void send_join_accepted(std::uint8_t target_client_slot);
-    void send_reconnect_snapshot();
+    void send_join_accepted(std::uint8_t target_player_slot);
+    void send_reconnect_snapshot(std::uint8_t target_enet_slot);
     void maybe_retry_reconnect_handshake();
     void maybe_retry_resync_ready();
     void maybe_retry_host_resync_handshake();
     void maybe_send_pending_reconnect_snapshot();
     [[nodiscard]] bool should_send_reconnect_snapshot_now() const;
     void handle_resync_ready(std::uint8_t player_slot);
-    void handle_reconnect_request(std::uint8_t player_slot);
+    void handle_reconnect_request(std::uint8_t player_slot, std::uint8_t sender_enet_slot);
     void handle_reconnect_snapshot(const std::vector<std::byte>& payload);
     void handle_join_accepted();
     void handle_opponent_lost();
@@ -139,11 +139,14 @@ private:
     void flush_pending_local_commands_to_input_log();
     void sync_command_sequences_from_input_log();
     [[nodiscard]] bool apply_reconnect_snapshot_locally(const std::span<const std::byte> snapshot_bytes);
-    void process_received_packet(const std::vector<std::byte>& packet);
+    void process_received_packet(const ReceivedPacket& packet);
     void verify_state_hash(std::uint64_t execute_tick, std::uint64_t remote_hash);
     [[nodiscard]] bool try_advance_live_tick();
     [[nodiscard]] bool try_advance_ai_fallback_tick();
-    void handle_peer_connected();
+    void handle_peer_connected(std::uint8_t connected_enet_slot);
+    void bind_player_to_enet_slot(std::uint8_t player_slot, std::uint8_t enet_slot);
+    void clear_enet_slot_mapping(std::uint8_t enet_slot);
+    [[nodiscard]] std::optional<std::uint8_t> enet_slot_for_player(std::uint8_t player_slot) const;
     void note_opponent_transport_down();
     [[nodiscard]] bool can_run_live_lockstep() const;
     [[nodiscard]] bool should_verify_state_hashes() const;
@@ -159,7 +162,9 @@ private:
 
     std::mutex inbound_packet_mutex_{};
     std::mutex network_service_mutex_{};
-    std::vector<std::vector<std::byte>> inbound_packet_queue_{};
+    std::vector<ReceivedPacket> inbound_packet_queue_{};
+    std::array<std::uint8_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_slot_to_enet_slot_{};
+    std::uint8_t pending_reconnect_enet_slot_{0U};
     std::atomic<std::shared_ptr<const render::SimRenderSnapshot>> render_snapshot_{};
     std::atomic<std::uint64_t> render_clock_anchor_ns_{0U};
     std::chrono::steady_clock::time_point last_latency_probe_sent_{};

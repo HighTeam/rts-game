@@ -355,7 +355,7 @@ bool is_next_path_step_blocked(
     }
 
     const auto& path = registry.get<components::MovePath>(entity);
-    if (path.next_index >= static_cast<int>(path.cells.size())) {
+    if (path.next_index < 0 || path.next_index >= static_cast<int>(path.cells.size())) {
         return false;
     }
 
@@ -471,7 +471,7 @@ bool try_begin_next_path_step(
     }
 
     auto& path = registry.get<components::MovePath>(entity);
-    if (path.next_index >= static_cast<int>(path.cells.size())) {
+    if (path.next_index < 0 || path.next_index >= static_cast<int>(path.cells.size())) {
         registry.remove<components::MovePath>(entity);
         return false;
     }
@@ -547,6 +547,11 @@ void advance_move_segment(
 
     if (registry.any_of<components::MovePath>(entity)) {
         auto& path = registry.get<components::MovePath>(entity);
+        if (path.next_index < 0 || path.next_index >= static_cast<int>(path.cells.size())) {
+            registry.remove<components::MovePath>(entity);
+            return;
+        }
+
         const core::GridPos path_target = path.cells[static_cast<std::size_t>(path.next_index)];
         if (reached_cell == path_target) {
             ++path.next_index;
