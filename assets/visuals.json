@@ -1,0 +1,58 @@
+{
+  "tiles": {
+    "grass": "textures/Miniature world/Tiles/Grass Block 1.png",
+    "grass_variant": "textures/Miniature world/Tiles/Grass Block 2.png",
+    "dirt": "textures/Miniature world/Tiles/Dirt Block 1.png",
+    "dirt_variant": "textures/Miniature world/Tiles/Dirt Block 2.png",
+    "forest_tree": "textures/Miniature world/Without outline/Objects/Tree 1.png",
+    "forest_tree_alt": "textures/Miniature world/Without outline/Objects/Tree(Pine).png",
+    "forest_stump": "textures/Miniature world/Without outline/Objects/Stump 1.png",
+    "berries": "textures/Evergrow/Nature_Assets_Separated/48x48/Forest_Deccoration_Assets_LargeBush2.png",
+    "blueberries": "textures/Evergrow/Nature_Assets_Separated/48x48/Forest_Deccoration_Assets_LargeBush1.png",
+    "gold_mine_0": "textures/Ore pack/Ore/Ore6.png",
+    "gold_mine_1": "textures/Ore pack/Ore/Ore8.png",
+    "gold_mine_2": "textures/Ore pack/Ore/Ore10.png",
+    "gold_mine_3": "textures/Ore pack/Ore/Ore12.png"
+  },
+  "buildings": {
+    "town_center_friendly": "textures/Isometric House Pack by Captainskeleto/House/15.png",
+    "town_center_enemy": "textures/Isometric House Pack by Captainskeleto/House/15.png",
+    "house_friendly": "textures/Isometric House Pack by Captainskeleto/House/00.png",
+    "house_enemy": "textures/Isometric House Pack by Captainskeleto/House/00.png"
+  },
+  "hud": {
+    "icon_atlas": "textures/Shikashi's Fantasy Icons Pack/2 - Transparent & Drop Shadow.png"
+  },
+  "menu_slideshow": [
+    "textures/Tree bg pack/Tree Background2.png",
+    "textures/Tree bg pack/Tree Background3.png",
+    "textures/Sandstorm/Sandstorm1.png",
+    "textures/Sandstorm/Sandstorm3.png",
+    "textures/Sandstorm/Sandstorm5.png",
+    "textures/Enchanted River Forest/Enchanted River Forest2.png",
+    "textures/Enchanted River Forest/Enchanted River Forest5.png"
+  ],
+  "audio": {
+    "sword_clash": "sfx/Weapons/sword_clash_2.wav",
+    "kick": "sfx/Combat and Gore/kick.wav",
+    "wooden_click": "sfx/JDSherbert - Wooden UI SFX Pack (FREE)/Mono/wav (HD)/JDSherbert - Wooden UI SFX Pack - Confirm - 1.wav",
+    "building": "sfx/Cringemarine/building.wav",
+    "chopping": "sfx/Cringemarine/chopping.wav",
+    "gathering": "sfx/Cringemarine/gathering.wav",
+    "mining": "sfx/Cringemarine/mining.wav",
+    "death1": "sfx/Cringemarine/death1.wav",
+    "death2": "sfx/Cringemarine/death2.wav",
+    "death3": "sfx/Cringemarine/death3.wav",
+    "earth": "sfx/Cringemarine/earth.wav",
+    "what": "sfx/Cringemarine/what.wav",
+    "yes": "sfx/Cringemarine/yes.wav",
+    "no": "sfx/Cringemarine/no.wav",
+    "okay": "sfx/Cringemarine/okay.wav",
+    "ill_do_it": "sfx/Cringemarine/i-ll-do-it.wav",
+    "moving_here": "sfx/Cringemarine/moving-here.wav",
+    "game_music1": "music/game_music1.wav",
+    "game_music2": "music/game_music2.wav",
+    "game_music3": "music/game_music3.wav",
+    "main_menu_theme": "music/main_menu_theme.wav"
+  }
+}

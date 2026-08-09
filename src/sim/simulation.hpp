@@ -12,7 +12,7 @@ namespace aoa::sim {
 
 class Simulation {
 public:
-    Simulation();
+    explicit Simulation(std::uint8_t player_count = 2U);
 
     void tick();
 

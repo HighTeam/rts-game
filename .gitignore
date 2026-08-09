@@ -71,3 +71,11 @@ Testing/
 
 
 raw-assets/
+
+# Local art library; only packer-used files are force-tracked in git.
+/assets/
+
+# Local smoke / debug dumps
+/client_err.txt
+/client_out.txt
+.used-assets-list.txt

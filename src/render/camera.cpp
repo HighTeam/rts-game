@@ -18,7 +18,11 @@ struct Bounds {
     float max_y{0.0F};
 };
 
-Bounds compute_map_bounds(const int map_width, const int map_height, const float zoom)
+Bounds compute_map_bounds(
+    const int map_width,
+    const int map_height,
+    const float zoom,
+    const int padding_tiles = 0)
 {
     const float half_w =
         static_cast<float>(constants::RENDER_ISO_TILE_WIDTH) * 0.5F * zoom;
@@ -40,8 +44,12 @@ Bounds compute_map_bounds(const int map_width, const int map_height, const float
         bounds.max_y = std::max(bounds.max_y, y);
     };
 
-    for (int grid_y = 0; grid_y < map_height; ++grid_y) {
-        for (int grid_x = 0; grid_x < map_width; ++grid_x) {
+    const int min_x = -padding_tiles;
+    const int min_y = -padding_tiles;
+    const int max_x = map_width + padding_tiles;
+    const int max_y = map_height + padding_tiles;
+    for (int grid_y = min_y; grid_y < max_y; ++grid_y) {
+        for (int grid_x = min_x; grid_x < max_x; ++grid_x) {
             const float iso_x = static_cast<float>(grid_x - grid_y) * half_w;
             const float iso_y = static_cast<float>(grid_x + grid_y) * half_h;
 
@@ -60,6 +68,49 @@ Bounds compute_map_bounds(const int map_width, const int map_height, const float
 void ClassicCamera::set_window_size(const sf::Vector2u window_size)
 {
     window_size_ = window_size;
+    clamp_to_map_bounds();
+}
+
+void ClassicCamera::set_map_size(const int map_width, const int map_height)
+{
+    map_width_ = map_width;
+    map_height_ = map_height;
+    clamp_to_map_bounds();
+}
+
+void ClassicCamera::clamp_to_map_bounds()
+{
+    if (window_size_.x == 0U || window_size_.y == 0U || map_width_ <= 0 || map_height_ <= 0) {
+        return;
+    }
+
+    const Bounds bounds = compute_map_bounds(
+        map_width_,
+        map_height_,
+        zoom_,
+        constants::CAMERA_MAP_BOUNDS_PADDING_TILES);
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    const float map_width_px = bounds.max_x - bounds.min_x;
+    const float map_height_px = bounds.max_y - bounds.min_y;
+
+    if (map_width_px <= window_width) {
+        pan_.x = window_width * 0.5F - (bounds.min_x + bounds.max_x) * 0.5F;
+    }
+    else {
+        const float min_pan_x = window_width - bounds.max_x;
+        const float max_pan_x = -bounds.min_x;
+        pan_.x = std::clamp(pan_.x, min_pan_x, max_pan_x);
+    }
+
+    if (map_height_px <= window_height) {
+        pan_.y = window_height * 0.5F - (bounds.min_y + bounds.max_y) * 0.5F;
+    }
+    else {
+        const float min_pan_y = window_height - bounds.max_y;
+        const float max_pan_y = -bounds.min_y;
+        pan_.y = std::clamp(pan_.y, min_pan_y, max_pan_y);
+    }
 }
 
 void ClassicCamera::reset_view()
@@ -112,6 +163,30 @@ void ClassicCamera::center_on_world(
     zoom_anchor_x_ = window_width * 0.5F;
     zoom_anchor_y_ = window_height * 0.5F;
     user_adjusted_ = false;
+    clamp_to_map_bounds();
+}
+
+void ClassicCamera::center_on_world_keep_zoom(const float world_x, const float world_z)
+{
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return;
+    }
+
+    const float half_w = tile_half_width();
+    const float half_h = tile_half_height();
+    const float screen_x = (world_x - world_z) * half_w;
+    const float screen_y = (world_x + world_z) * half_h;
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+
+    pan_.x = window_width * 0.5F - screen_x;
+    pan_.y = window_height * 0.5F - screen_y;
+
+    zoom_anchor_x_ = window_width * 0.5F;
+    zoom_anchor_y_ = window_height * 0.5F;
+    user_adjusted_ = true;
+    clamp_to_map_bounds();
 }
 
 void ClassicCamera::frame_map(const int map_width, const int map_height)
@@ -120,7 +195,11 @@ void ClassicCamera::frame_map(const int map_width, const int map_height)
         return;
     }
 
+    map_width_ = map_width;
+    map_height_ = map_height;
+
     if (user_adjusted_) {
+        clamp_to_map_bounds();
         return;
     }
 
@@ -164,6 +243,7 @@ void ClassicCamera::frame_map(const int map_width, const int map_height)
 
     zoom_anchor_x_ = window_width * 0.5F;
     zoom_anchor_y_ = window_height * 0.5F;
+    clamp_to_map_bounds();
 }
 
 void ClassicCamera::apply_zoom_pan(
@@ -200,6 +280,7 @@ void ClassicCamera::update(const float delta_seconds)
 
     apply_zoom_pan(old_zoom, new_zoom, zoom_anchor_x_, zoom_anchor_y_);
     zoom_ = new_zoom;
+    clamp_to_map_bounds();
 }
 
 void ClassicCamera::pan(const float delta_x, const float delta_y)
@@ -207,6 +288,7 @@ void ClassicCamera::pan(const float delta_x, const float delta_y)
     pan_.x += delta_x;
     pan_.y += delta_y;
     user_adjusted_ = true;
+    clamp_to_map_bounds();
 }
 
 void ClassicCamera::step_zoom(
@@ -286,12 +368,22 @@ sf::Vector2f ClassicCamera::world_to_screen(
 
 sf::Vector2f ClassicCamera::grid_top_corner(const int grid_x, const int grid_y) const
 {
+    return grid_iso_corners(grid_x, grid_y).top;
+}
+
+IsoTileScreenCorners ClassicCamera::grid_iso_corners(const int grid_x, const int grid_y) const
+{
     const float half_w = tile_half_width();
     const float half_h = tile_half_height();
+    const float tile_h = tile_height();
+    const float iso_x = static_cast<float>(grid_x - grid_y) * half_w + pan_.x;
+    const float iso_y = static_cast<float>(grid_x + grid_y) * half_h + pan_.y;
 
-    return {
-        static_cast<float>(grid_x - grid_y) * half_w + pan_.x,
-        static_cast<float>(grid_x + grid_y) * half_h + pan_.y,
+    return IsoTileScreenCorners{
+        {iso_x, iso_y},
+        {iso_x + half_w, iso_y + half_h},
+        {iso_x, iso_y + tile_h},
+        {iso_x - half_w, iso_y + half_h},
     };
 }
 

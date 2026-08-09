@@ -38,6 +38,28 @@ cmake --preset x64-release
 cmake --build --preset x64-release
 ```
 
+## Running the game
+
+Launching the binary without CLI flags opens the main menu (slideshow background, looping
+`assets/music/main_menu_theme.wav`):
+
+```powershell
+.\build\x64-release\Release\aoa.exe
+```
+
+| Menu entry | Behaviour |
+|------------|-----------|
+| Singleplayer | Fresh 2-player simulation with the second slot AI-controlled |
+| Multiplayer | Player name, then **Host** (player count, map, civil cap, fog) or **Connect** (address, port) |
+| Settings | Same Game/Audio panel as the in-game menu (fullscreen, Master/Music/SFX) |
+| Exit | Quits; `Esc` on the main menu does the same |
+
+In the multiplayer lobby the host starts the match once every connected player is ready. Slots are
+assigned automatically (host is player 1, peers fill the next free slots). Exiting a match through
+the in-game menu's **Exit to Main Menu** disconnects the session and returns to the menu.
+
+The `--lockstep-host` / `--lockstep-join` flags below bypass the menu and behave as before.
+
 ## Headless mode and harness
 
 Same binary, no window — for desync/regression runs:
@@ -60,8 +82,8 @@ Same binary, no window — for desync/regression runs:
 | `--lockstep-reconnect-smoke` | Three disconnect → AI → reconnect → live lockstep cycles in-process; verifies hash match each time |
 | `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks |
 | `--snapshot-smoke` | Encode sim snapshot + input log, restore via replay, verify hash match |
-| `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless`; optional `--lockstep-players N` |
-| `--lockstep-join HOST:PORT` | Lockstep client; graphical unless `--headless`; optional `--player-slot N` (2–8) |
+| `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless`; optional `--players N` or `--lockstep-players N` (2, 4, or 8) |
+| `--lockstep-join HOST:PORT` | Lockstep client; graphical unless `--headless`; optional `--player-slot N` (2–8); same `--players` as host |
 
 Scale testing playbook (4–8 players, two-PC layouts): [M3_SCALE_TESTING.md](M3_SCALE_TESTING.md)
 

@@ -1,8 +1,13 @@
 #include "app/application.hpp"
 
+#include "app/chat_state.hpp"
 #include "app/fps_tracker.hpp"
+#include "app/game_cursor.hpp"
+#include "app/tps_tracker.hpp"
 #include "app/game_input.hpp"
 #include "app/window_display.hpp"
+#include "audio/game_audio.hpp"
+#include "core/runtime_paths.hpp"
 #include "core/constants.hpp"
 #include "core/fixed_timestep_loop.hpp"
 #include "harness/regression_harness.hpp"
@@ -12,17 +17,24 @@
 #include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
 #include "render/game_renderer.hpp"
+#include "sim/components/match_session.hpp"
+#include "sim/components/tags.hpp"
+#include "sim/systems/disconnected_player_ai.hpp"
 
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/VideoMode.hpp>
 #include <SFML/Window/Window.hpp>
 
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace aoa::app {
 
@@ -40,12 +52,20 @@ std::uint64_t parse_hash_argument(const std::string& hash_text)
 
 void validate_lockstep_player_count(const std::uint8_t player_count)
 {
-    if (player_count < 2U
-        || player_count > static_cast<std::uint8_t>(net::constants::LOCKSTEP_MAX_PLAYER_SLOTS)) {
+    if (player_count != 2U && player_count != 4U && player_count != 8U) {
         throw std::invalid_argument(
-            "Invalid --lockstep-players: " + std::to_string(player_count)
-            + " (expected 2-" + std::to_string(net::constants::LOCKSTEP_MAX_PLAYER_SLOTS) + ")");
+            "Invalid player count: " + std::to_string(player_count) + " (expected 2, 4, or 8)");
     }
+}
+
+void apply_lockstep_player_count(LaunchOptions& options, const int player_count)
+{
+    if (player_count != 2 && player_count != 4 && player_count != 8) {
+        throw std::invalid_argument(
+            "Invalid player count: " + std::to_string(player_count) + " (expected 2, 4, or 8)");
+    }
+
+    options.lockstep_player_count = static_cast<std::uint8_t>(player_count);
 }
 
 [[nodiscard]] std::uint8_t resolve_lockstep_host_player_count(const LaunchOptions& options)
@@ -117,6 +137,16 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-4-stress-smoke") {
+            options.run_lockstep_4_stress_smoke = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-4-reconnect-smoke") {
+            options.run_lockstep_4_reconnect_smoke = true;
+            continue;
+        }
+
         if (arg == "--snapshot-smoke") {
             options.run_snapshot_smoke = true;
             continue;
@@ -180,14 +210,23 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
-        if (arg == "--lockstep-players" && arg_index + 1 < argc) {
-            const int player_count = std::stoi(argv[++arg_index]);
-            if (player_count < 2 || player_count > net::constants::LOCKSTEP_MAX_PLAYER_SLOTS) {
-                throw std::invalid_argument(
-                    "Invalid --lockstep-players: " + std::to_string(player_count));
-            }
+        if (arg == "--lockstep-auto-input") {
+            options.lockstep_auto_input = true;
+            continue;
+        }
 
-            options.lockstep_player_count = static_cast<std::uint8_t>(player_count);
+        if (arg == "--loose-assets") {
+            options.prefer_loose_assets = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-players" && arg_index + 1 < argc) {
+            apply_lockstep_player_count(options, std::stoi(argv[++arg_index]));
+            continue;
+        }
+
+        if (arg == "--players" && arg_index + 1 < argc) {
+            apply_lockstep_player_count(options, std::stoi(argv[++arg_index]));
             continue;
         }
 
@@ -204,16 +243,19 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
 
         if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: aoa [--headless] [--ticks N] [--expect-hash HEX] [--print-hash]\n"
+                         "       aoa [--loose-assets]\n"
                          "       aoa --harness\n"
                          "       aoa --net-smoke\n"
                          "       aoa --lockstep-smoke\n"
                          "       aoa --lockstep-disconnect-smoke\n"
                          "       aoa --lockstep-reconnect-smoke\n"
                          "       aoa --lockstep-4-smoke\n"
+                         "       aoa --lockstep-4-stress-smoke\n"
                          "       aoa --snapshot-smoke\n"
-                         "       aoa --lockstep-host [--port PORT] [--lockstep-players N]\n"
+                         "       aoa --lockstep-host [--port PORT] [--players N | --lockstep-players N]\n"
                          "                           [--headless] [--ticks N] [--lockstep-debug]\n"
                          "       aoa --lockstep-join HOST:PORT [--player-slot N]\n"
+                         "                            [--players N | --lockstep-players N]\n"
                          "                            [--headless] [--ticks N] [--lockstep-debug]\n";
             std::exit(0);
         }
@@ -256,44 +298,89 @@ int run_headless(sim::Simulation& simulation, const LaunchOptions& options)
     return 0;
 }
 
-int run_graphical(sim::Simulation& simulation)
+AppFlow run_graphical(
+    sf::Window& window,
+    WindowDisplaySettings& display_settings,
+    sim::Simulation& simulation,
+    AppShellSettings& shell_settings)
 {
-    sf::ContextSettings context_settings{
-        .depthBits = 24U,
-        .majorVersion = static_cast<unsigned int>(constants::OPENGL_MAJOR_VERSION),
-        .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
-    };
-
-    sf::Window window(
-        sf::VideoMode({constants::DEFAULT_WINDOW_WIDTH, constants::DEFAULT_WINDOW_HEIGHT}),
-        std::string(constants::WINDOW_TITLE),
-        sf::State::Windowed,
-        context_settings);
-
-    window.setVerticalSyncEnabled(false);
-    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
-    (void)window.setActive(true);
-
-    WindowDisplaySettings display_settings{};
-    display_settings.title = std::string(constants::WINDOW_TITLE);
-    display_settings.context_settings = context_settings;
-    initialize_window_display_settings(window, display_settings);
-
     render::GameRenderer renderer{};
-    renderer.resize(window.getSize());
+    renderer.reset_graphics_context(window.getSize());
     renderer.set_local_player_slot(0U);
 
     GameInput game_input{};
+    ChatState chat_state{};
+    GameCursor game_cursor{};
+    audio::GameAudio game_audio{};
+    (void)game_cursor.load(core::default_assets_directory());
+    (void)game_audio.load(core::default_assets_directory());
+    game_audio.set_master_volume(shell_settings.master_volume);
+    game_audio.set_music_volume(shell_settings.music_volume);
+    game_audio.set_sfx_volume(shell_settings.sfx_volume);
     game_input.set_local_player_slot(0U);
-    game_input.set_local_player_slot(0U);
+    game_input.set_chat_state(&chat_state);
+    game_input.set_game_cursor(&game_cursor);
+    game_input.set_game_audio(&game_audio);
+    chat_state.set_message_hook(
+        [&game_audio](const std::uint8_t /*player_slot*/, const std::string& text) {
+            game_audio.play_chat_reaction(text);
+        });
     game_input.reset_frame_clock();
     FpsTracker fps_tracker{};
+    TpsTracker tps_tracker{};
+
+    if (shell_settings.fullscreen != display_settings.fullscreen) {
+        if (shell_settings.fullscreen) {
+            enter_fullscreen(window, renderer, display_settings);
+        }
+        else {
+            leave_fullscreen(window, renderer, display_settings);
+        }
+    }
+
+    game_input.set_menu_fullscreen(display_settings.fullscreen);
+    renderer.set_show_perf_hud(shell_settings.show_perf_hud);
+    game_cursor.force_reapply(window);
+
+    {
+        const auto world_view =
+            simulation.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+        if (world_view.begin() != world_view.end()) {
+            auto& session = world_view.get<sim::components::MatchSession>(*world_view.begin());
+            session.civil_population_map_cap = constants::CIVIL_POPULATION_MAP_CAP_DEFAULT;
+            session.fog_of_war_enabled = true;
+        }
+    }
+    simulation.set_player_ai_controlled(constants::SINGLEPLAYER_AI_PLAYER_SLOT, true);
+    std::uint64_t ai_command_sequence = 1U;
+    AppFlow flow = AppFlow::ExitApp;
 
     core::FixedTimestepLoop loop{};
     loop.run_realtime(
-        [&simulation]() { simulation.tick(); },
-        [&renderer, &simulation, &window, &game_input, &fps_tracker](const float interpolation_alpha) {
+        [&simulation, &tps_tracker, &game_input, &ai_command_sequence]() {
+            if (game_input.is_game_menu_open()) {
+                return;
+            }
+
+            const std::uint64_t execute_tick = simulation.next_command_execute_tick();
+            std::vector<sim::player::PlayerCommand> ai_commands =
+                sim::systems::generate_ai_commands_for_slot(
+                    simulation.registry(),
+                    constants::SINGLEPLAYER_AI_PLAYER_SLOT,
+                    execute_tick,
+                    ai_command_sequence);
+            for (sim::player::PlayerCommand& command : ai_commands) {
+                simulation.enqueue_player_command(std::move(command));
+            }
+
+            simulation.tick();
+            tps_tracker.record_tick();
+        },
+        [&renderer, &simulation, &window, &game_input, &fps_tracker, &tps_tracker, &game_audio](
+            const float interpolation_alpha) {
             fps_tracker.record_frame();
+            game_audio.update();
+            game_audio.drain_sim_sfx(simulation.registry());
             game_input.update_continuous(window, renderer, simulation);
             (void)window.setActive(true);
             const app::PlayerSelection& selection = game_input.selection();
@@ -309,24 +396,64 @@ int run_graphical(sim::Simulation& simulation)
                 hover.resource_cell,
                 selection.resource_cell,
                 selection.building,
-                fps_tracker.fps());
+                fps_tracker.fps(),
+                tps_tracker.tps(),
+                {},
+                game_input.make_hud_context(window, simulation, nullptr),
+                game_input.placement_ghost_anchor(),
+                game_input.placement_ghost_valid());
             window.display();
         },
-        [&window, &renderer, &simulation, &game_input, &display_settings]() {
+        [&window,
+         &renderer,
+         &simulation,
+         &game_input,
+         &display_settings,
+         &game_cursor,
+         &flow,
+         &shell_settings]() {
+            game_input.set_menu_fullscreen(display_settings.fullscreen);
+
             while (const std::optional event = window.pollEvent()) {
                 if (event->is<sf::Event::Closed>()) {
                     window.close();
                 }
 
-                game_input.handle_event(*event, window, renderer, simulation);
+                (void)game_input.handle_event(*event, window, renderer, simulation);
 
-                if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
-                    if (key_pressed->code == sf::Keyboard::Key::Escape) {
-                        window.close();
+                if (game_input.consume_exit_game_request()) {
+                    window.close();
+                }
+
+                if (game_input.consume_fullscreen_toggle_request()) {
+                    if (display_settings.fullscreen) {
+                        leave_fullscreen(window, renderer, display_settings);
                     }
                     else {
-                        handle_display_key(window, renderer, display_settings, key_pressed->code);
+                        enter_fullscreen(window, renderer, display_settings);
                     }
+                    game_input.set_menu_fullscreen(display_settings.fullscreen);
+                    game_cursor.force_reapply(window);
+                }
+
+                if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
+                    if (key_pressed->code != sf::Keyboard::Key::Escape) {
+                        if (handle_display_key(
+                                window,
+                                renderer,
+                                display_settings,
+                                key_pressed->code,
+                                true)) {
+                            game_input.set_menu_fullscreen(display_settings.fullscreen);
+                            game_cursor.force_reapply(window);
+                        }
+                        shell_settings.show_perf_hud = renderer.show_perf_hud();
+                    }
+                }
+
+                if (game_input.consume_exit_to_main_menu_request()) {
+                    flow = AppFlow::ReturnToMainMenu;
+                    return false;
                 }
 
                 if (const auto* resized = event->getIf<sf::Event::Resized>()) {
@@ -340,7 +467,12 @@ int run_graphical(sim::Simulation& simulation)
         },
         [&simulation]() { simulation.snapshot_world_positions_for_render(); });
 
-    return 0;
+    shell_settings.fullscreen = display_settings.fullscreen;
+    shell_settings.show_perf_hud = renderer.show_perf_hud();
+    shell_settings.master_volume = game_audio.master_volume();
+    shell_settings.music_volume = game_audio.music_volume();
+    shell_settings.sfx_volume = game_audio.sfx_volume();
+    return flow;
 }
 
 namespace {
@@ -348,6 +480,7 @@ namespace {
 void update_lockstep_window_title(
     sf::Window& window,
     const net::LockstepSession& session,
+    const net::LockstepRole role,
     const std::uint8_t player_slot)
 {
     std::string title = std::string(constants::WINDOW_TITLE);
@@ -375,6 +508,12 @@ void update_lockstep_window_title(
     else if (session.is_waiting_for_opponent_reconnect()) {
         title += " - Opponent disconnected, waiting for reconnect...";
     }
+    else if (role == net::LockstepRole::Host && !session.is_lobby_full()) {
+        const int connected_players =
+            static_cast<int>(session.lobby_registered_client_count()) + 1;
+        title += " - Waiting for players (" + std::to_string(connected_players) + "/"
+            + std::to_string(session.session_player_count()) + ")...";
+    }
     else if (!session.is_connected()) {
         title += " - Waiting for opponent...";
     }
@@ -396,6 +535,10 @@ bool lockstep_should_show_waiting_overlay(
     const net::LockstepRole role)
 {
     if (session.is_awaiting_reconnect_handshake()) {
+        return true;
+    }
+
+    if (role == net::LockstepRole::Host && !session.is_lobby_full()) {
         return true;
     }
 
@@ -424,6 +567,15 @@ std::pair<std::string, std::string> lockstep_waiting_overlay_text(
         return {"LOADING", "SYNCHRONIZING MATCH STATE"};
     }
 
+    if (role == net::LockstepRole::Host && !session.is_lobby_full()) {
+        const int connected_players =
+            static_cast<int>(session.lobby_registered_client_count()) + 1;
+        return {
+            "LOADING",
+            "WAITING FOR PLAYERS (" + std::to_string(connected_players) + "/"
+                + std::to_string(session.session_player_count()) + ")"};
+    }
+
     if (role == net::LockstepRole::Host && !session.is_connected()) {
         return {"LOADING", "WAITING FOR PLAYER CONNECTION"};
     }
@@ -441,122 +593,162 @@ std::pair<std::string, std::string> lockstep_waiting_overlay_text(
 
 } // namespace
 
-int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& options)
+AppFlow run_lockstep_match(
+    sf::Window& window,
+    WindowDisplaySettings& display_settings,
+    sim::Simulation& simulation,
+    const LockstepMatchSetup& setup,
+    AppShellSettings& shell_settings)
 {
-    if (!net::EnetTransport::global_initialize()) {
-        std::cerr << "lockstep: enet_initialize failed\n";
-        return 1;
-    }
-
     const net::LockstepRole role =
-        options.lockstep_host ? net::LockstepRole::Host : net::LockstepRole::Client;
-    const std::uint8_t session_player_count = resolve_lockstep_host_player_count(options);
-    const std::uint8_t player_slot = options.lockstep_host
-        ? net::constants::LOCKSTEP_HOST_PLAYER_SLOT
-        : resolve_lockstep_join_player_slot(options);
-    const std::uint8_t player_number = static_cast<std::uint8_t>(player_slot + 1U);
+        setup.is_host ? net::LockstepRole::Host : net::LockstepRole::Client;
+    const std::uint8_t session_player_count = setup.player_count;
+    const std::uint8_t player_slot = setup.player_slot;
+
+    {
+        const auto world_view =
+            simulation.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+        if (world_view.begin() != world_view.end()) {
+            auto& match_session = world_view.get<sim::components::MatchSession>(*world_view.begin());
+            match_session.civil_population_map_cap = setup.civil_population_map_cap;
+            match_session.fog_of_war_enabled = setup.fog_of_war_enabled;
+        }
+    }
 
     net::LockstepSession session{role, player_slot, simulation, session_player_count};
 
-    if (options.lockstep_debug) {
+    if (setup.lockstep_debug) {
         net::LockstepDebugLog::enable(player_slot, role);
     }
 
-    if (options.lockstep_host) {
-        const std::uint16_t port =
-            options.lockstep_port == 0U ? net::constants::DEFAULT_PORT : options.lockstep_port;
-        if (!session.start_host(port)) {
-            std::cerr << "lockstep: failed to start host on port " << port << '\n';
-            net::EnetTransport::global_deinitialize();
-            return 1;
+    session.set_auto_input_enabled(setup.auto_input);
+
+    if (setup.is_host) {
+        if (!session.start_host(setup.port)) {
+            std::cerr << "lockstep: failed to start host on port " << setup.port << '\n';
+            return AppFlow::ReturnToMainMenu;
         }
 
-        std::cout << "lockstep-host: listening on port " << port << " for "
+        std::cout << "lockstep-host: listening on port " << setup.port << " for "
                   << static_cast<int>(session_player_count) << " players (graphical)\n";
     }
     else {
-        if (!options.lockstep_join_address.has_value()) {
-            std::cerr << "lockstep-join: missing host address\n";
-            net::EnetTransport::global_deinitialize();
-            return 1;
+        if (setup.delay_before_connect) {
+            const int slot_stagger_ms = static_cast<int>(player_slot - 1U)
+                * constants::MULTIPLAYER_MATCH_CONNECT_SLOT_STAGGER_MS;
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                constants::MULTIPLAYER_MATCH_CONNECT_DELAY_MS + slot_stagger_ms));
         }
 
-        const auto parsed_address =
-            net::parse_lockstep_join_address(*options.lockstep_join_address);
-        if (!parsed_address.has_value()) {
-            std::cerr << "lockstep-join: invalid address (expected HOST:PORT)\n";
-            net::EnetTransport::global_deinitialize();
-            return 1;
+        if (!session.connect(setup.host_address.c_str(), setup.port)) {
+            std::cerr << "lockstep-join: failed to connect to " << setup.host_address << ':'
+                      << setup.port << '\n';
+            return AppFlow::ReturnToMainMenu;
         }
 
-        if (!session.connect(parsed_address->first.c_str(), parsed_address->second)) {
-            std::cerr << "lockstep-join: failed to connect to " << *options.lockstep_join_address
-                      << '\n';
-            net::EnetTransport::global_deinitialize();
-            return 1;
-        }
-
-        std::cout << "lockstep-join: connecting to " << *options.lockstep_join_address
-                  << " as player " << static_cast<int>(player_number) << " (graphical)\n";
+        std::cout << "lockstep-join: connecting to " << setup.host_address << ':' << setup.port
+                  << " as player " << static_cast<int>(player_slot + 1U) << " (graphical)\n";
     }
 
-    sf::ContextSettings context_settings{
-        .depthBits = 24U,
-        .majorVersion = static_cast<unsigned int>(constants::OPENGL_MAJOR_VERSION),
-        .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
-    };
-
-    sf::Window window(
-        sf::VideoMode({constants::DEFAULT_WINDOW_WIDTH, constants::DEFAULT_WINDOW_HEIGHT}),
-        std::string(constants::WINDOW_TITLE),
-        sf::State::Windowed,
-        context_settings);
-
-    window.setVerticalSyncEnabled(false);
-    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
-    (void)window.setActive(true);
-    update_lockstep_window_title(window, session, player_slot);
-
-    WindowDisplaySettings display_settings{};
-    display_settings.title = std::string(constants::WINDOW_TITLE);
-    display_settings.context_settings = context_settings;
-    initialize_window_display_settings(window, display_settings);
+    update_lockstep_window_title(window, session, role, player_slot);
 
     render::GameRenderer renderer{};
-    renderer.resize(window.getSize());
+    renderer.reset_graphics_context(window.getSize());
     renderer.set_local_player_slot(player_slot);
+    renderer.set_fog_of_war_enabled(setup.fog_of_war_enabled);
 
     GameInput game_input{};
+    ChatState chat_state{};
+    GameCursor game_cursor{};
+    audio::GameAudio game_audio{};
+    (void)game_cursor.load(core::default_assets_directory());
+    (void)game_audio.load(core::default_assets_directory());
+    game_audio.set_master_volume(shell_settings.master_volume);
+    game_audio.set_music_volume(shell_settings.music_volume);
+    game_audio.set_sfx_volume(shell_settings.sfx_volume);
     game_input.set_lockstep_session(&session);
     game_input.set_local_player_slot(player_slot);
+    game_input.set_chat_state(&chat_state);
+    game_input.set_game_cursor(&game_cursor);
+    game_input.set_game_audio(&game_audio);
+    chat_state.set_message_hook(
+        [&game_audio](const std::uint8_t /*player_slot*/, const std::string& text) {
+            game_audio.play_chat_reaction(text);
+        });
+    session.set_chat_state(&chat_state);
     game_input.reset_frame_clock();
     FpsTracker fps_tracker{};
+    TpsTracker tps_tracker{};
 
-    const std::uint64_t tick_limit = options.lockstep_ticks;
+    if (shell_settings.fullscreen != display_settings.fullscreen) {
+        if (shell_settings.fullscreen) {
+            enter_fullscreen(window, renderer, display_settings);
+        }
+        else {
+            leave_fullscreen(window, renderer, display_settings);
+        }
+    }
+
+    game_input.set_menu_fullscreen(display_settings.fullscreen);
+    renderer.set_show_perf_hud(shell_settings.show_perf_hud);
+    game_cursor.force_reapply(window);
+
+    const std::uint64_t tick_limit = setup.tick_limit;
+    AppFlow flow = AppFlow::ExitApp;
+    bool leave_match = false;
 
     session.ensure_initial_render_snapshot();
     session.start_background_tick_loop();
 
-    while (window.isOpen()) {
-        update_lockstep_window_title(window, session, player_slot);
+    while (window.isOpen() && !leave_match) {
+        update_lockstep_window_title(window, session, role, player_slot);
 
         const std::shared_ptr<const render::SimRenderSnapshot> input_frame = session.render_snapshot();
         const render::SimRenderSnapshot* input_snapshot = input_frame.get();
+
+        game_input.set_menu_fullscreen(display_settings.fullscreen);
 
         while (const std::optional event = window.pollEvent()) {
             if (event->is<sf::Event::Closed>()) {
                 window.close();
             }
 
-            game_input.handle_event(*event, window, renderer, simulation, input_snapshot);
+            (void)game_input.handle_event(*event, window, renderer, simulation, input_snapshot);
 
-            if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
-                if (key_pressed->code == sf::Keyboard::Key::Escape) {
-                    window.close();
+            if (game_input.consume_exit_game_request()) {
+                window.close();
+            }
+
+            if (game_input.consume_fullscreen_toggle_request()) {
+                if (display_settings.fullscreen) {
+                    leave_fullscreen(window, renderer, display_settings);
                 }
                 else {
-                    handle_display_key(window, renderer, display_settings, key_pressed->code);
+                    enter_fullscreen(window, renderer, display_settings);
                 }
+                game_input.set_menu_fullscreen(display_settings.fullscreen);
+                game_cursor.force_reapply(window);
+            }
+
+            if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
+                if (key_pressed->code != sf::Keyboard::Key::Escape) {
+                    if (handle_display_key(
+                            window,
+                            renderer,
+                            display_settings,
+                            key_pressed->code,
+                            false)) {
+                        game_input.set_menu_fullscreen(display_settings.fullscreen);
+                        game_cursor.force_reapply(window);
+                    }
+                    shell_settings.show_perf_hud = renderer.show_perf_hud();
+                }
+            }
+
+            if (game_input.consume_exit_to_main_menu_request()) {
+                flow = AppFlow::ReturnToMainMenu;
+                leave_match = true;
+                break;
             }
 
             if (const auto* resized = event->getIf<sf::Event::Resized>()) {
@@ -566,7 +758,13 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
             }
         }
 
+        if (leave_match) {
+            break;
+        }
+
         fps_tracker.record_frame();
+        game_audio.update();
+        game_audio.drain_sim_sfx(simulation.registry());
 
         session.service_network_latency();
 
@@ -587,6 +785,7 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
         (void)window.setActive(true);
 
         if (frame) {
+            tps_tracker.observe_tick_count(frame->tick_count);
             renderer.draw_snapshot(
                 *frame,
                 selection.units,
@@ -599,10 +798,15 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
                 selection.resource_cell,
                 selection.building,
                 fps_tracker.fps(),
-                session.network_hud_stats());
+                tps_tracker.tps(),
+                session.network_hud_stats(),
+                game_input.make_hud_context(window, simulation, frame.get()),
+                game_input.placement_ghost_anchor(),
+                game_input.placement_ghost_valid());
 
             if (tick_limit > 0U && frame->tick_count >= tick_limit) {
-                window.close();
+                leave_match = true;
+                flow = AppFlow::ExitApp;
             }
         }
         else {
@@ -617,12 +821,11 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
     }
 
     session.stop_background_tick_loop();
+    session.disconnect_transport();
 
-    if (options.lockstep_debug) {
+    if (setup.lockstep_debug) {
         net::LockstepDebugLog::disable();
     }
-
-    net::EnetTransport::global_deinitialize();
 
     if (session.is_desynced()) {
         std::cerr << "lockstep: desync at tick " << session.desync_tick()
@@ -633,6 +836,86 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
         std::cout << "lockstep: host left the game at tick " << simulation.tick_count() << '\n';
     }
 
+    shell_settings.fullscreen = display_settings.fullscreen;
+    shell_settings.show_perf_hud = renderer.show_perf_hud();
+    shell_settings.master_volume = game_audio.master_volume();
+    shell_settings.music_volume = game_audio.music_volume();
+    shell_settings.sfx_volume = game_audio.sfx_volume();
+    return flow;
+}
+
+int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& options)
+{
+    if (!net::EnetTransport::global_initialize()) {
+        std::cerr << "lockstep: enet_initialize failed\n";
+        return 1;
+    }
+
+    LockstepMatchSetup setup{};
+    setup.is_host = options.lockstep_host;
+    setup.player_count = resolve_lockstep_host_player_count(options);
+    setup.player_slot = options.lockstep_host
+        ? net::constants::LOCKSTEP_HOST_PLAYER_SLOT
+        : resolve_lockstep_join_player_slot(options);
+    setup.port =
+        options.lockstep_port == 0U ? net::constants::DEFAULT_PORT : options.lockstep_port;
+    setup.lockstep_debug = options.lockstep_debug;
+    setup.auto_input = options.lockstep_auto_input;
+    setup.tick_limit = options.lockstep_ticks;
+
+    if (!options.lockstep_host) {
+        if (!options.lockstep_join_address.has_value()) {
+            std::cerr << "lockstep-join: missing host address\n";
+            net::EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        const auto parsed_address =
+            net::parse_lockstep_join_address(*options.lockstep_join_address);
+        if (!parsed_address.has_value()) {
+            std::cerr << "lockstep-join: invalid address (expected HOST:PORT)\n";
+            net::EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        setup.host_address = parsed_address->first;
+        setup.port = parsed_address->second;
+    }
+
+    sf::ContextSettings context_settings{
+        .depthBits = 24U,
+        .majorVersion = static_cast<unsigned int>(constants::OPENGL_MAJOR_VERSION),
+        .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
+    };
+
+    sf::Window window(
+        sf::VideoMode({constants::DEFAULT_WINDOW_WIDTH, constants::DEFAULT_WINDOW_HEIGHT}),
+        std::string(constants::WINDOW_TITLE),
+        sf::State::Windowed,
+        context_settings);
+    window.setVerticalSyncEnabled(false);
+    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
+    (void)window.setActive(true);
+
+    WindowDisplaySettings display_settings{};
+    display_settings.title = std::string(constants::WINDOW_TITLE);
+    display_settings.context_settings = context_settings;
+    initialize_window_display_settings(window, display_settings);
+
+    AppShellSettings shell_settings{};
+    shell_settings.fullscreen = true;
+    enter_fullscreen(
+        window,
+        [](const sf::Vector2u /*size*/) {},
+        display_settings);
+
+    (void)run_lockstep_match(window, display_settings, simulation, setup, shell_settings);
+
+    if (window.isOpen()) {
+        window.close();
+    }
+
+    net::EnetTransport::global_deinitialize();
     return 0;
 }
 

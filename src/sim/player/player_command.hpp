@@ -18,6 +18,13 @@ enum class PlayerCommandType : std::uint8_t {
     Gather = 2,
     Deposit = 3,
     SpawnWorker = 4,
+    SpawnMilitia = 5,
+    KillUnits = 6,
+    BuildTownCenter = 7,
+    DestroyBuilding = 8,
+    Stop = 9,
+    BuildHouse = 10,
+    ResumeBuild = 11,
 };
 
 struct PlayerCommand {

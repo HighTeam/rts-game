@@ -66,7 +66,7 @@ namespace {
 
 constexpr std::uint32_t SNAPSHOT_MAGIC = 0x414F4153U; // AOAS
 
-constexpr std::uint16_t SNAPSHOT_VERSION = 9U;
+constexpr std::uint16_t SNAPSHOT_VERSION = 14U;
 
 
 
@@ -90,6 +90,18 @@ enum class EntityStateFlags : std::uint16_t {
 
     MoveSegment = 1U << 8,
 
+    GatherCooldown = 1U << 9,
+
+    ManaGenerationCooldown = 1U << 10,
+
+    UnderConstruction = 1U << 11,
+
+    BuildOrder = 1U << 12,
+
+    CarriedFood = 1U << 13,
+
+    CarriedMoney = 1U << 14,
+
 };
 
 
@@ -112,7 +124,23 @@ struct EntityStateRecord {
 
     int carried_wood{0};
 
+    int carried_food{0};
+
+    int carried_money{0};
+
     int stockpile_wood{0};
+
+    int stockpile_food{0};
+
+    int stockpile_money{0};
+
+    int stockpile_mana{0};
+
+    int mana_generation_ticks_remaining{0};
+
+    snapshot::EntitySnapshotKey build_target_key{};
+
+    int build_hit_cooldown_ticks{0};
 
     snapshot::EntitySnapshotKey attack_target_key{};
 
@@ -120,7 +148,11 @@ struct EntityStateRecord {
 
     int attack_cooldown_ticks{0};
 
+    int gather_cooldown_ticks{0};
+
     core::GridPos gather_cell{-1, -1};
+
+    std::uint8_t gather_resource_type{0U};
 
     components::WorkerState worker_state{components::WorkerState::Idle};
 
@@ -226,7 +258,7 @@ void append_entity_snapshot_key(std::vector<std::byte>& out, const snapshot::Ent
 
 
 
-    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::TownCenter)) {
+    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::House)) {
 
         return false;
 
@@ -267,13 +299,16 @@ std::vector<std::byte> encode_snapshot_command(const player::PlayerCommand& comm
 void sync_map_tiles_with_forest_wood(components::MapGrid& map)
 {
     for (std::size_t index = 0U; index < map.forest_wood.size(); ++index) {
-        if (map.forest_wood[index] > 0) {
-            map.tiles[index] = components::TileType::Forest;
+        if (index < map.bush_food.size() && map.bush_food[index] > 0) {
             continue;
         }
 
-        if (map.tiles[index] == components::TileType::Forest) {
-            map.tiles[index] = components::TileType::Grass;
+        if (index < map.mine_money.size() && map.mine_money[index] > 0) {
+            continue;
+        }
+
+        if (map.forest_wood[index] > 0) {
+            map.tiles[index] = components::TileType::Forest;
         }
     }
 }
@@ -385,11 +420,79 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
 
 
 
+    if (registry.any_of<components::CarriedFood>(entity)) {
+
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::CarriedFood);
+
+        record.carried_food = registry.get<components::CarriedFood>(entity).amount;
+
+    }
+
+
+
+    if (registry.any_of<components::CarriedMoney>(entity)) {
+
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::CarriedMoney);
+
+        record.carried_money = registry.get<components::CarriedMoney>(entity).amount;
+
+    }
+
+
+
     if (registry.any_of<components::Stockpile>(entity)) {
 
         record.flags |= static_cast<std::uint16_t>(EntityStateFlags::Stockpile);
 
-        record.stockpile_wood = registry.get<components::Stockpile>(entity).wood;
+        const auto& stockpile = registry.get<components::Stockpile>(entity);
+
+        record.stockpile_wood = stockpile.wood;
+
+        record.stockpile_food = stockpile.food;
+
+        record.stockpile_money = stockpile.money;
+
+        record.stockpile_mana = stockpile.mana;
+
+    }
+
+
+
+    if (registry.any_of<components::ManaGenerationCooldown>(entity)) {
+
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::ManaGenerationCooldown);
+
+        record.mana_generation_ticks_remaining =
+            registry.get<components::ManaGenerationCooldown>(entity).ticks_remaining;
+
+    }
+
+
+
+    if (registry.any_of<components::UnderConstructionTag>(entity)) {
+
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction);
+
+    }
+
+
+
+    if (registry.any_of<components::BuildOrder>(entity)) {
+
+        const entt::entity target = registry.get<components::BuildOrder>(entity).building;
+
+        const auto target_key = snapshot::compute_entity_snapshot_key(registry, target);
+
+        if (target_key.has_value()) {
+
+            record.flags |= static_cast<std::uint16_t>(EntityStateFlags::BuildOrder);
+
+            record.build_target_key = *target_key;
+
+            record.build_hit_cooldown_ticks =
+                registry.get<components::BuildOrder>(entity).hit_cooldown_ticks;
+
+        }
 
     }
 
@@ -427,11 +530,25 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
 
 
 
+    if (registry.any_of<components::GatherCooldown>(entity)) {
+
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::GatherCooldown);
+
+        record.gather_cooldown_ticks = registry.get<components::GatherCooldown>(entity).ticks_remaining;
+
+    }
+
+
+
     if (registry.any_of<components::GatherTarget>(entity)) {
 
         record.flags |= static_cast<std::uint16_t>(EntityStateFlags::GatherTarget);
 
-        record.gather_cell = registry.get<components::GatherTarget>(entity).cell;
+        const auto& gather_target = registry.get<components::GatherTarget>(entity);
+
+        record.gather_cell = gather_target.cell;
+
+        record.gather_resource_type = static_cast<std::uint8_t>(gather_target.resource_type);
 
     }
 
@@ -511,9 +628,49 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
 
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedFood)) != 0U) {
+
+        append_pod(out, record.carried_food);
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedMoney)) != 0U) {
+
+        append_pod(out, record.carried_money);
+
+    }
+
+
+
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::Stockpile)) != 0U) {
 
         append_pod(out, record.stockpile_wood);
+
+        append_pod(out, record.stockpile_food);
+
+        append_pod(out, record.stockpile_money);
+
+        append_pod(out, record.stockpile_mana);
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::ManaGenerationCooldown)) != 0U) {
+
+        append_pod(out, record.mana_generation_ticks_remaining);
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::BuildOrder)) != 0U) {
+
+        append_entity_snapshot_key(out, record.build_target_key);
+
+        append_pod(out, record.build_hit_cooldown_ticks);
 
     }
 
@@ -539,11 +696,21 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
 
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::GatherCooldown)) != 0U) {
+
+        append_pod(out, record.gather_cooldown_ticks);
+
+    }
+
+
+
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::GatherTarget)) != 0U) {
 
         append_pod(out, record.gather_cell.x);
 
         append_pod(out, record.gather_cell.y);
+
+        append_pod(out, record.gather_resource_type);
 
     }
 
@@ -601,6 +768,8 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
         append_pod(out, record.move_segment.ticks_total);
 
+        append_pod(out, record.move_segment.blocked_ticks);
+
     }
 
 }
@@ -655,9 +824,60 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
 
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedFood)) != 0U
+
+        && !read_pod(cursor, record.carried_food)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedMoney)) != 0U
+
+        && !read_pod(cursor, record.carried_money)) {
+
+        return std::nullopt;
+
+    }
+
+
+
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::Stockpile)) != 0U
 
-        && !read_pod(cursor, record.stockpile_wood)) {
+        && (!read_pod(cursor, record.stockpile_wood) || !read_pod(cursor, record.stockpile_food)
+            || !read_pod(cursor, record.stockpile_money) || !read_pod(cursor, record.stockpile_mana))) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::ManaGenerationCooldown)) != 0U
+
+        && !read_pod(cursor, record.mana_generation_ticks_remaining)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::BuildOrder)) != 0U
+
+        && !read_entity_snapshot_key(cursor, record.build_target_key)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::BuildOrder)) != 0U
+
+        && !read_pod(cursor, record.build_hit_cooldown_ticks)) {
 
         return std::nullopt;
 
@@ -697,9 +917,21 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
 
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::GatherCooldown)) != 0U
+
+        && !read_pod(cursor, record.gather_cooldown_ticks)) {
+
+        return std::nullopt;
+
+    }
+
+
+
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::GatherTarget)) != 0U
 
-        && (!read_pod(cursor, record.gather_cell.x) || !read_pod(cursor, record.gather_cell.y))) {
+        && (!read_pod(cursor, record.gather_cell.x) || !read_pod(cursor, record.gather_cell.y)
+
+            || !read_pod(cursor, record.gather_resource_type))) {
 
         return std::nullopt;
 
@@ -800,7 +1032,9 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
             || !read_pod(cursor, to_y_raw) || !read_pod(cursor, record.move_segment.ticks_elapsed)
 
-            || !read_pod(cursor, record.move_segment.ticks_total)) {
+            || !read_pod(cursor, record.move_segment.ticks_total)
+
+            || !read_pod(cursor, record.move_segment.blocked_ticks)) {
 
             return std::nullopt;
 
@@ -1001,15 +1235,24 @@ entt::entity ensure_entity_for_record(
 
 
 
-        const int starting_wood =
+        components::Stockpile starting_stockpile{};
 
-            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::Stockpile)) != 0U
+        if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::Stockpile)) != 0U) {
 
-            ? record.stockpile_wood
+            starting_stockpile.wood = record.stockpile_wood;
 
-            : 0;
+            starting_stockpile.food = record.stockpile_food;
+
+            starting_stockpile.money = record.stockpile_money;
+
+            starting_stockpile.mana = record.stockpile_mana;
+
+        }
 
 
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
 
         return spawn::spawn_player_town_center(
 
@@ -1021,7 +1264,42 @@ entt::entity ensure_entity_for_record(
 
             record.key.player_slot,
 
-            starting_wood);
+            starting_stockpile,
+
+            under_construction);
+
+    }
+
+    case snapshot::EntitySnapshotCategory::House: {
+
+        const auto* house_archetype = data::find_structure_archetype(
+
+            content_pack.content,
+
+            std::string(constants::HOUSE_BUILDING_ID));
+
+        if (house_archetype == nullptr) {
+
+            return entt::null;
+
+        }
+
+
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+
+        return spawn::spawn_player_house(
+
+            registry,
+
+            *house_archetype,
+
+            record.grid_cell,
+
+            record.key.player_slot,
+
+            under_construction);
 
     }
 
@@ -1065,11 +1343,23 @@ void clear_optional_components(entt::registry& registry, const entt::entity enti
 
     registry.remove<components::CarriedWood>(entity);
 
+    registry.remove<components::CarriedFood>(entity);
+
+    registry.remove<components::CarriedMoney>(entity);
+
     registry.remove<components::Stockpile>(entity);
+
+    registry.remove<components::ManaGenerationCooldown>(entity);
+
+    registry.remove<components::UnderConstructionTag>(entity);
+
+    registry.remove<components::BuildOrder>(entity);
 
     registry.remove<components::AttackOrder>(entity);
 
     registry.remove<components::AttackCooldown>(entity);
+
+    registry.remove<components::GatherCooldown>(entity);
 
     registry.remove<components::GatherTarget>(entity);
 
@@ -1107,7 +1397,8 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
     registry.get<components::GridPosition>(entity).cell = record.grid_cell;
 
-    if (record.key.category != snapshot::EntitySnapshotCategory::TownCenter) {
+    if (record.key.category != snapshot::EntitySnapshotCategory::TownCenter
+        && record.key.category != snapshot::EntitySnapshotCategory::House) {
 
         auto& world = registry.get_or_emplace<components::WorldPosition>(entity);
 
@@ -1141,9 +1432,75 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
 
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedFood)) != 0U) {
+
+        registry.get_or_emplace<components::CarriedFood>(entity).amount = record.carried_food;
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedMoney)) != 0U) {
+
+        registry.get_or_emplace<components::CarriedMoney>(entity).amount = record.carried_money;
+
+    }
+    else if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedWood)) != 0U
+        || (record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedFood)) != 0U) {
+
+        registry.get_or_emplace<components::CarriedMoney>(entity).amount = 0;
+
+    }
+
+
+
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::Stockpile)) != 0U) {
 
-        registry.get_or_emplace<components::Stockpile>(entity).wood = record.stockpile_wood;
+        auto& stockpile = registry.get_or_emplace<components::Stockpile>(entity);
+
+        stockpile.wood = record.stockpile_wood;
+
+        stockpile.food = record.stockpile_food;
+
+        stockpile.money = record.stockpile_money;
+
+        stockpile.mana = record.stockpile_mana;
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::ManaGenerationCooldown)) != 0U) {
+
+        registry.emplace<components::ManaGenerationCooldown>(
+
+            entity,
+
+            components::ManaGenerationCooldown{record.mana_generation_ticks_remaining});
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U) {
+
+        registry.emplace<components::UnderConstructionTag>(entity);
+
+    }
+
+
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::BuildOrder)) != 0U) {
+
+        const entt::entity target = snapshot::resolve_entity_snapshot_key(registry, record.build_target_key);
+
+        if (target != entt::null) {
+
+            registry.emplace<components::BuildOrder>(
+                entity,
+                components::BuildOrder{target, record.build_hit_cooldown_ticks});
+
+        }
 
     }
 
@@ -1161,9 +1518,29 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
 
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::GatherCooldown)) != 0U) {
+
+        registry.emplace<components::GatherCooldown>(
+
+            entity,
+
+            components::GatherCooldown{record.gather_cooldown_ticks});
+
+    }
+
+
+
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::GatherTarget)) != 0U) {
 
-        registry.emplace<components::GatherTarget>(entity, components::GatherTarget{record.gather_cell});
+        registry.emplace<components::GatherTarget>(
+
+            entity,
+
+            components::GatherTarget{
+
+                record.gather_cell,
+
+                static_cast<components::TileType>(record.gather_resource_type)});
 
     }
 
@@ -1253,6 +1630,10 @@ struct DecodedSnapshot {
 
     std::vector<int> forest_wood{};
 
+    std::vector<int> bush_food{};
+
+    std::vector<int> mine_money{};
+
     std::vector<components::TileType> map_tiles{};
 
     std::vector<std::uint8_t> fog_explored{};
@@ -1260,6 +1641,10 @@ struct DecodedSnapshot {
     std::vector<std::uint8_t> fog_memory_tiles{};
 
     std::vector<std::int32_t> fog_memory_forest_wood{};
+
+    std::vector<std::int32_t> fog_memory_bush_food{};
+
+    std::vector<std::int32_t> fog_memory_mine_money{};
 
     std::vector<EntityStateRecord> entity_states{};
 
@@ -1297,7 +1682,11 @@ struct DecodedSnapshot {
 
         || !read_pod(cursor, decoded.metadata.ai_controlled_slots)
 
-        || !read_pod(cursor, decoded.metadata.ai_controlled_since_tick)) {
+        || !read_pod(cursor, decoded.metadata.ai_controlled_since_tick)
+
+        || !read_pod(cursor, decoded.metadata.civil_population_map_cap)
+
+        || !read_pod(cursor, decoded.metadata.fog_of_war_enabled)) {
 
         return std::nullopt;
 
@@ -1398,6 +1787,54 @@ struct DecodedSnapshot {
     for (std::uint32_t index = 0U; index < forest_count; ++index) {
 
         if (!read_pod(cursor, decoded.forest_wood[static_cast<std::size_t>(index)])) {
+
+            return std::nullopt;
+
+        }
+
+    }
+
+
+
+    std::uint32_t bush_count = 0U;
+
+    if (!read_pod(cursor, bush_count)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    decoded.bush_food.resize(bush_count);
+
+    for (std::uint32_t index = 0U; index < bush_count; ++index) {
+
+        if (!read_pod(cursor, decoded.bush_food[static_cast<std::size_t>(index)])) {
+
+            return std::nullopt;
+
+        }
+
+    }
+
+
+
+    std::uint32_t mine_count = 0U;
+
+    if (!read_pod(cursor, mine_count)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    decoded.mine_money.resize(mine_count);
+
+    for (std::uint32_t index = 0U; index < mine_count; ++index) {
+
+        if (!read_pod(cursor, decoded.mine_money[static_cast<std::size_t>(index)])) {
 
             return std::nullopt;
 
@@ -1515,6 +1952,62 @@ struct DecodedSnapshot {
 
 
 
+    std::uint32_t fog_memory_bush_count = 0U;
+
+    if (!read_pod(cursor, fog_memory_bush_count)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    decoded.fog_memory_bush_food.resize(fog_memory_bush_count);
+
+    for (std::uint32_t index = 0U; index < fog_memory_bush_count; ++index) {
+
+        std::int32_t food = 0;
+
+        if (!read_pod(cursor, food)) {
+
+            return std::nullopt;
+
+        }
+
+        decoded.fog_memory_bush_food[static_cast<std::size_t>(index)] = food;
+
+    }
+
+
+
+    std::uint32_t fog_memory_mine_count = 0U;
+
+    if (!read_pod(cursor, fog_memory_mine_count)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    decoded.fog_memory_mine_money.resize(fog_memory_mine_count);
+
+    for (std::uint32_t index = 0U; index < fog_memory_mine_count; ++index) {
+
+        std::int32_t money = 0;
+
+        if (!read_pod(cursor, money)) {
+
+            return std::nullopt;
+
+        }
+
+        decoded.fog_memory_mine_money[static_cast<std::size_t>(index)] = money;
+
+    }
+
+
+
     std::uint32_t entity_count = 0U;
 
     if (!read_pod(cursor, entity_count)) {
@@ -1589,6 +2082,10 @@ SimSnapshot Simulation::export_snapshot() const
 
         snapshot.ai_controlled_since_tick = session.ai_controlled_since_tick;
 
+        snapshot.civil_population_map_cap = session.civil_population_map_cap;
+
+        snapshot.fog_of_war_enabled = session.fog_of_war_enabled ? 1U : 0U;
+
     }
 
 
@@ -1659,7 +2156,8 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
     out.reserve(1024U + metadata.input_log.size() * 64U + entity_states.size() * 96U
 
-        + map.forest_wood.size() * sizeof(int));
+        + map.forest_wood.size() * sizeof(int) + map.bush_food.size() * sizeof(int)
+        + map.mine_money.size() * sizeof(int));
 
 
 
@@ -1676,6 +2174,10 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
     append_pod(out, metadata.ai_controlled_slots);
 
     append_pod(out, metadata.ai_controlled_since_tick);
+
+    append_pod(out, metadata.civil_population_map_cap);
+
+    append_pod(out, metadata.fog_of_war_enabled);
 
 
 
@@ -1708,7 +2210,8 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
         bool needs_key_annotation = snapshot_command.unit_keys.size() != snapshot_command.unit_ids.size();
         if (!needs_key_annotation
             && (snapshot_command.type == player::PlayerCommandType::Attack
-                || snapshot_command.type == player::PlayerCommandType::SpawnWorker)
+                || snapshot_command.type == player::PlayerCommandType::SpawnWorker
+                || snapshot_command.type == player::PlayerCommandType::SpawnMilitia)
             && snapshot_command.target_entity != entt::null
             && !snapshot_command.target_entity_key.has_value()) {
             needs_key_annotation = true;
@@ -1727,7 +2230,8 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
             }
 
             if ((snapshot_command.type == player::PlayerCommandType::Attack
-                    || snapshot_command.type == player::PlayerCommandType::SpawnWorker)
+                    || snapshot_command.type == player::PlayerCommandType::SpawnWorker
+                || snapshot_command.type == player::PlayerCommandType::SpawnMilitia)
                 && snapshot_command.target_entity != entt::null
                 && !snapshot_command.target_entity_key.has_value()) {
                 std::cerr << "snapshot encode: missing target entity key for command sequence "
@@ -1783,6 +2287,30 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
 
 
+    const auto bush_count = static_cast<std::uint32_t>(map.bush_food.size());
+
+    append_pod(out, bush_count);
+
+    for (const int food : map.bush_food) {
+
+        append_pod(out, food);
+
+    }
+
+
+
+    const auto mine_count = static_cast<std::uint32_t>(map.mine_money.size());
+
+    append_pod(out, mine_count);
+
+    for (const int money : map.mine_money) {
+
+        append_pod(out, money);
+
+    }
+
+
+
     const auto tile_count = static_cast<std::uint32_t>(map.tiles.size());
 
     append_pod(out, tile_count);
@@ -1829,9 +2357,33 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
         }
 
+        const auto fog_memory_bush_count = static_cast<std::uint32_t>(fog.memory_bush_food.size());
+
+        append_pod(out, fog_memory_bush_count);
+
+        for (const int food : fog.memory_bush_food) {
+
+            append_pod(out, static_cast<std::int32_t>(food));
+
+        }
+
+        const auto fog_memory_mine_count = static_cast<std::uint32_t>(fog.memory_mine_money.size());
+
+        append_pod(out, fog_memory_mine_count);
+
+        for (const int money : fog.memory_mine_money) {
+
+            append_pod(out, static_cast<std::int32_t>(money));
+
+        }
+
     }
 
     else {
+
+        append_pod(out, static_cast<std::uint32_t>(0U));
+
+        append_pod(out, static_cast<std::uint32_t>(0U));
 
         append_pod(out, static_cast<std::uint32_t>(0U));
 
@@ -1929,6 +2481,31 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
     map.forest_wood = decoded->forest_wood;
 
+    if (decoded->bush_food.size() != map.bush_food.size()) {
+
+        if (map.bush_food.size() != map.forest_wood.size()) {
+            map.bush_food.assign(map.forest_wood.size(), 0);
+        }
+
+        if (decoded->bush_food.size() != map.bush_food.size()) {
+            std::cerr << "snapshot restore: bush food size mismatch\n";
+            return false;
+        }
+    }
+
+    map.bush_food = decoded->bush_food;
+
+    if (map.mine_money.size() != map.forest_wood.size()) {
+        map.mine_money.assign(map.forest_wood.size(), 0);
+    }
+
+    if (decoded->mine_money.size() != map.mine_money.size()) {
+        std::cerr << "snapshot restore: mine money size mismatch\n";
+        return false;
+    }
+
+    map.mine_money = decoded->mine_money;
+
     if (decoded->map_tiles.size() != map.tiles.size()) {
 
         std::cerr << "snapshot restore: map tile size mismatch\n";
@@ -1971,6 +2548,32 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
                     decoded->fog_memory_forest_wood.begin(),
                     decoded->fog_memory_forest_wood.end());
             }
+
+            if (!decoded->fog_memory_bush_food.empty()) {
+                if (decoded->fog_memory_bush_food.size() != fog.memory_bush_food.size()) {
+                    std::cerr << "snapshot restore: fog memory bush size mismatch\n";
+                    return false;
+                }
+
+                fog.memory_bush_food.assign(
+                    decoded->fog_memory_bush_food.begin(),
+                    decoded->fog_memory_bush_food.end());
+            }
+
+            if (fog.memory_mine_money.size() != fog.memory_bush_food.size()) {
+                fog.memory_mine_money.assign(fog.memory_bush_food.size(), 0);
+            }
+
+            if (!decoded->fog_memory_mine_money.empty()) {
+                if (decoded->fog_memory_mine_money.size() != fog.memory_mine_money.size()) {
+                    std::cerr << "snapshot restore: fog memory mine size mismatch\n";
+                    return false;
+                }
+
+                fog.memory_mine_money.assign(
+                    decoded->fog_memory_mine_money.begin(),
+                    decoded->fog_memory_mine_money.end());
+            }
         }
     }
 
@@ -1979,6 +2582,10 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
     session.ai_controlled_slots = decoded->metadata.ai_controlled_slots;
 
     session.ai_controlled_since_tick = decoded->metadata.ai_controlled_since_tick;
+
+    session.civil_population_map_cap = decoded->metadata.civil_population_map_cap;
+
+    session.fog_of_war_enabled = decoded->metadata.fog_of_war_enabled != 0U;
 
     session.ai_control_transitions = decoded->metadata.ai_control_transitions;
 

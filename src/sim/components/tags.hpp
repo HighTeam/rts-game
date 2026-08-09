@@ -10,7 +10,9 @@ struct ManualControlTag {};
 struct EnemyTag {};
 
 struct TownCenterTag {};
+struct HouseTag {};
 struct WorkerUnitTag {};
 struct MilitiaUnitTag {};
+struct UnderConstructionTag {};
 
 } // namespace aoa::sim::components

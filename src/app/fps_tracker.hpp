@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/constants.hpp"
+
 #include <chrono>
 
 namespace aoa::app {
@@ -18,7 +20,7 @@ public:
         }
 
         const float elapsed_seconds = std::chrono::duration<float>(now - window_start_).count();
-        if (elapsed_seconds < sample_window_seconds_) {
+        if (elapsed_seconds < constants::HUD_PERF_SAMPLE_WINDOW_SECONDS) {
             return;
         }
 
@@ -30,8 +32,6 @@ public:
     [[nodiscard]] float fps() const { return fps_; }
 
 private:
-    static constexpr float sample_window_seconds_{0.5F};
-
     std::chrono::steady_clock::time_point window_start_{};
     int frames_in_window_{0};
     float fps_{0.0F};

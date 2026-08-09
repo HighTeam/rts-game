@@ -13,12 +13,12 @@
 
 namespace aoa::sim {
 
-Simulation::Simulation()
+Simulation::Simulation(const std::uint8_t player_count)
 {
     const data::ContentDatabase content = data::load_content_database(
         data::default_data_directory());
 
-    scenario::load_test_scenario(registry_, content);
+    scenario::load_test_scenario(registry_, content, player_count);
 }
 
 void Simulation::enqueue_player_command(player::PlayerCommand command)

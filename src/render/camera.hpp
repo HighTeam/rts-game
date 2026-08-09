@@ -14,18 +14,29 @@ enum class CameraView {
     Full3D,
 };
 
+struct IsoTileScreenCorners {
+    sf::Vector2f top{};
+    sf::Vector2f right{};
+    sf::Vector2f bottom{};
+    sf::Vector2f left{};
+};
+
 class ClassicCamera {
 public:
     void set_window_size(sf::Vector2u window_size);
+    void set_map_size(int map_width, int map_height);
     void frame_map(int map_width, int map_height);
     void center_on_world(float world_x, float world_z, float zoom, int zoom_level_index);
+    void center_on_world_keep_zoom(float world_x, float world_z);
     void reset_view();
 
     void update(float delta_seconds);
     void pan(float delta_x, float delta_y);
     void step_zoom(int direction, float anchor_screen_x, float anchor_screen_y);
+    void clamp_to_map_bounds();
 
     [[nodiscard]] sf::Vector2f grid_top_corner(int grid_x, int grid_y) const;
+    [[nodiscard]] IsoTileScreenCorners grid_iso_corners(int grid_x, int grid_y) const;
     [[nodiscard]] std::optional<core::GridPos> screen_to_grid(float screen_x, float screen_y) const;
     [[nodiscard]] sf::Vector2f world_to_screen(float world_x, float world_y, float world_z) const;
     [[nodiscard]] std::pair<float, float> screen_to_world_xz(float screen_x, float screen_y) const;
@@ -48,6 +59,8 @@ private:
     float zoom_anchor_x_{0.0F};
     float zoom_anchor_y_{0.0F};
     bool user_adjusted_{false};
+    int map_width_{0};
+    int map_height_{0};
 };
 
 } // namespace aoa::render

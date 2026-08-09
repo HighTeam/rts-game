@@ -21,6 +21,13 @@ namespace aoa::sim::systems {
     entt::entity ignore = entt::null,
     entt::entity also_ignore = entt::null);
 
+[[nodiscard]] bool is_unit_radius_blocked_at_world(
+    entt::registry& registry,
+    math::Fixed point_x,
+    math::Fixed point_y,
+    entt::entity ignore = entt::null,
+    entt::entity also_ignore = entt::null);
+
 [[nodiscard]] bool is_step_movement_blocked(
     entt::registry& registry,
     const components::MapGrid& map,

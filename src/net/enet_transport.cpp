@@ -603,6 +603,14 @@ bool EnetTransport::broadcast_reliable_except(
     return enqueue_broadcast_except(data, channel, true, except_client_slot);
 }
 
+bool EnetTransport::broadcast_unreliable_except(
+    const std::span<const std::byte> data,
+    const std::uint8_t channel,
+    const std::optional<std::uint8_t> except_client_slot)
+{
+    return enqueue_broadcast_except(data, channel, false, except_client_slot);
+}
+
 bool EnetTransport::send_unreliable(const std::span<const std::byte> data, const std::uint8_t channel)
 {
     OutboundPacket packet{};
@@ -708,6 +716,38 @@ bool EnetTransport::consume_peer_connected_slot(std::uint8_t& connected_client_s
     }
 
     return false;
+}
+
+bool EnetTransport::rebind_client_to_player_slot(
+    const std::uint8_t connected_client_slot,
+    const std::uint8_t player_slot)
+{
+    std::lock_guard lock(mutex_);
+
+    if (!is_server_ || player_slot == 0U || player_slot > max_clients_) {
+        return false;
+    }
+
+    if (connected_client_slot == 0U || connected_client_slot > max_clients_) {
+        return false;
+    }
+
+    _ENetPeer* peer = client_peers_[connected_client_slot];
+    if (peer == nullptr) {
+        return false;
+    }
+
+    if (client_peers_[player_slot] != nullptr && client_peers_[player_slot] != peer) {
+        return false;
+    }
+
+    if (connected_client_slot != player_slot) {
+        client_peers_[connected_client_slot] = nullptr;
+        client_peers_[player_slot] = peer;
+    }
+
+    set_peer_slot(peer, player_slot);
+    return true;
 }
 
 std::uint8_t EnetTransport::connected_client_count() const

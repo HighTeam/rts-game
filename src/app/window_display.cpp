@@ -15,7 +15,12 @@ void apply_window_frame_limits(sf::Window& window)
     window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
 }
 
-void enter_fullscreen(sf::Window& window, render::GameRenderer& renderer, WindowDisplaySettings& settings)
+} // namespace
+
+void enter_fullscreen(
+    sf::Window& window,
+    const GraphicsContextResetFn& reset_graphics_context,
+    WindowDisplaySettings& settings)
 {
     settings.windowed_size = window.getSize();
     settings.windowed_position = window.getPosition();
@@ -31,11 +36,14 @@ void enter_fullscreen(sf::Window& window, render::GameRenderer& renderer, Window
     window.setMouseCursorVisible(true);
     window.setMouseCursorGrabbed(true);
 
-    renderer.reset_graphics_context(window.getSize());
+    reset_graphics_context(window.getSize());
     settings.fullscreen = true;
 }
 
-void leave_fullscreen(sf::Window& window, render::GameRenderer& renderer, WindowDisplaySettings& settings)
+void leave_fullscreen(
+    sf::Window& window,
+    const GraphicsContextResetFn& reset_graphics_context,
+    WindowDisplaySettings& settings)
 {
     if (settings.windowed_size.x == 0U || settings.windowed_size.y == 0U) {
         settings.windowed_size = {constants::DEFAULT_WINDOW_WIDTH, constants::DEFAULT_WINDOW_HEIGHT};
@@ -50,13 +58,28 @@ void leave_fullscreen(sf::Window& window, render::GameRenderer& renderer, Window
     apply_window_frame_limits(window);
     (void)window.setActive(true);
     window.setPosition(settings.windowed_position);
+    window.setMouseCursorVisible(true);
     window.setMouseCursorGrabbed(false);
 
-    renderer.reset_graphics_context(window.getSize());
+    reset_graphics_context(window.getSize());
     settings.fullscreen = false;
 }
 
-} // namespace
+void enter_fullscreen(sf::Window& window, render::GameRenderer& renderer, WindowDisplaySettings& settings)
+{
+    enter_fullscreen(
+        window,
+        [&renderer](const sf::Vector2u size) { renderer.reset_graphics_context(size); },
+        settings);
+}
+
+void leave_fullscreen(sf::Window& window, render::GameRenderer& renderer, WindowDisplaySettings& settings)
+{
+    leave_fullscreen(
+        window,
+        [&renderer](const sf::Vector2u size) { renderer.reset_graphics_context(size); },
+        settings);
+}
 
 void initialize_window_display_settings(sf::Window& window, WindowDisplaySettings& settings)
 {
@@ -64,15 +87,28 @@ void initialize_window_display_settings(sf::Window& window, WindowDisplaySetting
     settings.windowed_position = window.getPosition();
 }
 
-void handle_display_key(
+bool handle_display_key(
     sf::Window& window,
     render::GameRenderer& renderer,
     WindowDisplaySettings& settings,
-    const sf::Keyboard::Key key)
+    const sf::Keyboard::Key key,
+    const bool allow_fog_toggle)
 {
+    if (key == sf::Keyboard::Key::F9) {
+        renderer.toggle_perf_hud();
+        return false;
+    }
+
+    if (key == sf::Keyboard::Key::F10) {
+        if (allow_fog_toggle) {
+            renderer.toggle_fog_of_war();
+        }
+        return false;
+    }
+
     if (key == sf::Keyboard::Key::F11) {
         renderer.toggle_grid_lines();
-        return;
+        return false;
     }
 
     if (key == sf::Keyboard::Key::F12) {
@@ -82,7 +118,10 @@ void handle_display_key(
         else {
             enter_fullscreen(window, renderer, settings);
         }
+        return true;
     }
+
+    return false;
 }
 
 } // namespace aoa::app

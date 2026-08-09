@@ -57,9 +57,11 @@ If any fail, fix before LAN or long soaks.
 
 One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check** until manual multi-join CLI lands.
 
-### 2b. Graphical / multi-process 4-player (not yet)
+### 2b. Graphical / multi-process 4-player
 
-Manual “host + 3 join windows” needs **`--lockstep-players 4`** on the host and **`--player-slot N`** on each join (next M3 slice). Until then, use **§2a** for 4-player sync and **§3** for 2-player LAN feel.
+Use **`--players 4`** (alias: `--players 4`) on the host and every join. Each slot gets a town center, worker, and militia on a **4-corner map**. The host shows **Waiting for players (N/4)** until all clients connect; the sim does not advance until the lobby is full.
+
+Connect in order: **P2 → P3 → P4** (ENet slot must match `--player-slot`).
 
 ---
 
@@ -106,27 +108,27 @@ Goal: **sync** without four monitors. One graphical host; other slots headless.
 
 ```powershell
 # Terminal 1 — host
-.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --lockstep-players 4 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --players 4 --lockstep-debug
 
 # Terminal 2 — local headless P2 (connect after host is listening)
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 4 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 4 --headless --player-slot 2 --lockstep-debug
 ```
 
 **PC B** — `HOST_IP` = PC A’s IPv4:
 
 ```powershell
 # Terminal 1 — graphical P3
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 4 --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 4 --player-slot 3 --lockstep-debug
 
 # Terminal 2 — headless P4
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 4 --headless --player-slot 4 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 4 --headless --player-slot 4 --lockstep-debug
 ```
 
 **Connect order:** start host → join P2 → wait for `lockstep-join: joined` → join P3 → join P4 (one client at a time, slots 2→3→4).
 
 **Pass:** all four advance ticks; no desync banner; gather/move on P1 and P3; 20+ minutes stable.
 
-Every join process must pass the same `--lockstep-players 4` as the host.
+Every join process must pass the same `--players 4` as the host.
 
 ---
 
@@ -143,20 +145,20 @@ Optional: run **one** graphical client on PC B (e.g. P5) instead of headless for
 **PC A**
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --lockstep-players 8 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --players 8 --lockstep-debug
 
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 8 --headless --player-slot 2 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 8 --headless --player-slot 3 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --lockstep-players 8 --headless --player-slot 4 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 4 --lockstep-debug
 ```
 
 **PC B** — `HOST_IP` = PC A’s IPv4:
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 5 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 6 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 7 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --lockstep-players 8 --headless --player-slot 8 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 5 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 6 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 7 --lockstep-debug
+.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 8 --lockstep-debug
 ```
 
 **Automated 8-player sync (planned):**

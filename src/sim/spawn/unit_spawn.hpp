@@ -2,6 +2,7 @@
 
 #include "core/grid.hpp"
 #include "data/content_types.hpp"
+#include "sim/components/resources.hpp"
 
 #include <entt/entt.hpp>
 #include <string>
@@ -25,6 +26,14 @@ namespace aoa::sim::spawn {
     const data::ArchetypeDefinition& town_center_archetype,
     core::GridPos spawn_cell,
     std::uint8_t player_slot,
-    int starting_wood);
+    components::Stockpile starting_stockpile,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_house(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& house_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
 
 } // namespace aoa::sim::spawn

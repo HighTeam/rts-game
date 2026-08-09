@@ -8,6 +8,8 @@
 
 #include "data/content_types.hpp"
 
+#include "sim/components/building_footprint.hpp"
+
 #include "sim/components/definition_ref.hpp"
 
 #include "sim/components/content_pack.hpp"
@@ -40,7 +42,7 @@ namespace {
 
 
 
-entt::entity find_world_entity(entt::registry& registry)
+entt::entity find_world_entity(const entt::registry& registry)
 
 {
 
@@ -124,6 +126,13 @@ void sync_fog_memory_from_map(
 
     fog.memory_forest_wood[fog_index] = map.forest_wood[static_cast<std::size_t>(map_index)];
 
+    fog.memory_bush_food[fog_index] = map.bush_food[static_cast<std::size_t>(map_index)];
+
+    fog.memory_mine_money[fog_index] =
+        static_cast<std::size_t>(map_index) < map.mine_money.size()
+        ? map.mine_money[static_cast<std::size_t>(map_index)]
+        : 0;
+
 }
 
 
@@ -193,6 +202,38 @@ void set_fog_visible_cell(
 }
 
 
+
+void reveal_vision_rect(
+    components::FogOfWarState& fog,
+    const components::MapGrid& map,
+    const int anchor_x,
+    const int anchor_y,
+    const int footprint_width,
+    const int footprint_height,
+    const int padding_tiles,
+    const std::uint8_t player_slot,
+    const bool mark_explored)
+{
+    const int min_x = anchor_x - padding_tiles;
+    const int min_y = anchor_y - padding_tiles;
+    const int max_x = anchor_x + footprint_width + padding_tiles - 1;
+    const int max_y = anchor_y + footprint_height + padding_tiles - 1;
+
+    for (int y = min_y; y <= max_y; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
+            if (!fog_cell_in_bounds(fog, x, y)) {
+                continue;
+            }
+
+            if (mark_explored) {
+                set_fog_cell(fog, map, x, y, player_slot, true);
+            }
+            else {
+                set_fog_visible_cell(fog, x, y, player_slot);
+            }
+        }
+    }
+}
 
 void reveal_vision_circle(
     components::FogOfWarState& fog,
@@ -274,7 +315,7 @@ void reveal_vision_circle(
 
 [[nodiscard]] int vision_range_for_entity(
 
-    entt::registry& registry,
+    const entt::registry& registry,
 
     const components::ContentPack& content_pack,
 
@@ -340,7 +381,156 @@ void reveal_vision_circle(
 
 
 
+void vision_origin_for_entity(
+    const entt::registry& registry,
+    const entt::entity entity,
+    math::Fixed& origin_x,
+    math::Fixed& origin_y)
+{
+    const auto& grid = registry.get<components::GridPosition>(entity);
+    origin_x = math::tile_center_coord(grid.cell.x);
+    origin_y = math::tile_center_coord(grid.cell.y);
+
+    if (registry.all_of<components::WorldPosition>(entity)) {
+        const auto& world_position = registry.get<components::WorldPosition>(entity);
+        origin_x = world_position.x;
+        origin_y = world_position.y;
+        return;
+    }
+
+    if (!registry.any_of<components::BuildingTag>(entity)
+        && !registry.any_of<components::TownCenterTag>(entity)) {
+        return;
+    }
+
+    components::BuildingFootprint footprint{};
+    if (registry.any_of<components::BuildingFootprint>(entity)) {
+        footprint = registry.get<components::BuildingFootprint>(entity);
+    }
+    footprint = components::effective_building_footprint(
+        footprint,
+        registry.any_of<components::TownCenterTag>(entity));
+    origin_x = math::Fixed::from_float(
+        static_cast<float>(grid.cell.x) + static_cast<float>(footprint.width) * 0.5F);
+    origin_y = math::Fixed::from_float(
+        static_cast<float>(grid.cell.y) + static_cast<float>(footprint.height) * 0.5F);
+}
+
+void reveal_vision_for_entity(
+    components::FogOfWarState& fog,
+    const components::MapGrid& map,
+    const entt::registry& registry,
+    const components::ContentPack& content_pack,
+    const entt::entity entity,
+    const std::uint8_t player_slot,
+    const bool mark_explored)
+{
+    if (registry.any_of<components::UnderConstructionTag>(entity)
+        && (registry.any_of<components::BuildingTag>(entity)
+            || registry.any_of<components::TownCenterTag>(entity))) {
+        const auto& grid = registry.get<components::GridPosition>(entity);
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(entity)) {
+            footprint = registry.get<components::BuildingFootprint>(entity);
+        }
+        footprint = components::effective_building_footprint(
+            footprint,
+            registry.any_of<components::TownCenterTag>(entity));
+        reveal_vision_rect(
+            fog,
+            map,
+            grid.cell.x,
+            grid.cell.y,
+            footprint.width,
+            footprint.height,
+            aoa::constants::CONSTRUCTION_VISION_FOOTPRINT_PADDING_TILES,
+            player_slot,
+            mark_explored);
+        return;
+    }
+
+    math::Fixed origin_x{};
+    math::Fixed origin_y{};
+    vision_origin_for_entity(registry, entity, origin_x, origin_y);
+    const int vision_range = vision_range_for_entity(registry, content_pack, entity);
+    reveal_vision_circle(fog, map, origin_x, origin_y, vision_range, player_slot, mark_explored);
+}
+
+[[nodiscard]] float construction_vision_radius_tiles(
+    const int footprint_width,
+    const int footprint_height)
+{
+    const float padded_width = static_cast<float>(
+        footprint_width + 2 * aoa::constants::CONSTRUCTION_VISION_FOOTPRINT_PADDING_TILES);
+    const float padded_height = static_cast<float>(
+        footprint_height + 2 * aoa::constants::CONSTRUCTION_VISION_FOOTPRINT_PADDING_TILES);
+    const float half_diagonal =
+        0.5F * std::sqrt((padded_width * padded_width) + (padded_height * padded_height));
+    return half_diagonal + aoa::constants::FOG_VISION_RADIUS_TILE_PADDING;
+}
+
+
+
 } // namespace
+
+
+
+std::vector<VisionSource> collect_vision_sources_for_slot(
+    const entt::registry& registry,
+    const std::uint8_t player_slot)
+{
+    std::vector<VisionSource> sources{};
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.all_of<components::ContentPack>(world)) {
+        return sources;
+    }
+
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+
+    const auto vision_view = registry.view<
+        components::PlayerOwnedTag,
+        components::GridPosition,
+        components::Health,
+        components::DefinitionRef>();
+
+    for (const entt::entity entity : vision_view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (vision_view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        math::Fixed origin_x{};
+        math::Fixed origin_y{};
+        vision_origin_for_entity(registry, entity, origin_x, origin_y);
+
+        float radius = 0.0F;
+        if (registry.any_of<components::UnderConstructionTag>(entity)
+            && (registry.any_of<components::BuildingTag>(entity)
+                || registry.any_of<components::TownCenterTag>(entity))) {
+            components::BuildingFootprint footprint{};
+            if (registry.any_of<components::BuildingFootprint>(entity)) {
+                footprint = registry.get<components::BuildingFootprint>(entity);
+            }
+            footprint = components::effective_building_footprint(
+                footprint,
+                registry.any_of<components::TownCenterTag>(entity));
+            radius = construction_vision_radius_tiles(footprint.width, footprint.height);
+        }
+        else {
+            const int vision_range = vision_range_for_entity(registry, content_pack, entity);
+            radius =
+                static_cast<float>(vision_range) + aoa::constants::FOG_VISION_RADIUS_TILE_PADDING;
+        }
+
+        sources.push_back(VisionSource{origin_x.to_float(), origin_y.to_float(), radius});
+    }
+
+    return sources;
+}
 
 
 
@@ -381,6 +571,10 @@ void initialize_fog_of_war(entt::registry& registry)
     fog.memory_tiles.assign(total_cells, static_cast<std::uint8_t>(components::TileType::Grass));
 
     fog.memory_forest_wood.assign(total_cells, 0);
+
+    fog.memory_bush_food.assign(total_cells, 0);
+
+    fog.memory_mine_money.assign(total_cells, 0);
 
 
 
@@ -458,19 +652,14 @@ void run_visibility_system(entt::registry& registry)
 
         const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
 
-        math::Fixed origin_x = math::tile_center_coord(
-            vision_view.get<components::GridPosition>(entity).cell.x);
-        math::Fixed origin_y = math::tile_center_coord(
-            vision_view.get<components::GridPosition>(entity).cell.y);
-        if (registry.all_of<components::WorldPosition>(entity)) {
-            const auto& world_position = registry.get<components::WorldPosition>(entity);
-            origin_x = world_position.x;
-            origin_y = world_position.y;
-        }
-
-        const int vision_range = vision_range_for_entity(registry, content_pack, entity);
-
-        reveal_vision_circle(fog, map, origin_x, origin_y, vision_range, player_slot, true);
+        reveal_vision_for_entity(
+            fog,
+            map,
+            registry,
+            content_pack,
+            entity,
+            player_slot,
+            true);
 
     }
 
@@ -532,19 +721,14 @@ void rebuild_fog_visibility(entt::registry& registry)
 
         const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
 
-        math::Fixed origin_x = math::tile_center_coord(
-            vision_view.get<components::GridPosition>(entity).cell.x);
-        math::Fixed origin_y = math::tile_center_coord(
-            vision_view.get<components::GridPosition>(entity).cell.y);
-        if (registry.all_of<components::WorldPosition>(entity)) {
-            const auto& world_position = registry.get<components::WorldPosition>(entity);
-            origin_x = world_position.x;
-            origin_y = world_position.y;
-        }
-
-        const int vision_range = vision_range_for_entity(registry, content_pack, entity);
-
-        reveal_vision_circle(fog, map, origin_x, origin_y, vision_range, player_slot, false);
+        reveal_vision_for_entity(
+            fog,
+            map,
+            registry,
+            content_pack,
+            entity,
+            player_slot,
+            false);
 
     }
 

@@ -1,0 +1,6 @@
+{
+  "id": "gold_mine",
+  "kind": "resource_node",
+  "display_name": "Gold Mine",
+  "money_capacity": 450
+}

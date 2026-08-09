@@ -15,8 +15,13 @@ struct LockstepRunOptions {
         static_cast<std::uint8_t>(constants::LOCKSTEP_PLAYER_COUNT)};
     std::uint8_t player_slot{constants::LOCKSTEP_CLIENT_PLAYER_SLOT};
     bool lockstep_debug{false};
+    bool auto_input{false};
     std::optional<std::string> join_address{};
 };
+
+[[nodiscard]] int run_lockstep_4_stress_smoke();
+
+[[nodiscard]] int run_lockstep_4_reconnect_smoke();
 
 [[nodiscard]] int run_lockstep_smoke();
 

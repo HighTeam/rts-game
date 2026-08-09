@@ -29,8 +29,15 @@ struct ArchetypeDefinition {
     int pierce_armor{0};
     int attack_cooldown_ticks{1};
     int vision_range{0};
-    int spawn_worker_wood_cost{0};
+    int spawn_worker_food_cost{0};
+    int spawn_militia_food_cost{0};
+    int build_wood_cost{0};
     int wood_capacity{0};
+    int food_capacity{0};
+    int money_capacity{0};
+    int footprint_width{1};
+    int footprint_height{1};
+    int gather_interval_ticks{1};
 };
 
 struct CivManifest {
@@ -40,6 +47,9 @@ struct CivManifest {
     std::vector<std::string> structure_archetypes{};
     std::vector<std::string> resource_node_archetypes{};
     int starting_stockpile_wood{0};
+    int starting_stockpile_food{0};
+    int starting_stockpile_money{0};
+    int starting_stockpile_mana{0};
 };
 
 struct ContentDatabase {

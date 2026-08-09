@@ -4,6 +4,7 @@
 #include "core/grid.hpp"
 #include "data/content_types.hpp"
 #include "render/game_renderer.hpp"
+#include "sim/components/building_footprint.hpp"
 #include "sim/components/combat.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
@@ -16,6 +17,7 @@
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/player/player_economy.hpp"
 #include "sim/spawn/unit_spawn.hpp"
 #include "sim/systems/gameplay_systems.hpp"
 #include "sim/systems/visibility_system.hpp"
@@ -43,6 +45,35 @@ entt::entity find_world_entity(entt::registry& registry)
 bool is_occupied(entt::registry& registry, const core::GridPos cell, const entt::entity ignore)
 {
     return systems::is_movement_blocked(registry, cell, ignore);
+}
+
+// Prefer the south edge of the footprint (higher grid Y → below the building
+// on the classic isometric view) so new units appear under the TC, not above.
+[[nodiscard]] core::GridPos find_building_spawn_cell(
+    const components::MapGrid& map,
+    entt::registry& registry,
+    const components::GridPosition& depot_anchor,
+    const components::BuildingFootprint& depot_footprint)
+{
+    for (int y = depot_anchor.cell.y + depot_footprint.height; y >= depot_anchor.cell.y - 1; --y) {
+        for (int x = depot_anchor.cell.x - 1; x <= depot_anchor.cell.x + depot_footprint.width; ++x) {
+            if (x >= depot_anchor.cell.x && x < depot_anchor.cell.x + depot_footprint.width
+                && y >= depot_anchor.cell.y && y < depot_anchor.cell.y + depot_footprint.height) {
+                continue;
+            }
+
+            const core::GridPos candidate{x, y};
+            if (!systems::is_tile_walkable(map, candidate, false)) {
+                continue;
+            }
+
+            if (!is_occupied(registry, candidate, entt::null)) {
+                return candidate;
+            }
+        }
+    }
+
+    return depot_anchor.cell;
 }
 
 core::GridPos find_adjacent_walkable(
@@ -209,6 +240,7 @@ bool issue_move_order(
     mark_manual_control(registry, entity);
     registry.remove<components::AttackOrder>(entity);
     registry.remove<components::GatherTarget>(entity);
+    registry.remove<components::BuildOrder>(entity);
     systems::assign_unit_path(
         registry,
         entity,
@@ -266,6 +298,7 @@ bool issue_attack_order(
     }
 
     mark_manual_control(registry, entity);
+    registry.remove<components::BuildOrder>(entity);
     auto& attack_order = registry.get_or_emplace<components::AttackOrder>(entity);
     attack_order.target = target;
     attack_order.last_known_cell = target_pos;
@@ -296,21 +329,42 @@ bool issue_gather_order(
         return false;
     }
 
-    if (!pick_resource_forest_at(registry, forest_cell).has_value()) {
-        return false;
-    }
-
     const entt::entity world = find_world_entity(registry);
     if (world == entt::null) {
         return false;
     }
 
     const auto& map = registry.get<components::MapGrid>(world);
-    const core::GridPos stand_tile = find_adjacent_walkable(map, registry, forest_cell, entity);
+    if (!core::is_inside_grid(forest_cell, map.width, map.height)) {
+        return false;
+    }
+
+    const int index = core::grid_index(forest_cell, map.width);
+    const components::TileType tile = map.tiles[static_cast<std::size_t>(index)];
+    const bool is_forest = tile == components::TileType::Forest;
+    const bool is_bush =
+        tile == components::TileType::Berries || tile == components::TileType::Blueberries;
+    const bool is_gold_mine = tile == components::TileType::GoldMine;
+    if (!is_forest && !is_bush && !is_gold_mine) {
+        return false;
+    }
+
+    const bool has_resource = is_forest
+        ? map.forest_wood[static_cast<std::size_t>(index)] > 0
+        : (is_gold_mine
+            ? (static_cast<std::size_t>(index) < map.mine_money.size()
+                && map.mine_money[static_cast<std::size_t>(index)] > 0)
+            : map.bush_food[static_cast<std::size_t>(index)] > 0);
+    const core::GridPos stand_tile = has_resource
+        ? find_adjacent_walkable(map, registry, forest_cell, entity)
+        : forest_cell;
 
     mark_manual_control(registry, entity);
     registry.remove<components::AttackOrder>(entity);
-    registry.get_or_emplace<components::GatherTarget>(entity).cell = forest_cell;
+    registry.remove<components::BuildOrder>(entity);
+    auto& gather_target = registry.get_or_emplace<components::GatherTarget>(entity);
+    gather_target.cell = forest_cell;
+    gather_target.resource_type = tile;
     registry.get_or_emplace<components::WorkerBrain>(entity).state = components::WorkerState::MovingToResource;
     systems::assign_unit_path(registry, entity, map, stand_tile);
     return true;
@@ -346,16 +400,27 @@ bool issue_spawn_worker_order(entt::registry& registry, const entt::entity town_
         return false;
     }
 
+    if (registry.any_of<components::UnderConstructionTag>(town_center)) {
+        return false;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, town_center);
+    if (!player_can_spawn_units(registry, player_slot)) {
+        return false;
+    }
+
     const auto& content_pack = registry.get<components::ContentPack>(world);
     const auto& definition_ref = registry.get<components::DefinitionRef>(town_center);
     const auto* town_center_archetype =
         data::find_structure_archetype(content_pack.content, definition_ref.id);
-    if (town_center_archetype == nullptr || town_center_archetype->spawn_worker_wood_cost <= 0) {
+    if (town_center_archetype == nullptr || town_center_archetype->spawn_worker_food_cost <= 0) {
         return false;
     }
 
-    auto& stockpile = registry.get<components::Stockpile>(town_center);
-    if (stockpile.wood < town_center_archetype->spawn_worker_wood_cost) {
+    if (!can_afford_player_food(
+            registry,
+            player_slot,
+            town_center_archetype->spawn_worker_food_cost)) {
         return false;
     }
 
@@ -367,15 +432,559 @@ bool issue_spawn_worker_order(entt::registry& registry, const entt::entity town_
     }
 
     const auto& map = registry.get<components::MapGrid>(world);
-    const core::GridPos depot_pos = registry.get<components::GridPosition>(town_center).cell;
-    const core::GridPos spawn_cell = find_adjacent_walkable(map, registry, depot_pos, entt::null);
-    if (spawn_cell == depot_pos || is_occupied(registry, spawn_cell, entt::null)) {
+    const auto& depot_anchor = registry.get<components::GridPosition>(town_center);
+    const components::BuildingFootprint depot_footprint = components::effective_building_footprint(
+        registry.any_of<components::BuildingFootprint>(town_center)
+        ? registry.get<components::BuildingFootprint>(town_center)
+        : components::BuildingFootprint{},
+        true);
+    const core::GridPos spawn_cell =
+        find_building_spawn_cell(map, registry, depot_anchor, depot_footprint);
+    if (components::building_contains_cell(depot_anchor, depot_footprint, spawn_cell)
+        || spawn_cell == depot_anchor.cell
+        || is_occupied(registry, spawn_cell, entt::null)) {
         return false;
     }
 
-    stockpile.wood -= town_center_archetype->spawn_worker_wood_cost;
-    const std::uint8_t player_slot = components::entity_player_slot(registry, town_center);
+    if (!try_deduct_player_food(
+            registry,
+            player_slot,
+            town_center_archetype->spawn_worker_food_cost)) {
+        return false;
+    }
+
     (void)spawn::spawn_player_worker(registry, *worker_archetype, spawn_cell, player_slot);
+    return true;
+}
+
+bool issue_spawn_militia_order(entt::registry& registry, const entt::entity town_center)
+{
+    if (!registry.valid(town_center)) {
+        return false;
+    }
+
+    if (!registry.all_of<
+            components::TownCenterTag,
+            components::PlayerOwnedTag,
+            components::Stockpile,
+            components::GridPosition,
+            components::DefinitionRef>(town_center)) {
+        return false;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null) {
+        return false;
+    }
+
+    if (registry.any_of<components::UnderConstructionTag>(town_center)) {
+        return false;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, town_center);
+    if (!player_can_spawn_units(registry, player_slot)) {
+        return false;
+    }
+
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+    const auto& definition_ref = registry.get<components::DefinitionRef>(town_center);
+    const auto* town_center_archetype =
+        data::find_structure_archetype(content_pack.content, definition_ref.id);
+    if (town_center_archetype == nullptr || town_center_archetype->spawn_militia_food_cost <= 0) {
+        return false;
+    }
+
+    if (!can_afford_player_food(
+            registry,
+            player_slot,
+            town_center_archetype->spawn_militia_food_cost)) {
+        return false;
+    }
+
+    const auto* militia_archetype = data::find_unit_archetype(
+        content_pack.content,
+        std::string(constants::MILITIA_UNIT_ID));
+    if (militia_archetype == nullptr) {
+        return false;
+    }
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    const auto& depot_anchor = registry.get<components::GridPosition>(town_center);
+    const components::BuildingFootprint depot_footprint = components::effective_building_footprint(
+        registry.any_of<components::BuildingFootprint>(town_center)
+        ? registry.get<components::BuildingFootprint>(town_center)
+        : components::BuildingFootprint{},
+        true);
+    const core::GridPos spawn_cell =
+        find_building_spawn_cell(map, registry, depot_anchor, depot_footprint);
+    if (components::building_contains_cell(depot_anchor, depot_footprint, spawn_cell)
+        || spawn_cell == depot_anchor.cell
+        || is_occupied(registry, spawn_cell, entt::null)) {
+        return false;
+    }
+
+    if (!try_deduct_player_food(
+            registry,
+            player_slot,
+            town_center_archetype->spawn_militia_food_cost)) {
+        return false;
+    }
+
+    (void)spawn::spawn_player_militia(registry, *militia_archetype, spawn_cell, player_slot);
+    return true;
+}
+
+void issue_kill_orders(entt::registry& registry, const std::vector<entt::entity>& entities)
+{
+    for (const entt::entity entity : entities) {
+        if (!is_alive_player_unit(registry, entity)) {
+            continue;
+        }
+
+        if (!registry.any_of<components::Health>(entity)) {
+            continue;
+        }
+
+        registry.get<components::Health>(entity).current = math::Fixed::from_int(0);
+    }
+}
+
+void issue_stop_orders(entt::registry& registry, const std::vector<entt::entity>& entities)
+{
+    for (const entt::entity entity : entities) {
+        if (!is_alive_player_unit(registry, entity)) {
+            continue;
+        }
+
+        mark_manual_control(registry, entity);
+        registry.remove<components::AttackOrder>(entity);
+        registry.remove<components::GatherTarget>(entity);
+        registry.remove<components::BuildOrder>(entity);
+        registry.remove<components::MovePath>(entity);
+        registry.remove<components::MoveSegment>(entity);
+    }
+}
+
+namespace {
+
+[[nodiscard]] bool is_ignored_worker(
+    const std::vector<entt::entity>& ignore_workers,
+    const entt::entity entity)
+{
+    return std::find(ignore_workers.begin(), ignore_workers.end(), entity) != ignore_workers.end();
+}
+
+[[nodiscard]] bool can_place_town_center_footprint(
+    const components::MapGrid& map,
+    entt::registry& registry,
+    const core::GridPos anchor,
+    const components::BuildingFootprint& footprint,
+    const std::vector<entt::entity>& ignore_workers)
+{
+    for (int y = 0; y < footprint.height; ++y) {
+        for (int x = 0; x < footprint.width; ++x) {
+            const core::GridPos cell{anchor.x + x, anchor.y + y};
+            if (!systems::is_tile_walkable(map, cell, false)) {
+                return false;
+            }
+
+            const auto building_view = registry.view<
+                components::BuildingTag,
+                components::GridPosition,
+                components::Health>();
+            for (const entt::entity building : building_view) {
+                if (building_view.get<components::Health>(building).current.raw() <= 0) {
+                    continue;
+                }
+
+                components::BuildingFootprint other_footprint{};
+                if (registry.any_of<components::BuildingFootprint>(building)) {
+                    other_footprint = registry.get<components::BuildingFootprint>(building);
+                }
+                other_footprint = components::effective_building_footprint(
+                    other_footprint,
+                    registry.any_of<components::TownCenterTag>(building));
+                if (components::building_contains_cell(
+                        building_view.get<components::GridPosition>(building),
+                        other_footprint,
+                        cell)) {
+                    return false;
+                }
+            }
+
+            const auto unit_view =
+                registry.view<components::UnitTag, components::GridPosition, components::Health>();
+            for (const entt::entity entity : unit_view) {
+                if (unit_view.get<components::Health>(entity).current.raw() <= 0) {
+                    continue;
+                }
+
+                if (is_ignored_worker(ignore_workers, entity)) {
+                    continue;
+                }
+
+                if (systems::unit_occupancy_grid_cell(registry, entity) == cell) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+} // namespace
+
+bool issue_destroy_building_order(entt::registry& registry, const entt::entity building)
+{
+    if (!registry.valid(building)) {
+        return false;
+    }
+
+    if (!registry.all_of<components::BuildingTag, components::PlayerOwnedTag, components::Health>(
+            building)) {
+        return false;
+    }
+
+    auto& health = registry.get<components::Health>(building);
+    if (health.current.raw() <= 0) {
+        return false;
+    }
+
+    const bool unstarted_construction =
+        registry.any_of<components::UnderConstructionTag>(building)
+        && health.current == math::Fixed::from_int(1);
+    if (unstarted_construction) {
+        const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+        const entt::entity world = find_world_entity(registry);
+        int refund = 0;
+        if (world != entt::null && registry.any_of<components::DefinitionRef>(building)
+            && registry.any_of<components::ContentPack>(world)) {
+            const auto& content_pack = registry.get<components::ContentPack>(world);
+            const auto& definition_ref = registry.get<components::DefinitionRef>(building);
+            const auto* archetype =
+                data::find_structure_archetype(content_pack.content, definition_ref.id);
+            if (archetype != nullptr && archetype->build_wood_cost > 0) {
+                refund = archetype->build_wood_cost;
+            }
+            else if (registry.any_of<components::TownCenterTag>(building)) {
+                refund = constants::TOWN_CENTER_BUILD_WOOD_COST;
+            }
+            else if (registry.any_of<components::HouseTag>(building)) {
+                refund = constants::HOUSE_BUILD_WOOD_COST;
+            }
+        }
+
+        if (refund > 0) {
+            add_player_wood(registry, player_slot, refund);
+        }
+    }
+
+    health.current = math::Fixed::from_int(0);
+    return true;
+}
+
+bool issue_resume_build_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    const entt::entity building)
+{
+    if (!registry.valid(building)) {
+        return false;
+    }
+
+    if (!registry.all_of<
+            components::BuildingTag,
+            components::PlayerOwnedTag,
+            components::UnderConstructionTag,
+            components::Health,
+            components::GridPosition>(building)) {
+        return false;
+    }
+
+    if (registry.get<components::Health>(building).current.raw() <= 0) {
+        return false;
+    }
+
+    const std::uint8_t building_slot = components::entity_player_slot(registry, building);
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null) {
+        return false;
+    }
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    const core::GridPos anchor_cell = registry.get<components::GridPosition>(building).cell;
+
+    bool assigned = false;
+    for (const entt::entity worker : workers) {
+        if (!is_alive_player_unit(registry, worker)) {
+            continue;
+        }
+
+        if (!registry.any_of<components::WorkerUnitTag>(worker)) {
+            continue;
+        }
+
+        if (components::entity_player_slot(registry, worker) != building_slot) {
+            continue;
+        }
+
+        mark_manual_control(registry, worker);
+        registry.remove<components::AttackOrder>(worker);
+        registry.remove<components::GatherTarget>(worker);
+        registry.emplace_or_replace<components::BuildOrder>(
+            worker,
+            components::BuildOrder{building, 0});
+        if (registry.any_of<components::WorkerBrain>(worker)) {
+            registry.get<components::WorkerBrain>(worker).state = components::WorkerState::Idle;
+        }
+
+        if (!systems::unit_grid_adjacent(registry, worker, building)) {
+            const core::GridPos stand_tile = systems::find_best_melee_stand_tile(
+                map,
+                registry,
+                anchor_cell,
+                worker,
+                building);
+            if (stand_tile != anchor_cell) {
+                systems::assign_unit_path(
+                    registry,
+                    worker,
+                    map,
+                    stand_tile,
+                    building,
+                    true,
+                    false,
+                    {},
+                    {},
+                    false);
+            }
+        }
+
+        assigned = true;
+    }
+
+    return assigned;
+}
+
+bool issue_build_town_center_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    const core::GridPos anchor_cell)
+{
+    bool has_worker = false;
+    std::uint8_t player_slot = 0U;
+    std::vector<entt::entity> valid_workers{};
+    valid_workers.reserve(workers.size());
+    for (const entt::entity entity : workers) {
+        if (!is_alive_player_unit(registry, entity)) {
+            continue;
+        }
+
+        if (!registry.any_of<components::WorkerUnitTag>(entity)) {
+            continue;
+        }
+
+        if (!has_worker) {
+            player_slot = components::entity_player_slot(registry, entity);
+            has_worker = true;
+        }
+        else if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        valid_workers.push_back(entity);
+    }
+
+    if (!has_worker || valid_workers.empty()) {
+        return false;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null) {
+        return false;
+    }
+
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+    const auto* town_center_archetype = data::find_structure_archetype(
+        content_pack.content,
+        std::string(constants::TOWN_CENTER_BUILDING_ID));
+    if (town_center_archetype == nullptr) {
+        return false;
+    }
+
+    const int build_cost = town_center_archetype->build_wood_cost > 0
+        ? town_center_archetype->build_wood_cost
+        : constants::TOWN_CENTER_BUILD_WOOD_COST;
+    if (!can_afford_player_wood(registry, player_slot, build_cost)) {
+        return false;
+    }
+
+    const components::BuildingFootprint footprint = components::effective_building_footprint(
+        components::BuildingFootprint{
+            std::max(1, town_center_archetype->footprint_width),
+            std::max(1, town_center_archetype->footprint_height),
+        },
+        true);
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    if (!can_place_town_center_footprint(map, registry, anchor_cell, footprint, valid_workers)) {
+        return false;
+    }
+
+    if (!try_deduct_player_wood(registry, player_slot, build_cost)) {
+        return false;
+    }
+
+    const entt::entity building = spawn::spawn_player_town_center(
+        registry,
+        *town_center_archetype,
+        anchor_cell,
+        player_slot,
+        components::Stockpile{},
+        true);
+
+    for (const entt::entity worker : valid_workers) {
+        mark_manual_control(registry, worker);
+        registry.remove<components::AttackOrder>(worker);
+        registry.remove<components::GatherTarget>(worker);
+        registry.emplace_or_replace<components::BuildOrder>(
+            worker,
+            components::BuildOrder{building, 0});
+        if (registry.any_of<components::WorkerBrain>(worker)) {
+            registry.get<components::WorkerBrain>(worker).state = components::WorkerState::Idle;
+        }
+
+        const core::GridPos stand_tile = systems::find_best_melee_stand_tile(
+            map,
+            registry,
+            anchor_cell,
+            worker,
+            building);
+        if (stand_tile != anchor_cell) {
+            systems::assign_unit_path(
+                registry,
+                worker,
+                map,
+                stand_tile,
+                building,
+                true,
+                false,
+                {},
+                {},
+                false);
+        }
+    }
+
+    return true;
+}
+
+bool issue_build_house_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    const core::GridPos anchor_cell)
+{
+    bool has_worker = false;
+    std::uint8_t player_slot = 0U;
+    std::vector<entt::entity> valid_workers{};
+    valid_workers.reserve(workers.size());
+    for (const entt::entity entity : workers) {
+        if (!is_alive_player_unit(registry, entity)) {
+            continue;
+        }
+
+        if (!registry.any_of<components::WorkerUnitTag>(entity)) {
+            continue;
+        }
+
+        if (!has_worker) {
+            player_slot = components::entity_player_slot(registry, entity);
+            has_worker = true;
+        }
+        else if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        valid_workers.push_back(entity);
+    }
+
+    if (!has_worker || valid_workers.empty()) {
+        return false;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null) {
+        return false;
+    }
+
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+    const auto* house_archetype = data::find_structure_archetype(
+        content_pack.content,
+        std::string(constants::HOUSE_BUILDING_ID));
+    if (house_archetype == nullptr) {
+        return false;
+    }
+
+    const int build_cost = house_archetype->build_wood_cost > 0
+        ? house_archetype->build_wood_cost
+        : constants::HOUSE_BUILD_WOOD_COST;
+    if (!can_afford_player_wood(registry, player_slot, build_cost)) {
+        return false;
+    }
+
+    const components::BuildingFootprint footprint{
+        std::max(1, house_archetype->footprint_width),
+        std::max(1, house_archetype->footprint_height),
+    };
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    if (!can_place_town_center_footprint(map, registry, anchor_cell, footprint, valid_workers)) {
+        return false;
+    }
+
+    if (!try_deduct_player_wood(registry, player_slot, build_cost)) {
+        return false;
+    }
+
+    const entt::entity building = spawn::spawn_player_house(
+        registry,
+        *house_archetype,
+        anchor_cell,
+        player_slot,
+        true);
+
+    for (const entt::entity worker : valid_workers) {
+        mark_manual_control(registry, worker);
+        registry.remove<components::AttackOrder>(worker);
+        registry.remove<components::GatherTarget>(worker);
+        registry.emplace_or_replace<components::BuildOrder>(
+            worker,
+            components::BuildOrder{building, 0});
+        if (registry.any_of<components::WorkerBrain>(worker)) {
+            registry.get<components::WorkerBrain>(worker).state = components::WorkerState::Idle;
+        }
+
+        const core::GridPos stand_tile = systems::find_best_melee_stand_tile(
+            map,
+            registry,
+            anchor_cell,
+            worker,
+            building);
+        if (stand_tile != anchor_cell) {
+            systems::assign_unit_path(
+                registry,
+                worker,
+                map,
+                stand_tile,
+                building,
+                true,
+                false,
+                {},
+                {},
+                false);
+        }
+    }
+
     return true;
 }
 
@@ -618,17 +1227,97 @@ entt::entity pick_player_building_at_screen(
             continue;
         }
 
-        const core::GridPos cell = view.get<components::GridPosition>(entity).cell;
-        if (cell != *grid_cell) {
+        const auto& anchor = view.get<components::GridPosition>(entity);
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(entity)) {
+            footprint = registry.get<components::BuildingFootprint>(entity);
+        }
+        footprint = components::effective_building_footprint(
+            footprint,
+            registry.any_of<components::TownCenterTag>(entity));
+        if (!components::building_contains_cell(anchor, footprint, *grid_cell)) {
             continue;
         }
 
-        const sf::Vector2f building_screen = renderer.tile_center_screen(
-            cell.x,
-            cell.y,
-            constants::RENDER_BUILDING_HEIGHT * 0.5F);
-        const float dx = building_screen.x - screen_position.x;
-        const float dy = building_screen.y - screen_position.y;
+        const sf::Vector2f tile_screen = renderer.tile_center_screen(
+            grid_cell->x,
+            grid_cell->y,
+            constants::RENDER_ENTITY_BASE_LIFT);
+        const float dx = tile_screen.x - screen_position.x;
+        const float dy = tile_screen.y - screen_position.y;
+        const float distance_sq = dx * dx + dy * dy;
+        if (distance_sq > best_distance_sq) {
+            continue;
+        }
+
+        if (best == entt::null || distance_sq < best_distance_sq
+            || (distance_sq == best_distance_sq
+                && static_cast<entt::id_type>(entity) < static_cast<entt::id_type>(best))) {
+            best = entity;
+            best_distance_sq = distance_sq;
+        }
+    }
+
+    return best;
+}
+
+entt::entity pick_enemy_building_at_screen(
+    entt::registry& registry,
+    const render::GameRenderer& renderer,
+    const sf::Vector2f screen_position,
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
+{
+    const auto grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
+    if (!grid_cell.has_value()) {
+        return entt::null;
+    }
+
+    entt::entity best = entt::null;
+    float best_distance_sq = pick_radius_px * pick_radius_px;
+
+    const auto view = registry.view<
+        components::BuildingTag,
+        components::PlayerOwnedTag,
+        components::GridPosition,
+        components::Health>();
+
+    for (const entt::entity entity : view) {
+        if (!components::is_opponent_entity(registry, entity, local_player_slot)) {
+            continue;
+        }
+
+        const auto& health = view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        const entt::entity world = find_world_entity(registry);
+        if (world != entt::null && registry.any_of<components::FogOfWarState>(world)) {
+            const auto& fog = registry.get<components::FogOfWarState>(world);
+            if (!systems::is_opponent_entity_visible_to_slot(registry, fog, entity, local_player_slot)) {
+                continue;
+            }
+        }
+
+        const auto& anchor = view.get<components::GridPosition>(entity);
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(entity)) {
+            footprint = registry.get<components::BuildingFootprint>(entity);
+        }
+        footprint = components::effective_building_footprint(
+            footprint,
+            registry.any_of<components::TownCenterTag>(entity));
+        if (!components::building_contains_cell(anchor, footprint, *grid_cell)) {
+            continue;
+        }
+
+        const sf::Vector2f tile_screen = renderer.tile_center_screen(
+            grid_cell->x,
+            grid_cell->y,
+            constants::RENDER_ENTITY_BASE_LIFT);
+        const float dx = tile_screen.x - screen_position.x;
+        const float dy = tile_screen.y - screen_position.y;
         const float distance_sq = dx * dx + dy * dy;
         if (distance_sq > best_distance_sq) {
             continue;
@@ -775,15 +1464,91 @@ std::optional<core::GridPos> pick_resource_forest_at(
     }
 
     const int index = core::grid_index(cell, map.width);
-    if (map.tiles[static_cast<std::size_t>(index)] != components::TileType::Forest) {
+    const components::TileType tile = map.tiles[static_cast<std::size_t>(index)];
+    if (tile == components::TileType::Forest) {
+        if (map.forest_wood[static_cast<std::size_t>(index)] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (tile == components::TileType::Berries || tile == components::TileType::Blueberries) {
+        if (map.bush_food[static_cast<std::size_t>(index)] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (tile == components::TileType::GoldMine) {
+        if (static_cast<std::size_t>(index) >= map.mine_money.size()
+            || map.mine_money[static_cast<std::size_t>(index)] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<core::GridPos> pick_resource_forest_known_at(
+    entt::registry& registry,
+    const core::GridPos cell,
+    const std::uint8_t local_player_slot)
+{
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null) {
         return std::nullopt;
     }
 
-    if (map.forest_wood[static_cast<std::size_t>(index)] <= 0) {
+    const auto& map = registry.get<components::MapGrid>(world);
+    if (!core::is_inside_grid(cell, map.width, map.height)) {
         return std::nullopt;
     }
 
-    return cell;
+    if (!registry.any_of<components::FogOfWarState>(world)) {
+        return pick_resource_forest_at(registry, cell);
+    }
+
+    const auto& fog = registry.get<components::FogOfWarState>(world);
+    if (!systems::is_cell_explored_to_slot(fog, cell, local_player_slot)) {
+        return std::nullopt;
+    }
+
+    if (systems::is_cell_visible_to_slot(fog, cell, local_player_slot)) {
+        return pick_resource_forest_at(registry, cell);
+    }
+
+    const components::TileType memory_tile =
+        components::fog_memory_tile_type(fog, map, cell.x, cell.y, local_player_slot);
+    if (memory_tile == components::TileType::Forest) {
+        if (components::fog_memory_forest_wood(fog, map, cell.x, cell.y, local_player_slot) <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (memory_tile == components::TileType::Berries
+        || memory_tile == components::TileType::Blueberries) {
+        if (components::fog_memory_bush_food(fog, map, cell.x, cell.y, local_player_slot) <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (memory_tile == components::TileType::GoldMine) {
+        if (components::fog_memory_mine_money(fog, map, cell.x, cell.y, local_player_slot) <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    return std::nullopt;
 }
 
 std::optional<core::GridPos> pick_resource_forest_at_screen(
@@ -798,15 +1563,7 @@ std::optional<core::GridPos> pick_resource_forest_at_screen(
         return std::nullopt;
     }
 
-    const entt::entity world = find_world_entity(registry);
-    if (world != entt::null && registry.any_of<components::FogOfWarState>(world)) {
-        const auto& fog = registry.get<components::FogOfWarState>(world);
-        if (!systems::is_cell_visible_to_slot(fog, *grid_cell, local_player_slot)) {
-            return std::nullopt;
-        }
-    }
-
-    if (pick_resource_forest_at(registry, *grid_cell).has_value()) {
+    if (pick_resource_forest_known_at(registry, *grid_cell, local_player_slot).has_value()) {
         return grid_cell;
     }
 
@@ -820,7 +1577,7 @@ std::optional<core::GridPos> pick_resource_forest_at_screen(
         return std::nullopt;
     }
 
-    return pick_resource_forest_at(registry, *grid_cell);
+    return pick_resource_forest_known_at(registry, *grid_cell, local_player_slot);
 }
 
 } // namespace aoa::sim::player

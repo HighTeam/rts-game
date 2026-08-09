@@ -36,15 +36,34 @@ struct RenderEntityPose {
     int grid_y{0};
     int health_current{0};
     int health_max{0};
+    int carried_wood{0};
+    int carried_food{0};
+    int carried_money{0};
+    int melee_attack{0};
+    int melee_armor{0};
+    int pierce_attack{0};
+    int pierce_armor{0};
     bool is_enemy{false};
     bool is_worker{false};
+    bool is_militia{false};
     bool is_town_center{false};
+    bool is_house{false};
+    bool under_construction{false};
     bool shrouded{false};
+    bool is_nature{false};
+    int footprint_width{1};
+    int footprint_height{1};
     std::uint8_t player_slot{0U};
 };
 
 struct RenderHudPlayerStats {
     int town_wood{0};
+    int town_food{0};
+    int town_money{0};
+    int town_mana{0};
+    int town_mana_max{0};
+    int civil_cap_current{0};
+    int civil_cap_max{0};
     int carried_wood{0};
     int militia_hp{0};
     int militia_max_hp{0};
@@ -56,10 +75,14 @@ struct SimRenderSnapshot {
     int map_height{0};
     std::vector<sim::components::TileType> tiles{};
     std::vector<int> forest_wood{};
+    std::vector<int> bush_food{};
+    std::vector<int> mine_money{};
     std::vector<std::uint8_t> fog_explored{};
     std::vector<std::uint8_t> fog_visible{};
     std::vector<std::uint8_t> fog_memory_tiles{};
     std::vector<int> fog_memory_forest_wood{};
+    std::vector<int> fog_memory_bush_food{};
+    std::vector<int> fog_memory_mine_money{};
     std::vector<RenderEntityPose> buildings{};
     std::vector<RenderEntityPose> units{};
     std::array<RenderHudPlayerStats, 8> hud_by_player{};
@@ -101,6 +124,13 @@ class GameRenderer;
     std::uint8_t local_player_slot);
 
 [[nodiscard]] entt::entity pick_player_building_at_screen(
+    const SimRenderSnapshot& snapshot,
+    const GameRenderer& renderer,
+    sf::Vector2f screen_position,
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
+
+[[nodiscard]] entt::entity pick_enemy_building_at_screen(
     const SimRenderSnapshot& snapshot,
     const GameRenderer& renderer,
     sf::Vector2f screen_position,

@@ -1,5 +1,5 @@
 {
   "scenario_id": "earth_default",
   "ticks": 200,
-  "expected_state_hash": "0x7982a0643f3bcb76"
+  "expected_state_hash": "0xcb4f9a25c25d549c"
 }

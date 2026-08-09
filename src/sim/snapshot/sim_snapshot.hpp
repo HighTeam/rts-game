@@ -18,6 +18,8 @@ struct SimSnapshot {
     std::uint64_t next_command_sequence{1U};
     std::uint8_t ai_controlled_slots{0U};
     std::uint64_t ai_controlled_since_tick{0U};
+    std::int32_t civil_population_map_cap{15};
+    std::uint8_t fog_of_war_enabled{1U};
     std::vector<components::AiControlTransition> ai_control_transitions{};
     std::vector<player::PlayerCommand> input_log{};
 };

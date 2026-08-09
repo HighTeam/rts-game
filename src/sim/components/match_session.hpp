@@ -15,6 +15,9 @@ struct MatchSession {
     std::uint8_t ai_controlled_slots{0U};
     std::uint64_t ai_controlled_since_tick{0U};
     std::vector<AiControlTransition> ai_control_transitions{};
+    // Hard ceiling for civil population per player (map setting).
+    int civil_population_map_cap{15};
+    bool fog_of_war_enabled{true};
 };
 
 [[nodiscard]] inline bool is_slot_ai_controlled(const MatchSession& session, const std::uint8_t player_slot)

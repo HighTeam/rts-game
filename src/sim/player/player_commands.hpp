@@ -83,6 +83,29 @@ void issue_deposit_orders(entt::registry& registry, const std::vector<entt::enti
 
 bool issue_spawn_worker_order(entt::registry& registry, entt::entity town_center);
 
+bool issue_spawn_militia_order(entt::registry& registry, entt::entity town_center);
+
+void issue_kill_orders(entt::registry& registry, const std::vector<entt::entity>& entities);
+
+void issue_stop_orders(entt::registry& registry, const std::vector<entt::entity>& entities);
+
+bool issue_build_town_center_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_house_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_resume_build_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    entt::entity building);
+
+bool issue_destroy_building_order(entt::registry& registry, entt::entity building);
+
 void prune_dead_selection(std::vector<entt::entity>& selected, entt::registry& registry);
 
 [[nodiscard]] entt::entity pick_hovered_unit_at_screen(
@@ -93,6 +116,13 @@ void prune_dead_selection(std::vector<entt::entity>& selected, entt::registry& r
     std::uint8_t local_player_slot);
 
 [[nodiscard]] entt::entity pick_player_building_at_screen(
+    entt::registry& registry,
+    const render::GameRenderer& renderer,
+    sf::Vector2f screen_position,
+    float pick_radius_px,
+    std::uint8_t local_player_slot);
+
+[[nodiscard]] entt::entity pick_enemy_building_at_screen(
     entt::registry& registry,
     const render::GameRenderer& renderer,
     sf::Vector2f screen_position,

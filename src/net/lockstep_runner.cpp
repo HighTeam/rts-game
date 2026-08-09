@@ -259,7 +259,13 @@ bool wait_for_lockstep_connection(LockstepSession& host, LockstepSession& client
             continue;
         }
 
-        if (!client.is_connected() || !client.is_session_ready()) {
+        const std::uint8_t required_clients =
+            static_cast<std::uint8_t>(host.session_player_count() - 1U);
+        if (expected_connected_clients < required_clients) {
+            return true;
+        }
+
+        if (!host.is_session_ready() || !client.is_session_ready()) {
             continue;
         }
 
@@ -906,10 +912,10 @@ int run_lockstep_4_smoke()
         return 1;
     }
 
-    sim::Simulation host_simulation{};
-    sim::Simulation client_one_simulation{};
-    sim::Simulation client_two_simulation{};
-    sim::Simulation client_three_simulation{};
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
 
     LockstepSession host{
         LockstepRole::Host,
@@ -1004,6 +1010,393 @@ int run_lockstep_4_smoke()
     return 0;
 }
 
+int run_lockstep_4_stress_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-4-stress-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_one{
+        LockstepRole::Client,
+        1U,
+        client_one_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_two{
+        LockstepRole::Client,
+        2U,
+        client_two_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_three{
+        LockstepRole::Client,
+        3U,
+        client_three_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepDebugLog::enable(constants::LOCKSTEP_HOST_PLAYER_SLOT, LockstepRole::Host);
+    LockstepDebugLog::enable(1U, LockstepRole::Client);
+    LockstepDebugLog::enable(2U, LockstepRole::Client);
+    LockstepDebugLog::enable(3U, LockstepRole::Client);
+
+    host.set_auto_input_enabled(true);
+    client_one.set_auto_input_enabled(true);
+    client_two.set_auto_input_enabled(true);
+    client_three.set_auto_input_enabled(true);
+
+    if (!host.start_host(constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_one.connect("127.0.0.1", constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: client 1 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_one, 1U)) {
+        std::cerr << "lockstep-4-stress-smoke: client 1 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_two.connect("127.0.0.1", constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: client 2 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_two, 2U)) {
+        std::cerr << "lockstep-4-stress-smoke: client 2 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_three.connect("127.0.0.1", constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: client 3 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_three, constants::LOCKSTEP_4_MAX_CLIENTS)) {
+        std::cerr << "lockstep-4-stress-smoke: client 3 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!host.is_session_ready()) {
+        std::cerr << "lockstep-4-stress-smoke: host session not ready\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_four_lockstep_sessions(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation,
+            constants::LOCKSTEP_4_STRESS_TICKS)) {
+        std::cerr << "lockstep-4-stress-smoke: advance/hash failed host=0x" << std::hex
+                  << host_simulation.state_hash() << " c1=0x" << client_one_simulation.state_hash()
+                  << " c2=0x" << client_two_simulation.state_hash() << " c3=0x"
+                  << client_three_simulation.state_hash() << std::dec << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-4-stress-smoke: ok ticks=" << constants::LOCKSTEP_4_STRESS_TICKS
+              << " hash=0x" << std::hex << host_simulation.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+[[nodiscard]] bool lockstep_four_sim_hashes_match(
+    const sim::Simulation& host_simulation,
+    const sim::Simulation& client_one_simulation,
+    const sim::Simulation& client_two_simulation,
+    const sim::Simulation& client_three_simulation)
+{
+    const std::uint64_t host_hash = host_simulation.state_hash();
+    return host_hash == client_one_simulation.state_hash()
+        && host_hash == client_two_simulation.state_hash()
+        && host_hash == client_three_simulation.state_hash();
+}
+
+[[nodiscard]] bool advance_three_lockstep_sessions_after_disconnect(
+    LockstepSession& host,
+    LockstepSession& client_one,
+    LockstepSession& client_two,
+    sim::Simulation& host_simulation,
+    sim::Simulation& client_one_simulation,
+    sim::Simulation& client_two_simulation,
+    const std::uint64_t target_ticks)
+{
+    const std::uint64_t start_tick = host_simulation.tick_count();
+    const std::uint64_t target_absolute_tick = start_tick + target_ticks;
+
+    for (int attempt = 0; attempt < constants::LOCKSTEP_ADVANCE_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+
+        if (lockstep_sessions_desynced(host, client_one) || lockstep_sessions_desynced(host, client_two)) {
+            return false;
+        }
+
+        if (host_simulation.tick_count() < target_absolute_tick) {
+            (void)host.try_advance_tick();
+        }
+
+        if (client_one_simulation.tick_count() < target_absolute_tick) {
+            (void)client_one.try_advance_tick();
+        }
+
+        if (client_two_simulation.tick_count() < target_absolute_tick) {
+            (void)client_two.try_advance_tick();
+        }
+
+        if (host_simulation.tick_count() >= target_absolute_tick
+            && client_one_simulation.tick_count() >= target_absolute_tick
+            && client_two_simulation.tick_count() >= target_absolute_tick) {
+            break;
+        }
+    }
+
+    if (host_simulation.tick_count() < target_absolute_tick
+        || client_one_simulation.tick_count() < target_absolute_tick
+        || client_two_simulation.tick_count() < target_absolute_tick) {
+        return false;
+    }
+
+    return lockstep_sim_hashes_match(host_simulation, client_one_simulation)
+        && lockstep_sim_hashes_match(host_simulation, client_two_simulation);
+}
+
+[[nodiscard]] bool wait_for_lockstep_4_reconnect_resync(
+    LockstepSession& host,
+    LockstepSession& client_one,
+    LockstepSession& client_two,
+    LockstepSession& client_three,
+    sim::Simulation& host_simulation,
+    sim::Simulation& client_one_simulation,
+    sim::Simulation& client_two_simulation,
+    sim::Simulation& client_three_simulation)
+{
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+        client_three.poll();
+
+        if (lockstep_sessions_desynced(host, client_one)
+            || lockstep_sessions_desynced(host, client_two)
+            || lockstep_sessions_desynced(host, client_three)) {
+            return false;
+        }
+
+        if (!host.is_connected() || !client_three.is_connected()) {
+            continue;
+        }
+
+        if (!client_three.is_session_ready() || client_three.is_awaiting_reconnect_handshake()) {
+            continue;
+        }
+
+        if (!lockstep_four_sim_hashes_match(
+                host_simulation,
+                client_one_simulation,
+                client_two_simulation,
+                client_three_simulation)) {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+int run_lockstep_4_reconnect_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-4-reconnect-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_one{
+        LockstepRole::Client,
+        1U,
+        client_one_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_two{
+        LockstepRole::Client,
+        2U,
+        client_two_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_three{
+        LockstepRole::Client,
+        3U,
+        client_three_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    if (!host.start_host(constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_one.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 1 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_one, 1U)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 1 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_two.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 2 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_two, 2U)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 2 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_three.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 3 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_three, constants::LOCKSTEP_4_MAX_CLIENTS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 3 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!host.is_session_ready()) {
+        std::cerr << "lockstep-4-reconnect-smoke: host session not ready\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_four_lockstep_sessions(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation,
+            constants::LOCKSTEP_4_RECONNECT_WARMUP_TICKS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: warmup advance failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    client_three.disconnect_transport();
+
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+        client_three.poll();
+
+        if (host.connected_peer_count() <= constants::LOCKSTEP_4_MAX_CLIENTS - 1U) {
+            break;
+        }
+    }
+
+    if (!advance_three_lockstep_sessions_after_disconnect(
+            host,
+            client_one,
+            client_two,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            constants::LOCKSTEP_4_RECONNECT_AI_TICKS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: sim stalled after P4 disconnect at tick "
+                  << host_simulation.tick_count() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_three.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: P4 reconnect connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_4_reconnect_resync(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation)) {
+        std::cerr << "lockstep-4-reconnect-smoke: P4 resync timed out host_tick="
+                  << host_simulation.tick_count() << " p4_ready=" << client_three.is_session_ready()
+                  << " p4_connected=" << client_three.is_connected() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_four_lockstep_sessions(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation,
+            constants::LOCKSTEP_4_RECONNECT_LIVE_TICKS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: live advance after reconnect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-4-reconnect-smoke: ok ticks=" << host_simulation.tick_count() << " hash=0x"
+              << std::hex << host_simulation.state_hash() << std::dec << '\n';
+    return 0;
+}
+
 int run_lockstep_host(const LockstepRunOptions& options)
 {
     if (!EnetTransport::global_initialize()) {
@@ -1011,7 +1404,7 @@ int run_lockstep_host(const LockstepRunOptions& options)
         return 1;
     }
 
-    sim::Simulation simulation{};
+    sim::Simulation simulation{options.session_player_count};
     LockstepSession session{
         LockstepRole::Host,
         constants::LOCKSTEP_HOST_PLAYER_SLOT,
@@ -1021,6 +1414,8 @@ int run_lockstep_host(const LockstepRunOptions& options)
     if (options.lockstep_debug) {
         LockstepDebugLog::enable(constants::LOCKSTEP_HOST_PLAYER_SLOT, LockstepRole::Host);
     }
+
+    session.set_auto_input_enabled(options.auto_input);
 
     const std::uint16_t port =
         options.port == 0U ? constants::DEFAULT_PORT : options.port;
@@ -1102,7 +1497,7 @@ int run_lockstep_join(const LockstepRunOptions& options)
         return 1;
     }
 
-    sim::Simulation simulation{};
+    sim::Simulation simulation{options.session_player_count};
     LockstepSession session{
         LockstepRole::Client,
         options.player_slot,
@@ -1112,6 +1507,8 @@ int run_lockstep_join(const LockstepRunOptions& options)
     if (options.lockstep_debug) {
         LockstepDebugLog::enable(options.player_slot, LockstepRole::Client);
     }
+
+    session.set_auto_input_enabled(options.auto_input);
 
     if (!session.connect(parsed_address->first.c_str(), parsed_address->second)) {
         std::cerr << "lockstep-join: failed to connect to " << *options.join_address << '\n';
@@ -1395,7 +1792,6 @@ int run_snapshot_smoke()
             }
 
             map.forest_wood[index] = 0;
-            map.tiles[index] = sim::components::TileType::Grass;
             break;
         }
 

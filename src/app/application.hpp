@@ -1,13 +1,47 @@
 #pragma once
 
+#include "app/window_display.hpp"
+#include "core/constants.hpp"
 #include "net/net_constants.hpp"
 #include "sim/simulation.hpp"
+
+#include <SFML/Window/Window.hpp>
 
 #include <cstdint>
 #include <optional>
 #include <string>
 
 namespace aoa::app {
+
+enum class AppFlow : std::uint8_t {
+    ExitApp = 0,
+    ReturnToMainMenu = 1,
+};
+
+// Settings that survive across menu and match sessions inside one app run.
+struct AppShellSettings {
+    bool fullscreen{true};
+    bool show_perf_hud{false};
+    float master_volume{constants::AUDIO_MASTER_VOLUME};
+    float music_volume{constants::AUDIO_MUSIC_VOLUME};
+    float sfx_volume{constants::AUDIO_SFX_VOLUME};
+};
+
+// Everything a graphical lockstep match needs, independent of the CLI options.
+struct LockstepMatchSetup {
+    bool is_host{true};
+    std::uint8_t player_slot{0U};
+    std::uint8_t player_count{2U};
+    std::string host_address{};
+    std::uint16_t port{aoa::net::constants::DEFAULT_PORT};
+    int civil_population_map_cap{constants::CIVIL_POPULATION_MAP_CAP_DEFAULT};
+    bool fog_of_war_enabled{true};
+    bool lockstep_debug{false};
+    bool auto_input{false};
+    std::uint64_t tick_limit{0U};
+    // Peers coming from a lobby must wait for the host to rebind the match port.
+    bool delay_before_connect{false};
+};
 
 struct LaunchOptions {
     bool headless{false};
@@ -17,6 +51,8 @@ struct LaunchOptions {
     bool run_lockstep_disconnect_smoke{false};
     bool run_lockstep_reconnect_smoke{false};
     bool run_lockstep_4_smoke{false};
+    bool run_lockstep_4_stress_smoke{false};
+    bool run_lockstep_4_reconnect_smoke{false};
     bool run_snapshot_smoke{false};
     bool run_snapshot_double_spawn_smoke{false};
     bool run_snapshot_reconnect_smoke{false};
@@ -28,6 +64,8 @@ struct LaunchOptions {
     std::uint64_t lockstep_ticks{0U};
     std::uint16_t lockstep_port{0U};
     bool lockstep_debug{false};
+    bool lockstep_auto_input{false};
+    bool prefer_loose_assets{false};
     std::uint8_t lockstep_player_count{
         static_cast<std::uint8_t>(aoa::net::constants::LOCKSTEP_PLAYER_COUNT)};
     std::optional<std::uint8_t> lockstep_player_number{};
@@ -40,7 +78,23 @@ LaunchOptions parse_launch_options(int argc, char** argv);
 [[nodiscard]] std::uint8_t resolve_lockstep_join_player_slot(const LaunchOptions& options);
 
 int run_headless(sim::Simulation& simulation, const LaunchOptions& options);
-int run_graphical(sim::Simulation& simulation);
+
+AppFlow run_graphical(
+    sf::Window& window,
+    WindowDisplaySettings& display_settings,
+    sim::Simulation& simulation,
+    AppShellSettings& shell_settings);
+
+AppFlow run_lockstep_match(
+    sf::Window& window,
+    WindowDisplaySettings& display_settings,
+    sim::Simulation& simulation,
+    const LockstepMatchSetup& setup,
+    AppShellSettings& shell_settings);
+
 int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& options);
+
+// Main menu driven entry point used when the app starts without lockstep CLI flags.
+int run_app_shell();
 
 } // namespace aoa::app

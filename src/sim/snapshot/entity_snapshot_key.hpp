@@ -17,6 +17,7 @@ enum class EntitySnapshotCategory : std::uint8_t {
     Worker = 0,
     Militia = 1,
     TownCenter = 2,
+    House = 3,
 };
 
 struct EntitySnapshotKey {

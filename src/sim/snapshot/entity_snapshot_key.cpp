@@ -30,6 +30,10 @@ std::optional<EntitySnapshotCategory> category_for_entity(
         return EntitySnapshotCategory::TownCenter;
     }
 
+    if (registry.any_of<components::HouseTag>(entity)) {
+        return EntitySnapshotCategory::House;
+    }
+
     return std::nullopt;
 }
 
@@ -80,6 +84,24 @@ std::vector<entt::entity> collect_entities_for_key(
     case EntitySnapshotCategory::TownCenter: {
         const auto view = registry.view<
             components::TownCenterTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::House: {
+        const auto view = registry.view<
+            components::HouseTag,
             components::PlayerOwnedTag,
             components::Health>();
         for (const entt::entity entity : view) {
@@ -319,7 +341,10 @@ void annotate_command_entity_keys(entt::registry& registry, player::PlayerComman
 
     command.target_entity_key.reset();
     if (command.type == player::PlayerCommandType::Attack
-        || command.type == player::PlayerCommandType::SpawnWorker) {
+        || command.type == player::PlayerCommandType::SpawnWorker
+        || command.type == player::PlayerCommandType::SpawnMilitia
+        || command.type == player::PlayerCommandType::DestroyBuilding
+        || command.type == player::PlayerCommandType::ResumeBuild) {
         if (command.target_entity != entt::null) {
             command.target_entity_key = compute_entity_snapshot_key(registry, command.target_entity);
         }

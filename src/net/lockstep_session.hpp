@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/chat_state.hpp"
 #include "net/enet_transport.hpp"
 #include "net/lockstep_network_hud.hpp"
 #include "net/lockstep_wire.hpp"
@@ -51,9 +52,16 @@ public:
     void stop_background_tick_loop();
 
     void submit_local_command(sim::player::PlayerCommand command);
+    void set_chat_state(app::ChatState* chat_state);
+    void send_chat_message(std::string_view text);
     void poll();
     void run_tick_frame();
     void disconnect_transport();
+
+    void set_auto_input_enabled(const bool enabled);
+    [[nodiscard]] bool is_auto_input_enabled() const;
+    [[nodiscard]] std::uint64_t last_auto_input_tick() const;
+    void set_last_auto_input_tick(const std::uint64_t tick_count);
 
     [[nodiscard]] bool try_advance_tick();
 
@@ -65,8 +73,11 @@ public:
     [[nodiscard]] bool is_reconnecting() const;
     [[nodiscard]] bool is_host_gone() const;
     [[nodiscard]] bool is_session_ready() const;
+    [[nodiscard]] std::uint8_t player_slot() const;
     [[nodiscard]] std::uint8_t session_player_count() const;
     [[nodiscard]] std::uint8_t connected_peer_count() const;
+    [[nodiscard]] std::uint8_t lobby_registered_client_count() const;
+    [[nodiscard]] bool is_lobby_full() const;
     [[nodiscard]] bool is_waiting_for_opponent_reconnect() const;
     [[nodiscard]] bool is_awaiting_reconnect_handshake() const;
     [[nodiscard]] bool is_desynced() const;
@@ -79,6 +90,8 @@ public:
     [[nodiscard]] bool consume_snapshot_restored();
 
 private:
+    [[nodiscard]] std::uint8_t required_registered_clients_mask() const;
+    void note_registered_client_lost(std::uint8_t player_slot);
     [[nodiscard]] std::uint8_t opponent_player_slot() const;
     [[nodiscard]] std::uint64_t next_execute_tick() const;
     [[nodiscard]] bool has_local_sent(std::uint64_t execute_tick) const;
@@ -90,6 +103,8 @@ private:
     void send_reconnect_request();
     void send_resync_ready();
     void send_join_accepted(std::uint8_t player_slot, std::uint8_t enet_client_slot);
+    void send_join_accepted_to_all_connected_clients();
+    void apply_post_join_accepted_host_state();
     void send_reconnect_snapshot();
     void maybe_retry_reconnect_handshake();
     void maybe_retry_resync_ready();
@@ -98,6 +113,14 @@ private:
     [[nodiscard]] bool should_send_reconnect_snapshot_now() const;
     void handle_resync_ready(std::uint8_t player_slot);
     void handle_reconnect_request(std::uint8_t player_slot, std::uint8_t enet_client_slot);
+    void handle_host_player_slot_disconnected(std::uint8_t player_slot);
+    void handle_slot_ai_takeover(std::uint8_t player_slot);
+    void handle_slot_ai_resume(std::uint8_t player_slot);
+    void broadcast_slot_ai_takeover(std::uint8_t player_slot);
+    void broadcast_slot_ai_resume(std::uint8_t player_slot);
+    void send_reconnect_snapshot_to_client(std::uint8_t player_slot, bool force_immediate = false);
+    void broadcast_reconnect_snapshot_to_all_clients();
+    void force_resend_local_batch(std::uint64_t execute_tick);
     void handle_reconnect_snapshot(const std::vector<std::byte>& payload);
     void handle_join_accepted();
     void handle_opponent_lost();
@@ -134,12 +157,14 @@ private:
         const std::vector<sim::player::PlayerCommand>& commands);
     void send_state_hash(std::uint64_t execute_tick, std::uint64_t state_hash);
     void ensure_local_batch_sent(std::uint64_t execute_tick);
+    void ensure_local_batches_pipelined();
     void maybe_resend_local_batch(std::uint64_t execute_tick);
     void flush_local_commands_for_tick(std::uint64_t execute_tick);
     void flush_pending_local_commands_to_input_log();
     void sync_command_sequences_from_input_log();
     [[nodiscard]] bool apply_reconnect_snapshot_locally(const std::span<const std::byte> snapshot_bytes);
     void process_received_packet(const std::vector<std::byte>& packet, std::uint8_t sender_slot);
+    void handle_chat_message(const std::vector<std::byte>& payload, std::uint8_t sender_slot);
     void verify_state_hash(std::uint64_t execute_tick, std::uint64_t remote_hash);
     [[nodiscard]] bool try_advance_live_tick();
     [[nodiscard]] bool try_advance_ai_fallback_tick();
@@ -151,6 +176,7 @@ private:
     [[nodiscard]] bool should_send_reconnect_snapshot() const;
     [[nodiscard]] bool is_remote_input_batch_current(const TickInputBatch& batch) const;
     void inject_ai_commands(std::uint64_t execute_tick);
+    void inject_ai_commands_for_disconnected_slots(std::uint64_t execute_tick);
     void note_sim_tick_completed();
     void note_peer_activity();
     [[nodiscard]] bool is_opponent_unresponsive() const;
@@ -170,6 +196,7 @@ private:
     std::uint8_t session_player_count_{static_cast<std::uint8_t>(constants::LOCKSTEP_PLAYER_COUNT)};
     sim::Simulation& simulation_;
     EnetTransport transport_{};
+    app::ChatState* chat_state_{nullptr};
 
     std::recursive_mutex simulation_access_mutex_{};
     std::thread tick_thread_{};
@@ -202,7 +229,11 @@ private:
     std::chrono::steady_clock::time_point last_reconnect_snapshot_sent_{};
     std::chrono::steady_clock::time_point last_resync_ready_sent_{};
     std::chrono::steady_clock::time_point snapshot_restored_at_{};
+    std::uint8_t registered_clients_mask_{0U};
+    std::uint8_t disconnected_slots_mask_{0U};
+    std::uint8_t resync_pending_slots_mask_{0U};
     std::uint8_t ai_controlled_slot_{0U};
+    std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> ai_command_sequence_by_slot_{};
     int reconnect_attempts_{0};
     std::chrono::steady_clock::time_point last_reconnect_try_{};
 
@@ -228,6 +259,8 @@ private:
     std::chrono::steady_clock::time_point debug_last_accumulator_time_{};
     std::uint64_t debug_last_logged_tick_{0U};
     int hash_verify_warmup_ticks_remaining_{0};
+    bool auto_input_enabled_{false};
+    std::uint64_t last_auto_input_at_tick_{0U};
     std::atomic<int> latest_ping_ms_{0};
     std::atomic<int> display_ping_ms_{0};
     std::atomic<int> smoothed_rtt_ms_{0};

@@ -2,8 +2,10 @@
 
 #include "core/constants.hpp"
 #include "math/fixed.hpp"
+#include "sim/components/building_footprint.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
+#include "sim/components/movement.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
 
@@ -194,10 +196,24 @@ bool unit_grid_adjacent(
         return false;
     }
 
-    return core::chebyshev_distance(
-               unit_occupancy_grid_cell(registry, from),
-               unit_occupancy_grid_cell(registry, to))
-        == 1;
+    const core::GridPos from_cell = unit_occupancy_grid_cell(registry, from);
+    if (registry.any_of<components::BuildingTag>(to)
+        && registry.any_of<components::GridPosition>(to)) {
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(to)) {
+            footprint = registry.get<components::BuildingFootprint>(to);
+        }
+        footprint = components::effective_building_footprint(
+            footprint,
+            registry.any_of<components::TownCenterTag>(to));
+        return components::chebyshev_distance_to_footprint(
+                   from_cell,
+                   registry.get<components::GridPosition>(to),
+                   footprint)
+            == 1;
+    }
+
+    return core::chebyshev_distance(from_cell, unit_occupancy_grid_cell(registry, to)) == 1;
 }
 
 bool try_unit_world_position(
@@ -257,6 +273,10 @@ bool unit_in_melee_range(
         return false;
     }
 
+    if (registry.any_of<components::BuildingTag>(to)) {
+        return true;
+    }
+
     float from_x = 0.0F;
     float from_z = 0.0F;
     float to_x = 0.0F;
@@ -281,9 +301,54 @@ core::GridPos find_best_melee_stand_tile(
     const entt::entity mover,
     const entt::entity target_entity)
 {
-    (void)target_entity;
-
     const core::GridPos mover_cell = unit_movement_grid_cell(registry, mover);
+
+    if (target_entity != entt::null && registry.valid(target_entity)
+        && registry.any_of<components::BuildingTag, components::GridPosition>(target_entity)) {
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(target_entity)) {
+            footprint = registry.get<components::BuildingFootprint>(target_entity);
+        }
+        footprint = components::effective_building_footprint(
+            footprint,
+            registry.any_of<components::TownCenterTag>(target_entity));
+        const auto& anchor = registry.get<components::GridPosition>(target_entity);
+
+        core::GridPos best = target_cell;
+        int best_travel = std::numeric_limits<int>::max();
+        for (int y = anchor.cell.y - 1; y <= anchor.cell.y + footprint.height; ++y) {
+            for (int x = anchor.cell.x - 1; x <= anchor.cell.x + footprint.width; ++x) {
+                const core::GridPos candidate{x, y};
+                if (components::building_contains_cell(anchor, footprint, candidate)) {
+                    continue;
+                }
+
+                if (components::chebyshev_distance_to_footprint(candidate, anchor, footprint) != 1) {
+                    continue;
+                }
+
+                if (!is_tile_walkable(map, candidate, false)) {
+                    continue;
+                }
+
+                if (is_movement_blocked(registry, candidate, mover)) {
+                    continue;
+                }
+
+                const int travel = core::chebyshev_distance(mover_cell, candidate);
+                if (travel < best_travel
+                    || (travel == best_travel
+                        && (candidate.y < best.y
+                            || (candidate.y == best.y && candidate.x < best.x)))) {
+                    best_travel = travel;
+                    best = candidate;
+                }
+            }
+        }
+
+        return best;
+    }
+
     const int toward_mover_x = mover_cell.x - target_cell.x;
     const int toward_mover_y = mover_cell.y - target_cell.y;
 
@@ -364,30 +429,14 @@ core::GridPos find_best_melee_stand_tile(
     return best;
 }
 
-bool is_movement_blocked(
+namespace {
+
+bool is_building_blocking_cell(
     entt::registry& registry,
     const core::GridPos cell,
     const entt::entity ignore,
     const entt::entity also_ignore)
 {
-    const auto unit_view = registry.view<components::UnitTag, components::GridPosition, components::Health>();
-    for (const entt::entity entity : unit_view) {
-        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
-            continue;
-        }
-
-        const auto& health = unit_view.get<components::Health>(entity);
-        if (health.current.raw() <= 0) {
-            continue;
-        }
-
-        const core::GridPos unit_cell =
-            unit_effective_cell(registry, entity, unit_view.get<components::GridPosition>(entity).cell);
-        if (unit_cell == cell) {
-            return true;
-        }
-    }
-
     const auto building_view = registry.view<components::BuildingTag, components::GridPosition, components::Health>();
     for (const entt::entity entity : building_view) {
         if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
@@ -399,24 +448,134 @@ bool is_movement_blocked(
             continue;
         }
 
-        if (building_view.get<components::GridPosition>(entity).cell == cell) {
-            return true;
+        const auto& anchor = building_view.get<components::GridPosition>(entity);
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(entity)) {
+            footprint = registry.get<components::BuildingFootprint>(entity);
         }
-    }
-
-    const auto segment_view = registry.view<components::UnitTag, components::GridPosition, components::MoveSegment>();
-    for (const entt::entity entity : segment_view) {
-        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
-            continue;
-        }
-
-        const core::GridPos occupied_cell = segment_view.get<components::GridPosition>(entity).cell;
-        if (occupied_cell == cell) {
+        footprint = components::effective_building_footprint(
+            footprint,
+            registry.any_of<components::TownCenterTag>(entity));
+        if (components::building_contains_cell(anchor, footprint, cell)) {
             return true;
         }
     }
 
     return false;
+}
+
+} // namespace
+
+namespace {
+
+bool units_block_world_point(
+    entt::registry& registry,
+    const math::Fixed point_x,
+    const math::Fixed point_y,
+    const entt::entity ignore,
+    const entt::entity also_ignore)
+{
+    const math::Fixed radius = math::Fixed::from_float(constants::MOVE_UNIT_COLLISION_RADIUS_TILES);
+    const math::Fixed min_distance = radius + radius;
+    const math::Fixed min_distance_sq = min_distance * min_distance;
+
+    const auto unit_view = registry.view<components::UnitTag, components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
+            continue;
+        }
+
+        const auto& health = unit_view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        math::Fixed unit_x{};
+        math::Fixed unit_y{};
+        if (registry.all_of<components::WorldPosition>(entity)) {
+            const auto& world = registry.get<components::WorldPosition>(entity);
+            unit_x = world.x;
+            unit_y = world.y;
+        }
+        else if (registry.all_of<components::GridPosition>(entity)) {
+            const core::GridPos cell = registry.get<components::GridPosition>(entity).cell;
+            const math::Fixed half = math::Fixed::from_int(1) / math::Fixed::from_int(2);
+            unit_x = math::Fixed::from_int(cell.x) + half;
+            unit_y = math::Fixed::from_int(cell.y) + half;
+        }
+        else {
+            continue;
+        }
+
+        const math::Fixed delta_x = unit_x - point_x;
+        const math::Fixed delta_y = unit_y - point_y;
+        if (delta_x * delta_x + delta_y * delta_y < min_distance_sq) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool unit_reserves_cell(
+    entt::registry& registry,
+    const entt::entity entity,
+    const core::GridPos cell)
+{
+    if (!registry.any_of<components::MovePath>(entity)) {
+        return false;
+    }
+
+    const auto& path = registry.get<components::MovePath>(entity);
+    return !path.cells.empty() && path.cells.back() == cell;
+}
+
+} // namespace
+
+bool is_unit_radius_blocked_at_world(
+    entt::registry& registry,
+    const math::Fixed point_x,
+    const math::Fixed point_y,
+    const entt::entity ignore,
+    const entt::entity also_ignore)
+{
+    return units_block_world_point(registry, point_x, point_y, ignore, also_ignore);
+}
+
+bool is_movement_blocked(
+    entt::registry& registry,
+    const core::GridPos cell,
+    const entt::entity ignore,
+    const entt::entity also_ignore)
+{
+    if (is_building_blocking_cell(registry, cell, ignore, also_ignore)) {
+        return true;
+    }
+
+    const auto unit_view = registry.view<components::UnitTag, components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
+            continue;
+        }
+
+        const auto& health = unit_view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (unit_movement_grid_cell(registry, entity) == cell) {
+            return true;
+        }
+
+        if (unit_reserves_cell(registry, entity, cell)) {
+            return true;
+        }
+    }
+
+    const math::Fixed half = math::Fixed::from_int(1) / math::Fixed::from_int(2);
+    const math::Fixed point_x = math::Fixed::from_int(cell.x) + half;
+    const math::Fixed point_y = math::Fixed::from_int(cell.y) + half;
+    return units_block_world_point(registry, point_x, point_y, ignore, also_ignore);
 }
 
 bool is_step_movement_blocked(
@@ -451,13 +610,15 @@ bool is_step_movement_blocked(
     const core::GridPos cardinal_x{from.x + step_x, from.y};
     const core::GridPos cardinal_y{from.x, from.y + step_y};
 
+    // Corner-cut prevention uses solid blockers only (terrain/buildings).
+    // Nearby idle/moving units must not rewind or soft-block a near-miss pass.
     if (!is_tile_walkable(map, cardinal_x, allow_forest)
-        || is_movement_blocked(registry, cardinal_x, ignore, also_ignore)) {
+        || is_building_blocking_cell(registry, cardinal_x, ignore, also_ignore)) {
         return true;
     }
 
     if (!is_tile_walkable(map, cardinal_y, allow_forest)
-        || is_movement_blocked(registry, cardinal_y, ignore, also_ignore)) {
+        || is_building_blocking_cell(registry, cardinal_y, ignore, also_ignore)) {
         return true;
     }
 
@@ -503,13 +664,29 @@ bool is_tile_walkable(
         return false;
     }
 
-    const auto tile = map.tiles[static_cast<std::size_t>(core::grid_index(pos, map.width))];
+    const int index = core::grid_index(pos, map.width);
+    const auto tile = map.tiles[static_cast<std::size_t>(index)];
     if (tile == components::TileType::Grass) {
         return true;
     }
 
     if (tile == components::TileType::Forest) {
+        if (map.forest_wood[static_cast<std::size_t>(index)] <= 0) {
+            return true;
+        }
+
         return allow_forest;
+    }
+
+    if (tile == components::TileType::Berries || tile == components::TileType::Blueberries) {
+        return map.bush_food[static_cast<std::size_t>(index)] <= 0;
+    }
+
+    if (tile == components::TileType::GoldMine) {
+        if (static_cast<std::size_t>(index) >= map.mine_money.size()) {
+            return true;
+        }
+        return map.mine_money[static_cast<std::size_t>(index)] <= 0;
     }
 
     return false;

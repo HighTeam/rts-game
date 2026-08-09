@@ -5,7 +5,11 @@
 #include "math/fixed.hpp"
 #include "net/net_constants.hpp"
 #include "render/game_renderer.hpp"
+#include "data/content_types.hpp"
+#include "sim/components/building_footprint.hpp"
 #include "sim/components/combat.hpp"
+#include "sim/components/content_pack.hpp"
+#include "sim/components/definition_ref.hpp"
 #include "sim/components/fog_of_war.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
@@ -15,6 +19,7 @@
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
 #include "sim/player/player_commands.hpp"
+#include "sim/player/player_economy.hpp"
 #include "sim/systems/visibility_system.hpp"
 
 #include <algorithm>
@@ -55,6 +60,29 @@ RenderEntityPose capture_entity_pose(
         pose.cur_x = current.x.to_float();
         pose.cur_y = current.y.to_float();
     }
+    else if (registry.any_of<sim::components::GridPosition>(entity)) {
+        // Buildings (e.g. TC) have no WorldPosition; never leave cur_x/cur_y at 0 —
+        // that misplaces render-time vision at the map origin.
+        const auto& cell = registry.get<sim::components::GridPosition>(entity).cell;
+        float origin_x = math::tile_center_coord(cell.x).to_float();
+        float origin_y = math::tile_center_coord(cell.y).to_float();
+        if (registry.any_of<sim::components::BuildingTag>(entity)
+            || registry.any_of<sim::components::TownCenterTag>(entity)) {
+            sim::components::BuildingFootprint footprint{};
+            if (registry.any_of<sim::components::BuildingFootprint>(entity)) {
+                footprint = registry.get<sim::components::BuildingFootprint>(entity);
+            }
+            const bool is_tc = registry.any_of<sim::components::TownCenterTag>(entity);
+            footprint = sim::components::effective_building_footprint(footprint, is_tc);
+            origin_x = static_cast<float>(cell.x) + static_cast<float>(footprint.width) * 0.5F;
+            origin_y = static_cast<float>(cell.y) + static_cast<float>(footprint.height) * 0.5F;
+        }
+
+        pose.prev_x = origin_x;
+        pose.prev_y = origin_y;
+        pose.cur_x = origin_x;
+        pose.cur_y = origin_y;
+    }
 
     if (registry.all_of<sim::components::MoveSegment>(entity)) {
         const auto& segment = registry.get<sim::components::MoveSegment>(entity);
@@ -77,9 +105,48 @@ RenderEntityPose capture_entity_pose(
         || (registry.any_of<sim::components::PlayerOwnedTag>(entity)
             && sim::components::entity_player_slot(registry, entity) != local_player_slot);
     pose.is_worker = registry.any_of<sim::components::WorkerUnitTag>(entity);
+    if (pose.is_worker && registry.any_of<sim::components::CarriedWood>(entity)) {
+        pose.carried_wood = registry.get<sim::components::CarriedWood>(entity).amount;
+    }
+    if (pose.is_worker && registry.any_of<sim::components::CarriedFood>(entity)) {
+        pose.carried_food = registry.get<sim::components::CarriedFood>(entity).amount;
+    }
+    if (pose.is_worker && registry.any_of<sim::components::CarriedMoney>(entity)) {
+        pose.carried_money = registry.get<sim::components::CarriedMoney>(entity).amount;
+    }
+    pose.is_militia = registry.any_of<sim::components::MilitiaUnitTag>(entity);
     pose.is_town_center = registry.any_of<sim::components::TownCenterTag>(entity);
+    pose.is_house = registry.any_of<sim::components::HouseTag>(entity);
+    pose.under_construction = registry.any_of<sim::components::UnderConstructionTag>(entity);
+    sim::components::BuildingFootprint footprint{};
+    if (registry.any_of<sim::components::BuildingFootprint>(entity)) {
+        footprint = registry.get<sim::components::BuildingFootprint>(entity);
+    }
+    const sim::components::BuildingFootprint effective_footprint =
+        sim::components::effective_building_footprint(footprint, pose.is_town_center);
+    pose.footprint_width = effective_footprint.width;
+    pose.footprint_height = effective_footprint.height;
     if (registry.any_of<sim::components::PlayerOwnedTag>(entity)) {
         pose.player_slot = sim::components::entity_player_slot(registry, entity);
+    }
+    else {
+        pose.is_nature = true;
+    }
+
+    if (registry.any_of<sim::components::DefinitionRef>(entity)) {
+        const auto world_view = registry.view<sim::components::WorldTag, sim::components::ContentPack>();
+        if (world_view.begin() != world_view.end()) {
+            const auto& content = world_view.get<sim::components::ContentPack>(*world_view.begin()).content;
+            const auto& definition_ref = registry.get<sim::components::DefinitionRef>(entity);
+            const data::ArchetypeDefinition* definition =
+                data::find_archetype(content, definition_ref.id);
+            if (definition != nullptr) {
+                pose.melee_attack = definition->melee_attack;
+                pose.melee_armor = definition->melee_armor;
+                pose.pierce_attack = definition->pierce_attack;
+                pose.pierce_armor = definition->pierce_armor;
+            }
+        }
     }
 
     return pose;
@@ -90,18 +157,15 @@ void capture_hud_stats(
     const std::uint8_t player_slot,
     RenderHudPlayerStats& stats)
 {
-    const auto town_center_view = registry.view<
-        sim::components::TownCenterTag,
-        sim::components::PlayerOwnedTag,
-        sim::components::Stockpile>();
-    for (const entt::entity entity : town_center_view) {
-        if (sim::components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        stats.town_wood = town_center_view.get<sim::components::Stockpile>(entity).wood;
-        break;
-    }
+    const sim::components::Stockpile stockpile =
+        sim::player::sum_player_stockpile(registry, player_slot);
+    stats.town_wood = stockpile.wood;
+    stats.town_food = stockpile.food;
+    stats.town_money = stockpile.money;
+    stats.town_mana = stockpile.mana;
+    stats.town_mana_max = constants::PLAYER_MANA_MAX;
+    stats.civil_cap_current = sim::player::count_player_units(registry, player_slot);
+    stats.civil_cap_max = sim::player::player_civil_cap_max(registry, player_slot);
 
     const auto worker_view = registry.view<
         sim::components::WorkerUnitTag,
@@ -155,6 +219,8 @@ SimRenderSnapshot capture_sim_render_snapshot(
     snapshot.map_height = map.height;
     snapshot.tiles = map.tiles;
     snapshot.forest_wood = map.forest_wood;
+    snapshot.bush_food = map.bush_food;
+    snapshot.mine_money = map.mine_money;
 
     const sim::components::FogOfWarState* fog = nullptr;
     if (registry.any_of<sim::components::FogOfWarState>(world)) {
@@ -175,6 +241,12 @@ SimRenderSnapshot capture_sim_render_snapshot(
         snapshot.fog_memory_forest_wood.assign(
             fog->memory_forest_wood.begin() + static_cast<std::ptrdiff_t>(offset),
             fog->memory_forest_wood.begin() + static_cast<std::ptrdiff_t>(offset + cells_per_player));
+        snapshot.fog_memory_bush_food.assign(
+            fog->memory_bush_food.begin() + static_cast<std::ptrdiff_t>(offset),
+            fog->memory_bush_food.begin() + static_cast<std::ptrdiff_t>(offset + cells_per_player));
+        snapshot.fog_memory_mine_money.assign(
+            fog->memory_mine_money.begin() + static_cast<std::ptrdiff_t>(offset),
+            fog->memory_mine_money.begin() + static_cast<std::ptrdiff_t>(offset + cells_per_player));
     }
 
     const auto should_draw_entity = [&](const entt::entity entity) {
@@ -362,15 +434,87 @@ namespace {
     }
 
     const int index = core::grid_index(cell, snapshot.map_width);
-    if (snapshot.tiles[static_cast<std::size_t>(index)] != sim::components::TileType::Forest) {
+    const auto tile = snapshot.tiles[static_cast<std::size_t>(index)];
+    if (tile == sim::components::TileType::Forest) {
+        if (snapshot.forest_wood[static_cast<std::size_t>(index)] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (tile == sim::components::TileType::Berries || tile == sim::components::TileType::Blueberries) {
+        if (index >= static_cast<int>(snapshot.bush_food.size())
+            || snapshot.bush_food[static_cast<std::size_t>(index)] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (tile == sim::components::TileType::GoldMine) {
+        if (index >= static_cast<int>(snapshot.mine_money.size())
+            || snapshot.mine_money[static_cast<std::size_t>(index)] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<core::GridPos> pick_resource_forest_known_at(
+    const SimRenderSnapshot& snapshot,
+    const core::GridPos cell)
+{
+    if (!core::is_inside_grid(cell, snapshot.map_width, snapshot.map_height)) {
         return std::nullopt;
     }
 
-    if (snapshot.forest_wood[static_cast<std::size_t>(index)] <= 0) {
+    if (snapshot_cell_is_unexplored(snapshot, cell)) {
         return std::nullopt;
     }
 
-    return cell;
+    if (snapshot_cell_is_visible(snapshot, cell)) {
+        return pick_resource_forest_at(snapshot, cell);
+    }
+
+    const std::size_t index = static_cast<std::size_t>(core::grid_index(cell, snapshot.map_width));
+    if (index >= snapshot.fog_memory_tiles.size()) {
+        return pick_resource_forest_at(snapshot, cell);
+    }
+
+    const auto memory_tile = static_cast<sim::components::TileType>(snapshot.fog_memory_tiles[index]);
+    if (memory_tile == sim::components::TileType::Forest) {
+        if (index >= snapshot.fog_memory_forest_wood.size()
+            || snapshot.fog_memory_forest_wood[index] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (memory_tile == sim::components::TileType::Berries
+        || memory_tile == sim::components::TileType::Blueberries) {
+        if (index >= snapshot.fog_memory_bush_food.size()
+            || snapshot.fog_memory_bush_food[index] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    if (memory_tile == sim::components::TileType::GoldMine) {
+        if (index >= snapshot.fog_memory_mine_money.size()
+            || snapshot.fog_memory_mine_money[index] <= 0) {
+            return std::nullopt;
+        }
+
+        return cell;
+    }
+
+    return std::nullopt;
 }
 
 } // namespace
@@ -514,16 +658,78 @@ entt::entity pick_player_building_at_screen(
             continue;
         }
 
-        if (pose.grid_x != grid_cell->x || pose.grid_y != grid_cell->y) {
+        const sim::components::BuildingFootprint footprint{
+            pose.footprint_width,
+            pose.footprint_height,
+        };
+        const sim::components::GridPosition anchor_pos{{pose.grid_x, pose.grid_y}};
+        if (!sim::components::building_contains_cell(anchor_pos, footprint, *grid_cell)) {
             continue;
         }
 
-        const sf::Vector2f building_screen = renderer.tile_center_screen(
-            pose.grid_x,
-            pose.grid_y,
-            constants::RENDER_BUILDING_HEIGHT * 0.5F);
-        const float dx = building_screen.x - screen_position.x;
-        const float dy = building_screen.y - screen_position.y;
+        const sf::Vector2f tile_screen = renderer.tile_center_screen(
+            grid_cell->x,
+            grid_cell->y,
+            constants::RENDER_ENTITY_BASE_LIFT);
+        const float dx = tile_screen.x - screen_position.x;
+        const float dy = tile_screen.y - screen_position.y;
+        const float distance_sq = dx * dx + dy * dy;
+        if (distance_sq > best_distance_sq) {
+            continue;
+        }
+
+        if (best == entt::null || distance_sq < best_distance_sq
+            || (distance_sq == best_distance_sq
+                && static_cast<entt::id_type>(pose.entity)
+                    < static_cast<entt::id_type>(best))) {
+            best = pose.entity;
+            best_distance_sq = distance_sq;
+        }
+    }
+
+    return best;
+}
+
+entt::entity pick_enemy_building_at_screen(
+    const SimRenderSnapshot& snapshot,
+    const GameRenderer& renderer,
+    const sf::Vector2f screen_position,
+    const float pick_radius_px,
+    const std::uint8_t local_player_slot)
+{
+    const auto grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
+    if (!grid_cell.has_value()) {
+        return entt::null;
+    }
+
+    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)
+        || !snapshot_cell_is_visible(snapshot, *grid_cell)) {
+        return entt::null;
+    }
+
+    entt::entity best = entt::null;
+    float best_distance_sq = pick_radius_px * pick_radius_px;
+
+    for (const RenderEntityPose& pose : snapshot.buildings) {
+        if (pose.player_slot == local_player_slot || pose.health_current <= 0 || pose.shrouded) {
+            continue;
+        }
+
+        const sim::components::BuildingFootprint footprint{
+            pose.footprint_width,
+            pose.footprint_height,
+        };
+        const sim::components::GridPosition anchor_pos{{pose.grid_x, pose.grid_y}};
+        if (!sim::components::building_contains_cell(anchor_pos, footprint, *grid_cell)) {
+            continue;
+        }
+
+        const sf::Vector2f tile_screen = renderer.tile_center_screen(
+            grid_cell->x,
+            grid_cell->y,
+            constants::RENDER_ENTITY_BASE_LIFT);
+        const float dx = tile_screen.x - screen_position.x;
+        const float dy = tile_screen.y - screen_position.y;
         const float distance_sq = dx * dx + dy * dy;
         if (distance_sq > best_distance_sq) {
             continue;
@@ -587,12 +793,7 @@ std::optional<core::GridPos> pick_resource_forest_at_screen(
         return std::nullopt;
     }
 
-    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)
-        || !snapshot_cell_is_visible(snapshot, *grid_cell)) {
-        return std::nullopt;
-    }
-
-    if (pick_resource_forest_at(snapshot, *grid_cell).has_value()) {
+    if (pick_resource_forest_known_at(snapshot, *grid_cell).has_value()) {
         return grid_cell;
     }
 
@@ -606,7 +807,7 @@ std::optional<core::GridPos> pick_resource_forest_at_screen(
         return std::nullopt;
     }
 
-    return pick_resource_forest_at(snapshot, *grid_cell);
+    return pick_resource_forest_known_at(snapshot, *grid_cell);
 }
 
 bool snapshot_has_town_center(const SimRenderSnapshot& snapshot, const entt::entity entity)
@@ -630,7 +831,12 @@ bool snapshot_has_town_center_at_cell(
             continue;
         }
 
-        if (pose.grid_x == cell.x && pose.grid_y == cell.y) {
+        const sim::components::BuildingFootprint footprint{
+            pose.footprint_width,
+            pose.footprint_height,
+        };
+        const sim::components::GridPosition anchor_pos{{pose.grid_x, pose.grid_y}};
+        if (sim::components::building_contains_cell(anchor_pos, footprint, cell)) {
             return true;
         }
     }

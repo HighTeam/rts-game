@@ -1,0 +1,63 @@
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace aoa::render {
+
+enum class SceneTextureKind : std::uint8_t {
+    Grass = 0,
+    GrassVariant,
+    Dirt,
+    DirtVariant,
+    ForestTree,
+    ForestTreeAlt,
+    ForestStump,
+    Berries,
+    Blueberries,
+    GoldMine0,
+    GoldMine1,
+    GoldMine2,
+    GoldMine3,
+    TownCenterFriendly,
+    TownCenterEnemy,
+    HouseFriendly,
+    HouseEnemy,
+    Count,
+};
+
+class SceneTextureCatalog {
+public:
+    SceneTextureCatalog();
+    ~SceneTextureCatalog();
+
+    SceneTextureCatalog(const SceneTextureCatalog&) = delete;
+    SceneTextureCatalog& operator=(const SceneTextureCatalog&) = delete;
+
+    void load(const std::filesystem::path& assets_directory);
+    void destroy_gl_resources();
+
+    [[nodiscard]] bool is_loaded() const;
+    [[nodiscard]] unsigned int texture_id(const SceneTextureKind kind) const;
+    [[nodiscard]] float aspect_ratio(const SceneTextureKind kind) const;
+
+private:
+    struct TextureEntry {
+        unsigned int gl_texture_id{0U};
+        int width{0};
+        int height{0};
+        bool valid{false};
+    };
+
+    [[nodiscard]] bool load_texture_file(
+        const std::filesystem::path& assets_directory,
+        const std::string& relative_path,
+        TextureEntry& entry);
+
+    std::vector<TextureEntry> textures_{static_cast<std::size_t>(SceneTextureKind::Count)};
+    bool loaded_{false};
+};
+
+} // namespace aoa::render

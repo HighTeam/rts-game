@@ -15,23 +15,36 @@ if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Age of Affinities supports x64 Windows builds only.")
 endif()
 
-find_package(SFML CONFIG REQUIRED COMPONENTS System Window)
+find_package(SFML CONFIG REQUIRED COMPONENTS System Window Graphics Audio)
 find_package(glad CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
 find_package(unofficial-enet CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
+add_executable(aoa_pack_assets
+    tools/pack_assets.cpp
+)
+
 add_executable(aoa
     src/main.cpp
+    src/app/app_shell.cpp
     src/app/application.cpp
+    src/app/game_cursor.cpp
     src/app/game_input.cpp
+    src/app/main_menu.cpp
     src/app/window_display.cpp
+    src/audio/game_audio.cpp
+    src/core/asset_io.cpp
+    src/core/asset_store.cpp
     src/core/runtime_paths.cpp
     src/core/fixed_timestep_loop.cpp
     src/data/content_loader.cpp
     src/harness/regression_harness.cpp
     src/net/enet_transport.cpp
+    src/net/lobby_session.cpp
+    src/net/lobby_wire.cpp
+    src/net/lockstep_auto_input.cpp
     src/net/lockstep_debug_log.cpp
     src/net/lockstep_runner.cpp
     src/net/lockstep_session.cpp
@@ -42,12 +55,18 @@ add_executable(aoa
     src/render/camera.cpp
     src/render/camera_settings.cpp
     src/render/game_renderer.cpp
+    src/render/hud_icons.cpp
     src/render/hud_overlay.cpp
+    src/render/menu_background.cpp
+    src/render/menu_renderer.cpp
+    src/render/scene_textures.cpp
     src/render/sim_render_snapshot.cpp
     src/sim/map/test_map.cpp
     src/sim/player/player_commands.cpp
     src/sim/player/player_command.cpp
+    src/sim/player/player_economy.cpp
     src/sim/player/command_queue.cpp
+    src/sim/scenario/scenario_layouts.cpp
     src/sim/scenario/test_scenario.cpp
     src/sim/spawn/unit_spawn.cpp
     src/sim/simulation.cpp
@@ -66,6 +85,8 @@ target_compile_definitions(aoa PRIVATE AOA_RUNTIME_ROOT="${CMAKE_SOURCE_DIR}")
 target_link_libraries(aoa PRIVATE
     SFML::System
     SFML::Window
+    SFML::Graphics
+    SFML::Audio
     glad::glad
     EnTT::EnTT
     unofficial::enet::enet
@@ -77,16 +98,26 @@ if(WIN32)
     target_link_libraries(aoa PRIVATE opengl32 ws2_32 winmm)
 endif()
 
+add_dependencies(aoa aoa_pack_assets)
+
 add_custom_command(
     TARGET aoa
     POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/data"
-        "$<TARGET_FILE_DIR:aoa>/data"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    COMMAND $<TARGET_FILE:aoa_pack_assets>
         "${CMAKE_SOURCE_DIR}/assets"
+        "${CMAKE_SOURCE_DIR}/data"
+        "$<TARGET_FILE_DIR:aoa>/assets.dat"
+    # Drop leftover loose trees so a zipped Release only needs exe + DLLs + assets.dat.
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
         "$<TARGET_FILE_DIR:aoa>/assets"
+        "$<TARGET_FILE_DIR:aoa>/data"
 )
+
+if(MSVC)
+    target_compile_options(aoa_pack_assets PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(aoa_pack_assets PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 if(MSVC)
     target_compile_options(aoa PRIVATE /W4 /permissive-)

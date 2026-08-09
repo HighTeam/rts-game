@@ -1,6 +1,7 @@
 #include "sim/player/command_queue.hpp"
 
 #include "sim/components/player_slot.hpp"
+#include "sim/components/tags.hpp"
 #include "sim/player/player_commands.hpp"
 #include "sim/snapshot/entity_snapshot_key.hpp"
 
@@ -70,7 +71,9 @@ bool command_needs_entity_key_annotation(const PlayerCommand& command)
         return true;
     }
 
-    if (command.type != PlayerCommandType::Attack && command.type != PlayerCommandType::SpawnWorker) {
+    if (command.type != PlayerCommandType::Attack && command.type != PlayerCommandType::SpawnWorker
+        && command.type != PlayerCommandType::SpawnMilitia
+        && command.type != PlayerCommandType::DestroyBuilding) {
         return false;
     }
 
@@ -115,6 +118,55 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
     case PlayerCommandType::SpawnWorker:
         if (town_center_matches_slot(registry, command.target_entity, command.player_slot)) {
             issue_spawn_worker_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::SpawnMilitia:
+        if (town_center_matches_slot(registry, command.target_entity, command.player_slot)) {
+            issue_spawn_militia_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::KillUnits:
+        issue_kill_orders(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot));
+        break;
+    case PlayerCommandType::Stop:
+        issue_stop_orders(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot));
+        break;
+    case PlayerCommandType::BuildTownCenter:
+        issue_build_town_center_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildHouse:
+        issue_build_house_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::ResumeBuild:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::BuildingTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_resume_build_order(
+                registry,
+                filter_command_units(registry, command.unit_ids, command.player_slot),
+                command.target_entity);
+        }
+        break;
+    case PlayerCommandType::DestroyBuilding:
+        if (town_center_matches_slot(registry, command.target_entity, command.player_slot)
+            || (registry.valid(command.target_entity)
+                && registry.all_of<components::BuildingTag, components::PlayerOwnedTag>(
+                    command.target_entity)
+                && components::entity_player_slot(registry, command.target_entity)
+                    == command.player_slot)) {
+            issue_destroy_building_order(registry, command.target_entity);
         }
         break;
     }
