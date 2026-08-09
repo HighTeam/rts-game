@@ -1027,6 +1027,10 @@ void LockstepSession::note_remote_slot_ready(
     const std::uint64_t execute_tick,
     const std::uint8_t remote_slot)
 {
+    if (!is_valid_remote_player_slot(remote_slot)) {
+        return;
+    }
+
     remote_ready_slots_by_tick_[execute_tick] =
         static_cast<std::uint8_t>(remote_ready_slots_by_tick_[execute_tick] | (1U << remote_slot));
 }
@@ -1319,6 +1323,7 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
     awaiting_reconnect_handshake_ = false;
     opponent_reconnect_pending_ = false;
     opponent_needs_snapshot_ = false;
+    pending_reconnect_player_slot_ = constants::LOCKSTEP_INVALID_PLAYER_SLOT;
     desynced_ = false;
     desync_tick_ = 0U;
     resync_strict_batch_gate_ = true;
@@ -1354,6 +1359,10 @@ void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
 
     const bool mid_match_reconnect =
         match_started_ && simulation_.tick_count() > 0U;
+
+    if (mid_match_reconnect) {
+        pending_reconnect_player_slot_ = player_slot;
+    }
 
     const bool reconnect_in_progress =
         ai_fallback_ || opponent_needs_snapshot_ || awaiting_reconnect_handshake_
@@ -1664,6 +1673,49 @@ bool LockstepSession::is_remote_input_batch_current(const TickInputBatch& batch)
     return batch.execute_tick <= expected_execute_tick + 1U;
 }
 
+bool LockstepSession::is_valid_remote_player_slot(const std::uint8_t player_slot) const
+{
+    if (player_slot >= static_cast<std::uint8_t>(constants::LOCKSTEP_MAX_PLAYER_SLOTS)) {
+        return false;
+    }
+
+    if (player_slot >= session_player_count_ || player_slot == player_slot_) {
+        return false;
+    }
+
+    return true;
+}
+
+bool LockstepSession::should_drop_batch_for_reconnect_handshake(
+    const std::uint8_t batch_player_slot) const
+{
+    if (session_player_count_ <= 2U) {
+        if (!client_resync_ready_) {
+            return true;
+        }
+
+        if (awaiting_reconnect_handshake_) {
+            return true;
+        }
+
+        return false;
+    }
+
+    if (pending_reconnect_player_slot_ == constants::LOCKSTEP_INVALID_PLAYER_SLOT) {
+        return false;
+    }
+
+    if (batch_player_slot != pending_reconnect_player_slot_) {
+        return false;
+    }
+
+    if (!client_resync_ready_) {
+        return true;
+    }
+
+    return awaiting_reconnect_handshake_;
+}
+
 void LockstepSession::clear_remote_wait()
 {
     waiting_remote_execute_tick_ = 0U;
@@ -1890,17 +1942,6 @@ void LockstepSession::process_received_packet(const std::vector<std::byte>& pack
     }
 
     if (decoded_message->first == NetMessageKind::TickInputBatch) {
-        if (role_ == LockstepRole::Host && match_started_ && simulation_.tick_count() > 0U
-            && !client_resync_ready_) {
-            LockstepDebugLog::log_event("batch_ignored", "waiting_resync_ready");
-            return;
-        }
-
-        if (awaiting_reconnect_handshake_ && role_ == LockstepRole::Host) {
-            LockstepDebugLog::log_event("batch_ignored", "awaiting_handshake");
-            return;
-        }
-
         if (!session_ready_ && role_ == LockstepRole::Client) {
             LockstepDebugLog::log_event("batch_ignored", "session_not_ready");
             return;
@@ -1912,6 +1953,17 @@ void LockstepSession::process_received_packet(const std::vector<std::byte>& pack
         }
 
         TickInputBatch batch = *decoded_batch;
+        if (!is_valid_remote_player_slot(batch.player_slot)) {
+            LockstepDebugLog::log_event("batch_rejected", "invalid_player_slot");
+            return;
+        }
+
+        if (role_ == LockstepRole::Host && match_started_ && simulation_.tick_count() > 0U
+            && should_drop_batch_for_reconnect_handshake(batch.player_slot)) {
+            LockstepDebugLog::log_event("batch_ignored", "waiting_resync_ready");
+            return;
+        }
+
         if (batch.player_slot == player_slot_) {
             return;
         }
@@ -1980,7 +2032,8 @@ void LockstepSession::process_received_packet(const std::vector<std::byte>& pack
             return;
         }
 
-        if (message->player_slot == player_slot_) {
+        if (!is_valid_remote_player_slot(message->player_slot)) {
+            LockstepDebugLog::log_event("hash_rejected", "invalid_player_slot");
             return;
         }
 
