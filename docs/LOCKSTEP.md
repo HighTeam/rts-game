@@ -153,7 +153,7 @@ If the client drops after the match has started, the host:
 3. Advances with `try_advance_ai_fallback_tick()`, which injects `generate_ai_commands_for_slot()` before `simulation.tick()`
 4. Does not send input batches or state hashes while in AI fallback
 
-Disconnect AI currently targets the 2-player opponent slot helper (`opponent_player_slot()`). Multi-peer AI for slots 2+ is not finished.
+`enter_ai_fallback()` always sets `ai_controlled_slot_ = opponent_player_slot()`. That helper returns slot `1` for the host and slot `0` for a client. It does not take the disconnected peer's slot. In a 2-player session that is correct. In a 4-player session, losing slot 2 or 3 still AI-controls slot 1 and flips the global `ai_fallback_` flag. Do not treat multi-peer disconnect AI as shipped.
 
 If the host drops, the client stops simulating, retries reconnect, and does **not** AI-control the host. Host migration remains M3.
 
@@ -190,6 +190,12 @@ Current host send rules in `lockstep_session.cpp`:
 | `ReconnectSnapshot` | `send_reliable()` | still `send_reliable()` |
 
 `send_reliable()` delivers to the first connected client peer. That is fine for 2-player. With 3+ peers still connected, a mid-match reconnect can deliver the snapshot to the wrong client. `--lockstep-4-smoke` does not exercise reconnect, so CI can stay green while this path is broken. Track the fix separately; do not treat 4-peer reconnect as proven yet.
+
+### Resync batch gate today
+
+While the host waits for mid-match `ResyncReady`, `process_received_packet` drops every inbound `TickInputBatch` when `!client_resync_ready_` or `awaiting_reconnect_handshake_`. Those flags are session-global, not scoped to the reconnecting slot. Connected peers that are still live lose their batches too, so the match freezes for everyone until resync finishes or fails.
+
+That is invisible in 2-player reconnect smoke (only one remote). It bites as soon as `session_player_count_ > 2`. Fix work is tracking a per-slot pending reconnect gate and validating wire `player_slot` before indexing ready-bit masks. Until that lands, do not run mid-match reconnect against a 4-peer host.
 
 ## Wire messages
 
@@ -240,6 +246,8 @@ Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS
 | `--player-slot` rejected | Flag not implemented; only slots 0/1 via host/join |
 | Hash mismatch with no local commands | Non-deterministic sim change, spawn order, or float in sim state |
 | Slot 2/3 reconnect hangs or corrupts another peer | Host still broadcasts `ReconnectSnapshot` with untargeted `send_reliable()`; see Peer targeting today |
+| All peers freeze during one client's reconnect | Host drops every `TickInputBatch` while `client_resync_ready_` is false; see Resync batch gate today |
+| Wrong army goes AI after a non-P2 disconnect | `enter_ai_fallback()` uses `opponent_player_slot()` (always slot 1 for host), not the lost peer |
 | Snapshot smoke fails after sim change | Entity keys / fog / AI metadata must roundtrip; run the full local snapshot suite before LAN |
 
 ## Related

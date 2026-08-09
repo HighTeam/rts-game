@@ -25,7 +25,7 @@ M2 proved **2-player** lockstep on LAN. M3 adds **multi-peer transport** (`MAX_P
 
 `--lockstep-4-smoke` uses the in-process mesh path (host + 3 `LockstepSession` clients). Multi-process localhost with `--player-slot` is still the planned soak shape, not a live CLI flag.
 
-Graphical `--lockstep-host` / `--lockstep-join` remain **2-player** (`LOCKSTEP_PLAYER_COUNT`). N-way gating exists inside `LockstepSession`; daily play does not open 7 client slots yet. Disconnect AI still keys off the 2-player opponent helper.
+Graphical `--lockstep-host` / `--lockstep-join` remain **2-player** (`LOCKSTEP_PLAYER_COUNT`). N-way gating exists inside `LockstepSession`; daily play does not open 7 client slots yet. Disconnect AI still keys off the 2-player opponent helper (`opponent_player_slot()`, always slot 1 for the host). Mid-match reconnect in a 4-peer session is **not** proven: snapshot targeting and the global resync batch gate can freeze or mis-route peers. Details: [LOCKSTEP.md](LOCKSTEP.md).
 
 ---
 
