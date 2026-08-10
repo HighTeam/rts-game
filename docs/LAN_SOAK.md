@@ -56,7 +56,8 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 | Symptom | Check |
 |--------|--------|
 | Client cannot connect | Firewall, correct IP, host already listening |
-| Stuck after reconnect | Host/client `logs/lockstep_*.log` for `resync_ready_received`, `reconnect_bootstrap_complete` |
+| Stuck after reconnect | Host/client `logs/lockstep_*.log` for `resync_ready_received`, `reconnect_bootstrap_complete`. If freeze starts a few seconds later, look for `resync_ready_retry` after bootstrap (duplicate ResyncReady) |
+| Host workers ignore micro after P2 drops | AI takeover clears `ManualControlTag` on all workers today; re-issue orders or see [LOCKSTEP.md](LOCKSTEP.md) |
 | Desync | Both logs at desync tick; compare `tick=` and hash lines |
 | Movement stutter only | Usually render/interpolation; note if it happens only while waiting on opponent batches |
 

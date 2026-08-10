@@ -113,7 +113,7 @@ Details: [DECISIONS.md](DECISIONS.md) (player commands), [HARNESS.md](HARNESS.md
 | Network enqueue | Keeps wire `sequence`; bumps `next_sequence_` past it |
 | Same-tick order | Sort by `sequence`, then `player_slot`, then `type` |
 | Ownership | Units carry `PlayerSlot`; selection/commands filter by local slot |
-| Manual control | Player orders set `ManualControlTag`; auto-worker brain skips unless a `GatherTarget` remains |
+| Manual control | Player orders set `ManualControlTag`; auto-worker brain skips unless a `GatherTarget` remains. `Simulation::set_player_ai_controlled(slot, true)` currently removes that tag from **all** workers, not only the AI-controlled slot; host micro can drop when the opponent goes AI (see [LOCKSTEP.md](LOCKSTEP.md)) |
 | Attack | Target must be `EnemyTag` or an opponent slot (`is_valid_attack_target`), alive, and visible under fog |
 | Gather | Unit must have `WorkerUnitTag`; cell must be forest with wood > 0 |
 | Deposit command | Paths workers to an adjacent walkable TC cell; wood transfers in `run_worker_deposit_system` when Chebyshev distance ≤ 1 |

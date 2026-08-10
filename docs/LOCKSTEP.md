@@ -155,6 +155,8 @@ If the client drops after the match has started, the host:
 
 `enter_ai_fallback()` always sets `ai_controlled_slot_ = opponent_player_slot()`. That helper returns slot `1` for the host and slot `0` for a client. It does not take the disconnected peer's slot. In a 2-player session that is correct. In a 4-player session, losing slot 2 or 3 still AI-controls slot 1 and flips the global `ai_fallback_` flag. Do not treat multi-peer disconnect AI as shipped.
 
+`Simulation::set_player_ai_controlled(slot, true)` marks the slot in `MatchSession`, then removes `ManualControlTag` from **every** `WorkerUnitTag` in the registry. It does not filter by `PlayerSlot`. When the host is microing its own workers and the opponent disconnects, those host workers lose manual control and fall back to auto-gather until the player re-issues orders. Clearing AI (`enabled=false`) does not restore the tags.
+
 If the host drops, the client stops simulating, retries reconnect, and does **not** AI-control the host. Host migration remains M3.
 
 ## Reconnect
@@ -177,6 +179,14 @@ Mid-match reconnect:
 Snapshot payload includes tick count, state hash, command sequence, AI-control metadata, full `input_log`, map/fog, and entity records (`src/sim/snapshot/sim_snapshot.cpp`, magic `0x414F4153`, version `9`). Before sending, the host validates a local roundtrip and applies the same bytes to itself so both peers share one checkpoint.
 
 Client reconnect pacing: every `LOCKSTEP_RECONNECT_INTERVAL_MS` (500), up to `LOCKSTEP_RECONNECT_MAX_ATTEMPTS` (20).
+
+### Duplicate ResyncReady after live resume
+
+After the client restores a snapshot it sends `ResyncReady`, then `maybe_retry_resync_ready()` keeps re-sending for `LOCKSTEP_RESYNC_READY_RETRY_WINDOW_MS` (10s) every `LOCKSTEP_RESYNC_READY_RETRY_MS` (500). That retry path only checks `resync_ready_sent_`. It does not stop once the host has cleared `awaiting_reconnect_handshake_` and resumed live batches.
+
+On the host, `handle_resync_ready()` always calls `reset_tick_sync_state()` for an accepted slot. A late duplicate after live resume can wipe ready-bit state mid-match and stall both peers. Separately, `poll()` returns early when `desynced_` is set, before `consume_peer_lost()` runs, so a desync flag can block disconnect/AI recovery until the session ends.
+
+Two-player LAN reconnect often looks fine until the retry window overlaps live play. Watch `logs/lockstep_*.log` for `resync_ready_retry` after `reconnect_bootstrap_complete`. Fix work for this path is tracked outside this docs PR; do not treat post-reconnect freezes as "expected grace timeout" without checking those log lines.
 
 ### Peer targeting today
 
@@ -242,6 +252,8 @@ Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS
 | Commands feel one tick later than singleplayer | Expected. Lockstep delay is 2 ticks, not 1 |
 | Client disconnect freezes the match | Should not happen on host; host must enter AI fallback immediately |
 | Reconnect fails after ~30s | Host grace expired (`LOCKSTEP_RECONNECT_GRACE_MS`) |
+| Match freezes a few seconds after a successful reconnect | Late duplicate `ResyncReady` retries call `reset_tick_sync_state()` after live resume; see Duplicate ResyncReady after live resume |
+| Host workers stop obeying micro after opponent disconnect | `set_player_ai_controlled` strips `ManualControlTag` from all workers, not only the AI slot |
 | Expecting 4 graphical clients via `--lockstep-host` | Not yet. Host still uses 2-player session; use `--lockstep-4-smoke` for N-way gating |
 | `--player-slot` rejected | Flag not implemented; only slots 0/1 via host/join |
 | Hash mismatch with no local commands | Non-deterministic sim change, spawn order, or float in sim state |
@@ -249,6 +261,7 @@ Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS
 | All peers freeze during one client's reconnect | Host drops every `TickInputBatch` while `client_resync_ready_` is false; see Resync batch gate today |
 | Wrong army goes AI after a non-P2 disconnect | `enter_ai_fallback()` uses `opponent_player_slot()` (always slot 1 for host), not the lost peer |
 | Snapshot smoke fails after sim change | Entity keys / fog / AI metadata must roundtrip; run the full local snapshot suite before LAN |
+| Desync banner, then disconnect never starts AI | `poll()` returns on `desynced_` before peer-loss handling; recovery waits on the open fix |
 
 ## Related
 
