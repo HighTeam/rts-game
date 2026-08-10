@@ -531,7 +531,9 @@ bool LockstepSession::is_opponent_unresponsive() const
     }
 
     if (is_opponent_reconnect_grace_active()) {
-        return false;
+        if (resync_strict_batch_gate_ || awaiting_reconnect_handshake_) {
+            return false;
+        }
     }
 
     if (!waiting_remote_active_) {
@@ -833,10 +835,6 @@ void LockstepSession::process_polled_messages_locked()
     maybe_retry_host_resync_handshake();
     maybe_send_pending_reconnect_snapshot();
 
-    if (desynced_) {
-        return;
-    }
-
     if (role_ == LockstepRole::Host && match_started_ && !ai_fallback_ && !host_lost_ && !is_connected()
         && !opponent_reconnect_pending_) {
         note_opponent_transport_down();
@@ -882,6 +880,10 @@ void LockstepSession::process_polled_messages_locked()
         }
 
         handle_opponent_lost();
+        return;
+    }
+
+    if (desynced_) {
         return;
     }
 
@@ -1083,7 +1085,8 @@ void LockstepSession::send_resync_ready()
 
 void LockstepSession::maybe_retry_resync_ready()
 {
-    if (role_ != LockstepRole::Client || !is_connected() || !session_ready_ || !resync_ready_sent_) {
+    if (role_ != LockstepRole::Client || !is_connected() || !session_ready_ || !resync_ready_sent_
+        || !awaiting_reconnect_handshake_) {
         return;
     }
 
@@ -1312,6 +1315,13 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
     }
 
     if (session_player_count_ == 2U && player_slot != opponent_player_slot()) {
+        return;
+    }
+
+    if (client_resync_ready_ && !awaiting_reconnect_handshake_) {
+        LockstepDebugLog::log_event(
+            "resync_ready_duplicate_ignored",
+            "tick=" + std::to_string(simulation_.tick_count()));
         return;
     }
 
