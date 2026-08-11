@@ -188,9 +188,17 @@ On the host, `handle_resync_ready()` always calls `reset_tick_sync_state()` for 
 
 Two-player LAN reconnect often looks fine until the retry window overlaps live play. Watch `logs/lockstep_*.log` for `resync_ready_retry` after `reconnect_bootstrap_complete`. Fix work for this path is tracked outside this docs PR; do not treat post-reconnect freezes as "expected grace timeout" without checking those log lines.
 
+### Stale render snapshot used for input
+
+Graphical lockstep runs input and render off a published `SimRenderSnapshot` (`LockstepSession::render_snapshot()`), not a live registry read. After a mid-match restore, `apply_reconnect_snapshot` republishes that snapshot and sets `snapshot_restored_pending_`.
+
+On `main` today, `run_graphical_lockstep` in `application.cpp` captures `input_snapshot` at the top of the frame, polls events with that pointer, then only later calls `consume_snapshot_restored()` (clear selection / reset camera) and `update_continuous`. If the background tick thread published the post-restore snapshot during that window, event handling still used the pre-restore pointer. Entity IDs can be recycled across restore, so clicks and continuous move orders can target the wrong units and desync lockstep.
+
+Required order on the restore frame: service latency → consume snapshot-restored → capture `input_snapshot` → poll events / continuous input. Open fix PR #46 reorders that loop. Until it merges, treat post-reconnect mis-clicks on a graphical client as this bug, not as bad mouse hit-testing.
+
 ### Peer targeting today
 
-`player_slot` is game identity. ENet client index is transport identity. They are not always equal when clients connect out of order.
+`player_slot` is game identity. ENet client index is transport identity (`client_peers_[1..max_clients]`). They are not always equal when clients connect out of order.
 
 Current host send rules in `lockstep_session.cpp`:
 
@@ -198,8 +206,17 @@ Current host send rules in `lockstep_session.cpp`:
 |---------|------------------------------|-----------------------------|
 | `JoinAccepted` | `send_reliable()` (only one client) | `send_reliable_to_client(target_client_slot, …)` |
 | `ReconnectSnapshot` | `send_reliable()` | still `send_reliable()` |
+| Host `TickInputBatch` | `send_reliable()` | `broadcast_reliable_except(..., nullopt)` |
+| Relayed remote `TickInputBatch` | n/a | `broadcast_reliable_except(..., batch.player_slot)` |
+| `TickStateHash` | `send_unreliable()` | still `send_unreliable()` |
 
-`send_reliable()` delivers to the first connected client peer. That is fine for 2-player. With 3+ peers still connected, a mid-match reconnect can deliver the snapshot to the wrong client. `--lockstep-4-smoke` does not exercise reconnect, so CI can stay green while this path is broken. Track the fix separately; do not treat 4-peer reconnect as proven yet.
+`send_reliable()` / `send_unreliable()` without a target deliver to the first connected client peer (`client_peers_` scan from slot 1). That is fine for 2-player. With 3+ peers still connected:
+
+- Mid-match `ReconnectSnapshot` can land on the wrong client.
+- Host `TickStateHash` only reaches the first connected client, so other peers may never receive the host hash (desync detection gap, not an immediate crash).
+- Relayed batches pass `batch.player_slot` as `except_client_slot`. Transport slots are `1..max_clients`; game slots are `0..N-1`. Without a player→ENet map, the except filter can skip the wrong peer or none at all.
+
+`--lockstep-4-smoke` does not exercise reconnect or multi-peer hash fan-out, so CI can stay green while these paths are broken. Track the mapping fix separately (open PR #40). Do not treat 4-peer reconnect or 4-peer desync detection as proven yet.
 
 ### Resync batch gate today
 
@@ -239,6 +256,8 @@ On mismatch:
 
 Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS.md).
 
+In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete today (`send_unreliable()` → first client only; see Peer targeting today). A silent miss means a diverging peer may keep advancing until some other path notices. Do not rely on hash exchange alone to prove multi-peer determinism; use `--lockstep-4-smoke` plus explicit local checks.
+
 ## Common pitfalls
 
 | Symptom | Likely cause |
@@ -258,8 +277,11 @@ Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS
 | `--player-slot` rejected | Flag not implemented; only slots 0/1 via host/join |
 | Hash mismatch with no local commands | Non-deterministic sim change, spawn order, or float in sim state |
 | Slot 2/3 reconnect hangs or corrupts another peer | Host still broadcasts `ReconnectSnapshot` with untargeted `send_reliable()`; see Peer targeting today |
+| 4-peer host hash never arrives on clients 2/3 | Host `TickStateHash` uses untargeted `send_unreliable()`; see Peer targeting today |
+| Wrong peer excluded from batch relay | Host relay passes game `player_slot` as ENet `except_client_slot`; see Peer targeting today |
 | All peers freeze during one client's reconnect | Host drops every `TickInputBatch` while `client_resync_ready_` is false; see Resync batch gate today |
 | Wrong army goes AI after a non-P2 disconnect | `enter_ai_fallback()` uses `opponent_player_slot()` (always slot 1 for host), not the lost peer |
+| After reconnect, clicks move the wrong units | Frame used pre-restore `SimRenderSnapshot` for input; see Stale render snapshot used for input |
 | Snapshot smoke fails after sim change | Entity keys / fog / AI metadata must roundtrip; run the full local snapshot suite before LAN |
 | Desync banner, then disconnect never starts AI | `poll()` returns on `desynced_` before peer-loss handling; recovery waits on the open fix |
 
