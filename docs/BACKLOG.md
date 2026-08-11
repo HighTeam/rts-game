@@ -82,10 +82,10 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 ### [BLOCKING] Lockstep sync
 
 - [x] Turn/tick-based input collection: every client sends inputs for tick N; sim doesn't advance until all inputs for N are received
-- [x] Input delay buffer — uses `PLAYER_COMMAND_DELAY_TICKS` via `next_command_execute_tick()`
+- [x] Input delay buffer — lockstep uses `LOCKSTEP_COMMAND_DELAY_TICKS` (2); singleplayer/harness keep `PLAYER_COMMAND_DELAY_TICKS` (1)
 - [x] Full input log from game start — `CommandQueue::input_log()` + network `TickInputBatch`
 - [x] Live desync detection: exchange per-tick state hashes between clients
-- [x] Wire lockstep into graphical play — `--lockstep-host` / `--join` open window by default; inputs route through `LockstepSession`
+- [x] Wire lockstep into graphical play — `--lockstep-host` / `--lockstep-join` open window by default; inputs route through `LockstepSession`
 
 ### Reconnect
 
@@ -109,7 +109,7 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 - [x] Two local instances (localhost) as the daily dev-loop test — `--lockstep-host` / `--lockstep-join`
 - [x] **LAN soak — 2 players** — 30+ min, disconnect/reconnect, no desync ([scripts/issue-bodies/m2-tests.md](scripts/issue-bodies/m2-tests.md))
-- [ ] **LAN soak — 4 players** — after M3 multi-peer lockstep ships
+- [ ] **LAN soak — 4 players** — after graphical/headless host accepts >1 client + `--player-slot`
 - [ ] **LAN brutal — 8 players** — 60+ min, multi-disconnect, bad-connection client; required before calling multiplayer proven at scale ([scripts/issue-bodies/m2-tests.md](scripts/issue-bodies/m2-tests.md))
 
 ---
@@ -120,8 +120,8 @@ See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
 
 ### 8-player scaling
 
-- [ ] Multi-peer ENet + N-way lockstep (see [scripts/issue-bodies/m3-8player.md](scripts/issue-bodies/m3-8player.md))
-- [ ] Scale testing without 8 PCs — [docs/M3_SCALE_TESTING.md](M3_SCALE_TESTING.md) (CI smokes + headless peers + 2-PC split LAN)
+- [x] Multi-peer ENet host capacity + N-way input gating — `session_player_count` / `--lockstep-4-smoke` (PR #38); graphical host/join still 2-player
+- [ ] Scale testing without 8 PCs — [docs/M3_SCALE_TESTING.md](M3_SCALE_TESTING.md) (4-smoke in CI; 8-smoke + headless `--player-slot` soak still open)
 - [ ] Host migration policy decision: if host disconnects, does the match end, or does another client take over hosting? (Decide now — affects lobby/network code shape; retrofitting host migration later is painful)
 
 ### Save/load
