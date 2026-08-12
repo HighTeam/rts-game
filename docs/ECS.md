@@ -28,7 +28,7 @@ Gameplay order in `run_gameplay_systems()` (do not reorder casually — hashes a
 1. `run_visibility_system` — fog explored/visible per player slot
 2. `run_worker_system` — gather / auto-worker brain (skipped when `ManualControlTag` is set)
 3. `run_worker_deposit_system`
-4. `run_enemy_militia_ai` — `EnemyTag` militia only; player militia has no auto-attack AI
+4. `run_enemy_militia_ai` — `EnemyTag` militia only; player militia has no auto-attack AI. Default Earth spawn has no `EnemyTag` militia, so this system is a no-op there; combat comes from hard-coded `AttackOrder`s.
 5. `run_attack_chase_system`
 6. `run_movement_system`
 7. `run_melee_contact_system`
@@ -61,7 +61,7 @@ Constraints:
 | `visible` | Currently in vision this tick |
 | `memory_tiles` / `memory_forest_wood` | Last seen terrain/wood for explored cells |
 
-`run_visibility_system` clears `visible`, then reveals circles from living `PlayerOwnedTag` units/buildings sorted by snapshot key. Vision range comes from archetype `vision_range` when set, else defaults in `src/core/constants.hpp` (worker 3, unit 4, structure 6, town center 8), plus `FOG_VISION_RADIUS_TILE_PADDING` (0.35).
+`run_visibility_system` clears `visible`, then reveals circles from living `PlayerOwnedTag` units/buildings sorted by snapshot key. `vision_range_for_entity` resolves range as: `WorkerUnitTag` always uses `DEFAULT_WORKER_VISION_RANGE` (3) and ignores archetype JSON; otherwise positive archetype `vision_range`; otherwise defaults in `src/core/constants.hpp` (unit 4, structure 6, town center 8). Radius also adds `FOG_VISION_RADIUS_TILE_PADDING` (0.35).
 
 Gameplay uses fog for attack targeting (`is_opponent_entity_visible_to_slot`). Render helpers also distinguish shroud vs live vision. `compute_state_hash` mixes fog width/height, `explored`, and memory for explored cells. It does **not** mix `visible`; that plane is rebuilt every tick.
 

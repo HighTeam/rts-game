@@ -19,13 +19,13 @@ M2 proved **2-player** lockstep on LAN. M3 adds **multi-peer transport** (`MAX_P
 
 | Smoke | Status | Purpose |
 |-------|--------|---------|
-| `--lockstep-4-smoke` | **Shipped** (PR #38, in CI) | 4 peers in-process; empty batches; hash match after 40 ticks |
+| `--lockstep-4-smoke` | **Shipped** (PR #38, in CI) | 4 peers in-process; empty batches; compares local `Simulation::state_hash()` after 40 ticks (not wire desync detection) |
 | `--lockstep-8-smoke` | Not implemented | 8 peers; staggered join, one disconnect + AI + reconnect |
 | `--lockstep-8-disconnect-smoke` | Not implemented | Two non-host slots drop; AI for both; sim never freezes |
 
 `--lockstep-4-smoke` uses the in-process mesh path (host + 3 `LockstepSession` clients). Multi-process localhost with `--player-slot` is still the planned soak shape, not a live CLI flag.
 
-Graphical `--lockstep-host` / `--lockstep-join` remain **2-player** (`LOCKSTEP_PLAYER_COUNT`). N-way gating exists inside `LockstepSession`; daily play does not open 7 client slots yet. Disconnect AI still keys off the 2-player opponent helper (`opponent_player_slot()`, always slot 1 for the host). Mid-match reconnect in a 4-peer session is **not** proven: snapshot targeting and the global resync batch gate can freeze or mis-route peers. Details: [LOCKSTEP.md](LOCKSTEP.md).
+Graphical `--lockstep-host` / `--lockstep-join` remain **2-player** (`LOCKSTEP_PLAYER_COUNT`). N-way gating exists inside `LockstepSession`; daily play does not open 7 client slots yet. Disconnect AI still keys off the 2-player opponent helper (`opponent_player_slot()`, always slot 1 for the host) and flips a global `ai_fallback_` that leaves live N-way gating. Mid-match reconnect in a 4-peer session is **not** proven: snapshot targeting, JoinAccepted game-slot→ENet targeting, host hash fan-out, missing TickStateHash relay, and the global resync batch gate can freeze or mis-route peers. Details: [LOCKSTEP.md](LOCKSTEP.md).
 
 ---
 

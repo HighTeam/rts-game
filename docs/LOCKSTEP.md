@@ -153,9 +153,9 @@ If the client drops after the match has started, the host:
 3. Advances with `try_advance_ai_fallback_tick()`, which injects `generate_ai_commands_for_slot()` before `simulation.tick()`
 4. Does not send input batches or state hashes while in AI fallback
 
-`enter_ai_fallback()` always sets `ai_controlled_slot_ = opponent_player_slot()`. That helper returns slot `1` for the host and slot `0` for a client. It does not take the disconnected peer's slot. In a 2-player session that is correct. In a 4-player session, losing slot 2 or 3 still AI-controls slot 1 and flips the global `ai_fallback_` flag. Do not treat multi-peer disconnect AI as shipped.
+`enter_ai_fallback()` always sets `ai_controlled_slot_ = opponent_player_slot()`. That helper returns slot `1` for the host and slot `0` for a client. It does not take the disconnected peer's slot. In a 2-player session that is correct. In a 4-player session, losing slot 2 or 3 still AI-controls slot 1 and flips the global `ai_fallback_` flag. While `ai_fallback_` is set, `try_advance_tick()` takes the AI path (`try_advance_ai_fallback_tick`) instead of waiting on every remote batch. Only `ai_controlled_slot_` gets `inject_ai_commands`. Other still-connected slots leave live N-way gating with neither batch wait nor AI injection. Do not treat multi-peer disconnect AI as shipped.
 
-`Simulation::set_player_ai_controlled(slot, true)` marks the slot in `MatchSession`, then removes `ManualControlTag` from **every** `WorkerUnitTag` in the registry. It does not filter by `PlayerSlot`. When the host is microing its own workers and the opponent disconnects, those host workers lose manual control and fall back to auto-gather until the player re-issues orders. Clearing AI (`enabled=false`) does not restore the tags.
+`Simulation::set_player_ai_controlled(slot, true)` marks the slot in `MatchSession`, then removes `ManualControlTag` from **every** `WorkerUnitTag` in the registry. It does not filter by `PlayerSlot`. When the host is microing its own workers and the opponent disconnects, those host workers lose manual control and fall back to auto-gather until the player re-issues orders. Clearing AI (`enabled=false`) does not restore the tags. Open fix PR #44 scopes the tag clear to the AI slot.
 
 If the host drops, the client stops simulating, retries reconnect, and does **not** AI-control the host. Host migration remains M3.
 
@@ -204,7 +204,7 @@ Current host send rules in `lockstep_session.cpp`:
 
 | Message | `session_player_count_ == 2` | `session_player_count_ > 2` |
 |---------|------------------------------|-----------------------------|
-| `JoinAccepted` | `send_reliable()` (only one client) | `send_reliable_to_client(target_client_slot, …)` |
+| `JoinAccepted` | `send_reliable()` (only one client) | `send_reliable_to_client(player_slot, …)` |
 | `ReconnectSnapshot` | `send_reliable()` | still `send_reliable()` |
 | Host `TickInputBatch` | `send_reliable()` | `broadcast_reliable_except(..., nullopt)` |
 | Relayed remote `TickInputBatch` | n/a | `broadcast_reliable_except(..., batch.player_slot)` |
@@ -212,11 +212,12 @@ Current host send rules in `lockstep_session.cpp`:
 
 `send_reliable()` / `send_unreliable()` without a target deliver to the first connected client peer (`client_peers_` scan from slot 1). That is fine for 2-player. With 3+ peers still connected:
 
-- Mid-match `ReconnectSnapshot` can land on the wrong client.
-- Host `TickStateHash` only reaches the first connected client, so other peers may never receive the host hash (desync detection gap, not an immediate crash).
+- `handle_reconnect_request` calls `send_join_accepted(player_slot)` with the **game** slot from the request. For `session_player_count_ > 2` that value is passed straight to `send_reliable_to_client` as an ENet client index. Out-of-order joins can ACK the wrong peer.
+- Mid-match `ReconnectSnapshot` can land on the wrong client (untargeted `send_reliable()`).
+- Host `TickStateHash` only reaches the first connected client, so other peers may never receive the host hash (desync detection gap, not an immediate crash). Open fix PR #48 adds host `broadcast_unreliable_except` for that fan-out; it is not on `main` yet.
 - Relayed batches pass `batch.player_slot` as `except_client_slot`. Transport slots are `1..max_clients`; game slots are `0..N-1`. Without a player→ENet map, the except filter can skip the wrong peer or none at all.
 
-`--lockstep-4-smoke` does not exercise reconnect or multi-peer hash fan-out, so CI can stay green while these paths are broken. Track the mapping fix separately (open PR #40). Do not treat 4-peer reconnect or 4-peer desync detection as proven yet.
+`--lockstep-4-smoke` advances four sessions and compares each local `Simulation::state_hash()` after the run. It does not exercise reconnect, multi-peer hash fan-out, or wire desync detection, so CI can stay green while those paths are broken. Track player→ENet mapping in open PR #40. Do not treat 4-peer reconnect or 4-peer wire desync detection as proven yet.
 
 ### Resync batch gate today
 
@@ -246,6 +247,8 @@ Envelope: `NetMessageKind` byte + payload (`encode_net_message` / `decode_net_me
 
 Every live completed tick sends `TickStateHash`. Verification stays off during reconnect/AI/handshake and for `LOCKSTEP_HASH_VERIFY_WARMUP_TICKS` (30) after join, snapshot restore, or resync.
 
+`verify_state_hash` waits until every remote slot in `required_remote_slots_mask()` has a hash for that tick, then compares. Clients send hashes only to the host. The host does **not** relay peer hashes to other clients. In a 4-player session a client therefore never fills hashes for the other client slots, so client-side wire verification returns early and never completes. After open PR #48 merges, the host can fan hashes out to every client, but clients still cannot compare client↔client hashes on the wire unless a relay lands later. Host-side comparison of all client hashes is the path that can work once fan-out is fixed.
+
 On mismatch:
 
 - `is_desynced()` becomes true
@@ -256,7 +259,7 @@ On mismatch:
 
 Hash contents match the harness (`compute_state_hash`). See [HARNESS.md](HARNESS.md).
 
-In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete today (`send_unreliable()` → first client only; see Peer targeting today). A silent miss means a diverging peer may keep advancing until some other path notices. Do not rely on hash exchange alone to prove multi-peer determinism; use `--lockstep-4-smoke` plus explicit local checks.
+In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete today (`send_unreliable()` → first client only; see Peer targeting today). A silent miss means a diverging peer may keep advancing until some other path notices. Do not rely on wire hash exchange alone to prove multi-peer determinism; use `--lockstep-4-smoke` (local hash compare after advance) plus explicit local checks.
 
 ## Common pitfalls
 
@@ -281,6 +284,9 @@ In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete to
 | Wrong peer excluded from batch relay | Host relay passes game `player_slot` as ENet `except_client_slot`; see Peer targeting today |
 | All peers freeze during one client's reconnect | Host drops every `TickInputBatch` while `client_resync_ready_` is false; see Resync batch gate today |
 | Wrong army goes AI after a non-P2 disconnect | `enter_ai_fallback()` uses `opponent_player_slot()` (always slot 1 for host), not the lost peer |
+| 4-peer match leaves live lockstep after any disconnect | Global `ai_fallback_` switches the host to AI tick advance; only slot 1 gets injected AI commands |
+| JoinAccepted never reaches the joining client (3+ peers) | Host passes game `player_slot` as ENet client slot; see Peer targeting today |
+| Client never reports wire desync in 4p | No TickStateHash relay; `verify_state_hash` waits on every remote slot; see Desync detection |
 | After reconnect, clicks move the wrong units | Frame used pre-restore `SimRenderSnapshot` for input; see Stale render snapshot used for input |
 | Snapshot smoke fails after sim change | Entity keys / fog / AI metadata must roundtrip; run the full local snapshot suite before LAN |
 | Desync banner, then disconnect never starts AI | `poll()` returns on `desynced_` before peer-loss handling; recovery waits on the open fix |

@@ -45,10 +45,12 @@ Same binary, no window — for desync/regression runs:
 ```powershell
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x7982a0643f3bcb76
 .\build\x64-debug\Debug\aoa.exe --harness
 .\build\x64-debug\Debug\aoa.exe --net-smoke
 ```
+
+The `--expect-hash` example matches `data/scenarios/earth_default.json` on this tree. Refresh it after intentional sim changes.
 
 | Mode | Use |
 |------|-----|
@@ -58,13 +60,14 @@ Same binary, no window — for desync/regression runs:
 | `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
 | `--lockstep-disconnect-smoke` | Client disconnect mid-match; host enters AI immediately and sim keeps advancing |
 | `--lockstep-reconnect-smoke` | Three disconnect → AI → reconnect → live lockstep cycles in-process; verifies hash match each time |
-| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks |
+| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; local hash match after 40 ticks |
 | `--snapshot-smoke` | Encode sim snapshot + input log, restore, verify hash match (in CI) |
 | `--snapshot-double-spawn-smoke` | Snapshot roundtrip, then two wire `SpawnWorker`s stay in sync (local) |
 | `--snapshot-reconnect-smoke` | Long AI/spawn run, then encode/restore (local) |
 | `--snapshot-heavy-smoke` | Busy two-slot workload, then encode/restore (local) |
 | `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
 | `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
+| `--lockstep-debug` | Write `logs/lockstep_*.log` next to the binary (host/join and LAN soaks) |
 
 For lockstep, `--ticks N` applies only with `--headless` (graphical sessions run until you close the window or the opponent disconnects). Headless lockstep defaults to 100 ticks without `--ticks`.
 

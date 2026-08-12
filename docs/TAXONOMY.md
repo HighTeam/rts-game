@@ -62,7 +62,7 @@ Example (`militia.json`):
 }
 ```
 
-Optional `vision_range` feeds fog of war. `0` or omitted uses kind defaults in `src/core/constants.hpp`. See [ECS.md](ECS.md).
+Optional `vision_range` feeds fog of war for non-worker archetypes. `0` or omitted uses kind defaults in `src/core/constants.hpp`. Entities with `WorkerUnitTag` always use `DEFAULT_WORKER_VISION_RANGE` and ignore this JSON field. See [ECS.md](ECS.md).
 
 Constraints verified in the loader:
 
