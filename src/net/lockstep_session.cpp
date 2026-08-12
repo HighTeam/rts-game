@@ -1759,6 +1759,14 @@ void LockstepSession::send_state_hash(const std::uint64_t execute_tick, const st
     const std::vector<std::byte> payload = encode_tick_state_hash(message);
     const std::vector<std::byte> wire_message =
         encode_net_message(NetMessageKind::TickStateHash, payload);
+    if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
+        (void)transport_.broadcast_unreliable_except(
+            wire_message,
+            constants::CHANNEL_UNRELIABLE,
+            std::nullopt);
+        return;
+    }
+
     (void)transport_.send_unreliable(wire_message, constants::CHANNEL_UNRELIABLE);
 }
 

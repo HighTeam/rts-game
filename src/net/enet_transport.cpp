@@ -603,6 +603,14 @@ bool EnetTransport::broadcast_reliable_except(
     return enqueue_broadcast_except(data, channel, true, except_client_slot);
 }
 
+bool EnetTransport::broadcast_unreliable_except(
+    const std::span<const std::byte> data,
+    const std::uint8_t channel,
+    const std::optional<std::uint8_t> except_client_slot)
+{
+    return enqueue_broadcast_except(data, channel, false, except_client_slot);
+}
+
 bool EnetTransport::send_unreliable(const std::span<const std::byte> data, const std::uint8_t channel)
 {
     OutboundPacket packet{};
