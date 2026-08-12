@@ -86,14 +86,16 @@ Adding a new id requires a code change in `src/harness/regression_harness.cpp` u
 
 ### Scenario roles
 
-Resolved by `sim::scenario::find_scenario_entity`:
+Resolved by `sim::scenario::find_scenario_entity` (slot-aware):
 
 | Role | Lookup |
 |------|--------|
-| `player_worker` | `WorkerUnitTag` + `PlayerOwnedTag` |
-| `player_militia` | `MilitiaUnitTag` + `PlayerOwnedTag` |
-| `enemy_militia` | `MilitiaUnitTag` + `EnemyTag` |
-| `town_center` | `TownCenterTag` |
+| `player_worker` | `WorkerUnitTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_worker` | `WorkerUnitTag` + `PlayerOwnedTag`, slot 1 |
+| `player_militia` | `MilitiaUnitTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_militia` / `enemy_militia` | `MilitiaUnitTag` + `PlayerOwnedTag`, slot 1 |
+| `town_center` / `player1_town_center` | `TownCenterTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_town_center` | `TownCenterTag` + `PlayerOwnedTag`, slot 1 |
 
 ## How a harness tick works
 
@@ -118,9 +120,9 @@ Never “fix” a hash without understanding the gameplay delta. Hash churn is a
 
 ## What the hash covers
 
-`compute_state_hash` mixes map tiles / forest wood, then every non-world entity with `GridPosition`, sorted by stable snapshot key (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
+`compute_state_hash` mixes map tiles / forest wood, fog explored/memory planes (not the per-tick `visible` plane), then every non-world entity with `GridPosition`, sorted by stable snapshot key (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
 
-Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
+Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`. Fog layout: [ECS.md](ECS.md).
 
 ## Common pitfalls
 
@@ -136,5 +138,6 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 ## Related
 
 - [BUILD.md](BUILD.md) — presets and daily build commands
+- [LOCKSTEP.md](LOCKSTEP.md) — multiplayer smokes, reconnect, desync runbook
 - [ECS.md](ECS.md) — tick pipeline and system order
 - [DECISIONS.md](DECISIONS.md) — command delay, combat tie-break, disconnect policy

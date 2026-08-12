@@ -56,7 +56,8 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 | Symptom | Check |
 |--------|--------|
 | Client cannot connect | Firewall, correct IP, host already listening |
-| Stuck after reconnect | Host/client `logs/lockstep_*.log` for `resync_ready_received`, `reconnect_bootstrap_complete` |
+| Stuck after reconnect | Host/client `logs/lockstep_*.log` for `resync_ready_received`, `reconnect_bootstrap_complete`. If freeze starts a few seconds later, look for `resync_ready_retry` after bootstrap (duplicate ResyncReady) |
+| Host workers ignore micro after P2 drops | AI takeover clears `ManualControlTag` on all workers today; re-issue orders or see [LOCKSTEP.md](LOCKSTEP.md) |
 | Desync | Both logs at desync tick; compare `tick=` and hash lines |
 | Movement stutter only | Usually render/interpolation; note if it happens only while waiting on opponent batches |
 
@@ -67,6 +68,11 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 .\build\x64-release\Release\aoa.exe --lockstep-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-disconnect-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-reconnect-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-4-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-double-spawn-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-reconnect-smoke
+.\build\x64-release\Release\aoa.exe --snapshot-heavy-smoke
 ```
 
-Pass these before spending time on the LAN soak.
+Pass these before spending time on the LAN soak. CI covers through `--snapshot-smoke`; the extra snapshot flags are local stress only. Full wire/reconnect details: [LOCKSTEP.md](LOCKSTEP.md).
