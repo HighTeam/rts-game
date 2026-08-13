@@ -57,6 +57,9 @@ inline constexpr std::uint64_t LOCKSTEP_RECONNECT_SMOKE_WARMUP_TICKS = 25U;
 inline constexpr std::uint64_t LOCKSTEP_RECONNECT_SMOKE_AI_TICKS = 15U;
 inline constexpr std::uint64_t LOCKSTEP_RECONNECT_SMOKE_LIVE_TICKS = 20U;
 inline constexpr std::uint16_t LOCKSTEP_4_SMOKE_PORT = 27202U;
+inline constexpr std::uint16_t LOCKSTEP_4_DISCONNECT_SMOKE_PORT = 27203U;
 inline constexpr std::uint64_t LOCKSTEP_4_SMOKE_TICKS = 40U;
+inline constexpr std::uint64_t LOCKSTEP_4_DISCONNECT_WARMUP_TICKS = 15U;
+inline constexpr std::uint64_t LOCKSTEP_4_DISCONNECT_LIVE_TICKS = 15U;
 
 } // namespace aoa::net::constants
