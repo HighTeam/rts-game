@@ -53,4 +53,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M2 is on `main`: 2-player lockstep, graphical host/join, disconnect AI fallback, snapshot reconnect, and CI smokes through `--lockstep-reconnect-smoke`. M3 started with multi-peer transport and `--lockstep-4-smoke` (PR #38). Next: finish N-way graphical play, 8-player smokes, and save/load.
+M2 is on `main`: 2-player lockstep, graphical host/join, disconnect AI fallback, snapshot reconnect. M3 started with multi-peer transport (PR #38). CI smokes cover headless, net, lockstep, disconnect, reconnect, `--lockstep-4-smoke`, and `--snapshot-smoke`. Next: finish N-way graphical play, 8-player smokes, and save/load.

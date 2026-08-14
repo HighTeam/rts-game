@@ -73,7 +73,7 @@ For lockstep, `--ticks N` applies only with `--headless` (graphical sessions run
 
 Default tick count for `--headless` (non-lockstep): `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
 
-`main.cpp` treats these as exclusive modes. First match wins: harness → net/lockstep/snapshot smokes → lockstep host/join → headless → graphical. Unknown flags throw (`parse_launch_options`); there is no `--player-slot` yet. `--help` / `-h` lists a subset of modes — prefer this table and [LOCKSTEP.md](LOCKSTEP.md) as the full CLI catalog.
+`main.cpp` treats these as exclusive modes. First match wins: harness → net/lockstep/snapshot smokes → lockstep host/join → headless → graphical. Unknown flags throw (`parse_launch_options`); there is no `--player-slot` yet. `--help` / `-h` prints a short usage string that omits the local `--snapshot-*-smoke` stress flags and `--lockstep-debug` — prefer this table and [LOCKSTEP.md](LOCKSTEP.md) as the full CLI catalog.
 
 Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNESS.md). Lockstep/reconnect/snapshot details: [LOCKSTEP.md](LOCKSTEP.md).
 

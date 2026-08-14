@@ -112,6 +112,8 @@ Details: [DECISIONS.md](DECISIONS.md) (player commands), [HARNESS.md](HARNESS.md
 | `W` with Town Center selected | `SpawnWorker` (`SPAWN_WORKER_HOTKEY`) |
 | Arrows / screen edge (`CAMERA_EDGE_SCROLL_MARGIN_PX` = 24) | Pan camera |
 | Mouse wheel | Zoom Classic camera about **window center** (not cursor) |
+| F11 | Toggle grid lines (`window_display.cpp` → `renderer.toggle_grid_lines`) |
+| F12 | Toggle fullscreen (`enter_fullscreen` / `leave_fullscreen`) |
 | Escape | Close window (`application.cpp`) |
 
 ## Command apply
