@@ -334,7 +334,7 @@ In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete to
 | Reconnect rejected after a layout change | Host/client `SNAPSHOT_VERSION` mismatch — rebuild both peers from the same commit |
 | Scenarios / archetypes missing at runtime | See [BUILD.md](BUILD.md) runtime data paths (`AOA_RUNTIME_ROOT` + POST_BUILD `data/` copy) — not an `AOA_DATA_DIR` env var |
 | Desync banner, then disconnect never starts AI | `poll()` returns on `desynced_` before peer-loss handling; recovery waits on the open fix |
-| `PING` missing or stuck at 0 ms | Not connected, AI fallback, or latency probes blocked; see Network HUD and latency probes |
+| `PING` missing or stuck at 0 ms | Not connected, AI fallback, probes blocked, or every RTT sample > `LOCKSTEP_RTT_SAMPLE_MAX_MS` (100); see Network HUD and latency probes |
 | Expecting per-opponent ping lines in the HUD | Only local `PING` is drawn; `peer_latency_ms` is unused on `main` |
 
 ## Related
