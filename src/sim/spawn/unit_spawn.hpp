@@ -2,6 +2,7 @@
 
 #include "core/grid.hpp"
 #include "data/content_types.hpp"
+#include "math/fixed.hpp"
 #include "sim/components/resources.hpp"
 
 #include <entt/entt.hpp>
@@ -21,6 +22,12 @@ namespace aoa::sim::spawn {
     core::GridPos spawn_cell,
     std::uint8_t player_slot);
 
+[[nodiscard]] entt::entity spawn_player_mage(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& mage_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot);
+
 [[nodiscard]] entt::entity spawn_player_town_center(
     entt::registry& registry,
     const data::ArchetypeDefinition& town_center_archetype,
@@ -36,9 +43,9 @@ namespace aoa::sim::spawn {
     std::uint8_t player_slot,
     bool under_construction = false);
 
-[[nodiscard]] entt::entity spawn_player_lumberjack(
+[[nodiscard]] entt::entity spawn_player_lumber_camp(
     entt::registry& registry,
-    const data::ArchetypeDefinition& lumberjack_archetype,
+    const data::ArchetypeDefinition& lumber_camp_archetype,
     core::GridPos spawn_cell,
     std::uint8_t player_slot,
     bool under_construction = false);
@@ -56,6 +63,79 @@ namespace aoa::sim::spawn {
     core::GridPos spawn_cell,
     std::uint8_t player_slot,
     bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_mill(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& mill_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_mining_camp(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& mining_camp_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_barracks(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& barracks_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_mage_academy(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& mage_academy_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_tower(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& tower_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_market(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& market_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_garden(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& garden_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_reservoir(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& reservoir_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity spawn_player_farm(
+    entt::registry& registry,
+    const data::ArchetypeDefinition& farm_archetype,
+    core::GridPos spawn_cell,
+    std::uint8_t player_slot,
+    bool under_construction = false);
+
+[[nodiscard]] entt::entity find_farm_at_cell(entt::registry& registry, core::GridPos cell);
+
+[[nodiscard]] entt::entity spawn_rock_projectile(
+    entt::registry& registry,
+    math::Fixed world_x,
+    math::Fixed world_y,
+    entt::entity target,
+    std::uint8_t owner_slot,
+    int pierce_damage);
 
 [[nodiscard]] entt::entity find_mana_lake_at_anchor(entt::registry& registry, core::GridPos anchor);
 

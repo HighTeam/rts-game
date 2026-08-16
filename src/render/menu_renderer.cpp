@@ -27,6 +27,46 @@ namespace {
     return rect.y + (rect.height - HudOverlay::text_height_px(pixel_scale)) * 0.5F;
 }
 
+[[nodiscard]] bool is_multiplayer_menu_screen(const app::MainMenuScreen screen)
+{
+    return screen == app::MainMenuScreen::Multiplayer
+        || screen == app::MainMenuScreen::HostSetup
+        || screen == app::MainMenuScreen::Connect
+        || screen == app::MainMenuScreen::Lobby
+        || screen == app::MainMenuScreen::BrowseGames;
+}
+
+void draw_multiplayer_version_label(
+    HudOverlay& hud_overlay,
+    const sf::Vector2u window_size,
+    const app::MainMenuState& state)
+{
+    const bool show_on_notice = state.screen == app::MainMenuScreen::Notice
+        && is_multiplayer_menu_screen(state.notice_return_screen);
+    const bool show_on_pattern = state.screen == app::MainMenuScreen::MapPatternSelect
+        && state.pattern_return_to_lobby;
+    if (!is_multiplayer_menu_screen(state.screen) && !show_on_notice && !show_on_pattern) {
+        return;
+    }
+
+    const std::string version_line =
+        std::string(constants::GAME_VERSION_HUD_PREFIX) + std::string(constants::GAME_VERSION);
+    const float text_width =
+        HudOverlay::text_width_px(version_line.size(), constants::HUD_PIXEL_SCALE);
+    const float text_height = HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE);
+    const float x = static_cast<float>(window_size.x) - constants::HUD_MARGIN_X - text_width;
+    const float y = static_cast<float>(window_size.y) - constants::HUD_MARGIN_Y - text_height;
+    hud_overlay.draw_text(
+        window_size,
+        x,
+        y,
+        version_line,
+        constants::HUD_PIXEL_SCALE,
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G,
+        constants::HUD_TEXT_B);
+}
+
 [[nodiscard]] std::string slot_status_text(const net::LobbySlotInfo& slot)
 {
     if (!slot.occupied) {
@@ -886,6 +926,7 @@ void MenuRenderer::draw(const MenuRenderContext& context)
         draw_layout(layout, context);
     }
 
+    draw_multiplayer_version_label(hud_overlay_, window_size_, *context.state);
     draw_perf_hud(context);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     if (offscreen) {

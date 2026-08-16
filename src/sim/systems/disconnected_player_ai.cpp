@@ -237,7 +237,7 @@ entt::entity find_nearest_visible_opponent_target(
                 return false;
             }
 
-            if (is_movement_blocked(registry, cell)) {
+            if (is_cell_blocked_for_building(registry, cell)) {
                 return false;
             }
         }
@@ -637,30 +637,54 @@ std::vector<player::PlayerCommand> generate_ai_commands_for_slot(
         if (player::player_can_spawn_units(registry, player_slot)
             && !registry.any_of<components::UnderConstructionTag>(town_center)
             && static_cast<int>(militias.size()) < militia_target) {
+            entt::entity barracks = entt::null;
+            const auto barracks_view = registry.view<
+                components::BarracksTag,
+                components::PlayerOwnedTag,
+                components::Health>();
+            for (const entt::entity candidate : barracks_view) {
+                if (components::entity_player_slot(registry, candidate) != player_slot) {
+                    continue;
+                }
+
+                if (registry.any_of<components::UnderConstructionTag>(candidate)) {
+                    continue;
+                }
+
+                if (barracks_view.get<components::Health>(candidate).current.raw() <= 0) {
+                    continue;
+                }
+
+                barracks = candidate;
+                break;
+            }
+
             int spawn_militia_food_cost = 0;
             int spawn_militia_money_cost = constants::MILITIA_MONEY_COST;
-            if (registry.any_of<components::ContentPack>(world)
-                && registry.any_of<components::DefinitionRef>(town_center)) {
+            if (barracks != entt::null
+                && registry.any_of<components::ContentPack>(world)
+                && registry.any_of<components::DefinitionRef>(barracks)) {
                 const auto& content = registry.get<components::ContentPack>(world).content;
-                const auto& definition_ref = registry.get<components::DefinitionRef>(town_center);
-                const auto* town_center_archetype =
+                const auto& definition_ref = registry.get<components::DefinitionRef>(barracks);
+                const auto* barracks_archetype =
                     data::find_structure_archetype(content, definition_ref.id);
-                if (town_center_archetype != nullptr) {
-                    spawn_militia_food_cost = town_center_archetype->spawn_militia_food_cost;
-                    if (town_center_archetype->spawn_militia_money_cost > 0) {
-                        spawn_militia_money_cost = town_center_archetype->spawn_militia_money_cost;
+                if (barracks_archetype != nullptr) {
+                    spawn_militia_food_cost = barracks_archetype->spawn_militia_food_cost;
+                    if (barracks_archetype->spawn_militia_money_cost > 0) {
+                        spawn_militia_money_cost = barracks_archetype->spawn_militia_money_cost;
                     }
                 }
             }
 
-            if (spawn_militia_food_cost > 0 && stockpile.food >= spawn_militia_food_cost
+            if (barracks != entt::null && spawn_militia_food_cost > 0
+                && stockpile.food >= spawn_militia_food_cost
                 && stockpile.money >= spawn_militia_money_cost) {
                 player::PlayerCommand command = make_command(
                     player::PlayerCommandType::SpawnMilitia,
                     player_slot,
                     execute_tick,
                     next_sequence);
-                command.target_entity = town_center;
+                command.target_entity = barracks;
                 commands.push_back(std::move(command));
             }
         }

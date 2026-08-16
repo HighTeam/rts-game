@@ -21,4 +21,6 @@ namespace aoa::app {
     const std::string& filter_pattern,
     const std::string& default_name);
 
+void open_url_in_browser(const std::string& url);
+
 } // namespace aoa::app

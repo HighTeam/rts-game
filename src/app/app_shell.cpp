@@ -411,6 +411,7 @@ void go_back_one_screen(MenuContext& context)
     case MainMenuScreen::Settings:
     case MainMenuScreen::Multiplayer:
     case MainMenuScreen::Singleplayer:
+    case MainMenuScreen::About:
         context.state.screen = MainMenuScreen::Main;
         return;
     case MainMenuScreen::Notice:
@@ -461,7 +462,14 @@ void go_back_one_screen(MenuContext& context)
         }
 
         setup.slot_colors[compact] = state.slot_colors[static_cast<std::size_t>(slot)];
+        setup.slot_teams[compact] = state.slot_teams[static_cast<std::size_t>(slot)];
         setup.slot_is_ai[compact] = kind == SingleplayerSlotKind::Ai;
+        if (kind == SingleplayerSlotKind::Host && !state.player_name.empty()) {
+            setup.player_names[compact] = state.player_name;
+        }
+        else {
+            setup.player_names[compact] = "Player " + std::to_string(compact + 1);
+        }
         ++compact;
     }
 
@@ -698,6 +706,19 @@ void apply_menu_action(MenuContext& context, const MenuButtonHit& hit)
 
         cycle_singleplayer_slot_color(context.state, hit.slot);
         return;
+    case MainMenuAction::CycleSlotTeam:
+        if (context.lobby) {
+            if (context.lobby->is_host()) {
+                context.lobby->cycle_slot_team(hit.slot);
+            }
+            else if (hit.slot == context.lobby->local_slot()) {
+                context.lobby->request_local_team_cycle();
+            }
+            return;
+        }
+
+        cycle_singleplayer_slot_team(context.state, hit.slot);
+        return;
     case MainMenuAction::SingleplayerStart:
         if (context.state.game_style == SingleplayerGameStyle::Scenarios
             && context.state.selected_scenario_path.empty()) {
@@ -730,6 +751,16 @@ void apply_menu_action(MenuContext& context, const MenuButtonHit& hit)
     case MainMenuAction::OpenSettings:
         context.state.screen = MainMenuScreen::Settings;
         context.state.settings.screen = GameMenuScreen::SettingsGame;
+        return;
+    case MainMenuAction::OpenAbout:
+        context.state.screen = MainMenuScreen::About;
+        context.state.status_message.clear();
+        return;
+    case MainMenuAction::AboutOpenWebsite:
+        open_url_in_browser(std::string(constants::GAME_WEBSITE_URL));
+        return;
+    case MainMenuAction::AboutClose:
+        context.state.screen = MainMenuScreen::Main;
         return;
     case MainMenuAction::ExitGame:
         context.result.outcome = MenuOutcome::ExitApp;
@@ -1176,6 +1207,7 @@ void handle_menu_event(MenuContext& context, const sf::Event& event)
 
         lobby_to_match[slot] = compact;
         setup.slot_colors[compact] = info.color;
+        setup.slot_teams[compact] = info.team;
         setup.slot_is_ai[compact] = info.kind == net::LobbySlotKind::Ai;
         setup.player_names[compact] = info.name.empty()
             ? ("Player " + std::to_string(static_cast<int>(compact) + 1))
@@ -1194,6 +1226,9 @@ void handle_menu_event(MenuContext& context, const sf::Event& event)
     setup.pattern_payload = settings.pattern_payload.empty()
         ? state.selected_pattern_payload
         : settings.pattern_payload;
+    setup.lobby_settings = settings;
+    setup.lobby_settings.map_seed = setup.map_seed;
+    setup.lobby_settings.pattern_payload = setup.pattern_payload;
     return setup;
 }
 
@@ -1220,6 +1255,15 @@ void update_lobby(MenuContext& context)
     if (context.lobby->status() == net::LobbyStatus::ConnectFailed) {
         context.state.status_message =
             "Could not join lobby (host unreachable or match rejoin failed)";
+        context.state.screen = MainMenuScreen::Connect;
+        context.lobby.reset();
+        return;
+    }
+
+    if (context.lobby->status() == net::LobbyStatus::Rejected) {
+        context.state.status_message = context.lobby->reject_reason().empty()
+            ? std::string(constants::LOBBY_VERSION_MISMATCH_MESSAGE)
+            : context.lobby->reject_reason();
         context.state.screen = MainMenuScreen::Connect;
         context.lobby.reset();
         return;

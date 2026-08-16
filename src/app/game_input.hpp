@@ -199,6 +199,7 @@ public:
         placement_ghost_valid_ = false;
 
         attack_targeting_mode_ = false;
+        garrison_targeting_mode_ = false;
 
     }
 
@@ -287,6 +288,20 @@ private:
 
         const render::SimRenderSnapshot* render_snapshot) const;
 
+    [[nodiscard]] bool selection_has_mage(
+
+        sim::Simulation& simulation,
+
+        const render::SimRenderSnapshot* render_snapshot) const;
+
+    bool try_issue_garrison_on_building(
+
+        sim::Simulation& simulation,
+
+        const render::SimRenderSnapshot* render_snapshot,
+
+        entt::entity building);
+
     [[nodiscard]] CommandPanelBuildOptions current_build_options(
 
         sim::Simulation& simulation,
@@ -337,9 +352,15 @@ private:
 
         sf::Vector2f screen_position);
 
-    void submit_chat_message(std::string text);
+    void submit_chat_message(
+        std::string text,
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot);
 
-    bool handle_chat_event(const sf::Event& event);
+    bool handle_chat_event(
+        const sf::Event& event,
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot);
 
     bool handle_game_menu_event(
         const sf::Event& event,
@@ -383,6 +404,7 @@ private:
     std::chrono::steady_clock::time_point command_panel_press_until_{};
 
     bool attack_targeting_mode_{false};
+    bool garrison_targeting_mode_{false};
 
     bool chat_composing_{false};
 

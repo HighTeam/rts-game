@@ -22,6 +22,8 @@
 
 #include "sim/components/map_grid.hpp"
 
+#include "sim/components/match_session.hpp"
+
 #include "sim/components/player_slot.hpp"
 
 #include "sim/components/tags.hpp"
@@ -75,6 +77,152 @@ entt::entity find_world_entity(const entt::registry& registry)
 {
 
     return static_cast<std::size_t>(player_slot * fog.width * fog.height + y * fog.width + x);
+
+}
+
+
+
+void copy_fog_memory_cell(
+
+    components::FogOfWarState& fog,
+
+    const std::uint8_t destination_slot,
+
+    const std::uint8_t source_slot,
+
+    const int x,
+
+    const int y)
+
+{
+
+    const std::size_t destination = fog_cell_index(fog, x, y, destination_slot);
+
+    const std::size_t source = fog_cell_index(fog, x, y, source_slot);
+
+    if (destination >= fog.memory_tiles.size() || source >= fog.memory_tiles.size()) {
+
+        return;
+
+    }
+
+    fog.memory_tiles[destination] = fog.memory_tiles[source];
+
+    if (destination < fog.memory_forest_wood.size() && source < fog.memory_forest_wood.size()) {
+
+        fog.memory_forest_wood[destination] = fog.memory_forest_wood[source];
+
+    }
+
+    if (destination < fog.memory_bush_food.size() && source < fog.memory_bush_food.size()) {
+
+        fog.memory_bush_food[destination] = fog.memory_bush_food[source];
+
+    }
+
+    if (destination < fog.memory_mine_money.size() && source < fog.memory_mine_money.size()) {
+
+        fog.memory_mine_money[destination] = fog.memory_mine_money[source];
+
+    }
+
+}
+
+
+
+void apply_cartography_shared_vision(
+
+    entt::registry& registry,
+
+    components::FogOfWarState& fog)
+
+{
+
+    const auto session_view = registry.view<components::WorldTag, components::MatchSession>();
+
+    if (session_view.begin() == session_view.end()) {
+
+        return;
+
+    }
+
+    const auto& session = session_view.get<components::MatchSession>(*session_view.begin());
+
+    bool changed = false;
+
+    for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(aoa::constants::MAX_PLAYER_SLOTS);
+
+         ++slot) {
+
+        const bool has_spy = components::slot_has_spy(session, slot);
+
+        if (!has_spy && !components::slot_has_cartography(session, slot)) {
+
+            continue;
+
+        }
+
+        for (std::uint8_t ally = 0U; ally < static_cast<std::uint8_t>(aoa::constants::MAX_PLAYER_SLOTS);
+
+             ++ally) {
+
+            if (ally == slot) {
+
+                continue;
+
+            }
+
+            if (!has_spy && !components::slots_are_allied(session, slot, ally)) {
+
+                continue;
+
+            }
+
+            for (int y = 0; y < fog.height; ++y) {
+
+                for (int x = 0; x < fog.width; ++x) {
+
+                    const std::size_t ally_index = fog_cell_index(fog, x, y, ally);
+
+                    const std::size_t slot_index = fog_cell_index(fog, x, y, slot);
+
+                    if (ally_index >= fog.visible.size() || slot_index >= fog.visible.size()) {
+
+                        continue;
+
+                    }
+
+                    if (fog.visible[ally_index] != 0U && fog.visible[slot_index] == 0U) {
+
+                        fog.visible[slot_index] = 1U;
+
+                        changed = true;
+
+                    }
+
+                    if (fog.explored[ally_index] != 0U && fog.explored[slot_index] == 0U) {
+
+                        fog.explored[slot_index] = 1U;
+
+                        copy_fog_memory_cell(fog, slot, ally, x, y);
+
+                        changed = true;
+
+                    }
+
+                }
+
+            }
+
+        }
+
+    }
+
+    if (changed) {
+
+        fog.hash_valid = false;
+
+    }
 
 }
 
@@ -506,6 +654,14 @@ std::vector<VisionSource> collect_vision_sources_for_slot(
 
     const auto& content_pack = registry.get<components::ContentPack>(world);
 
+    std::uint8_t vision_mask = components::player_slot_bit(player_slot);
+    const auto session_view = registry.view<components::WorldTag, components::MatchSession>();
+    if (session_view.begin() != session_view.end()) {
+        vision_mask = components::cartography_vision_slots_mask(
+            session_view.get<components::MatchSession>(*session_view.begin()),
+            player_slot);
+    }
+
     const auto vision_view = registry.view<
         components::PlayerOwnedTag,
         components::GridPosition,
@@ -513,11 +669,17 @@ std::vector<VisionSource> collect_vision_sources_for_slot(
         components::DefinitionRef>();
 
     for (const entt::entity entity : vision_view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
+        if (!components::player_slot_bit_is_set(
+                vision_mask,
+                components::entity_player_slot(registry, entity))) {
             continue;
         }
 
         if (vision_view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
             continue;
         }
 
@@ -728,6 +890,8 @@ void run_visibility_system(entt::registry& registry)
 
     }
 
+    apply_cartography_shared_vision(registry, fog);
+
 }
 
 
@@ -796,6 +960,8 @@ void rebuild_fog_visibility(entt::registry& registry)
             false);
 
     }
+
+    apply_cartography_shared_vision(registry, fog);
 
 }
 

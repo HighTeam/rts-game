@@ -47,10 +47,29 @@ struct RenderEntityPose {
     bool is_enemy{false};
     bool is_worker{false};
     bool is_militia{false};
+    bool is_mage{false};
+    bool is_projectile{false};
     bool is_town_center{false};
     bool is_house{false};
-    bool is_lumberjack{false};
+    bool is_lumber_camp{false};
+    bool is_mill{false};
+    bool is_mining_camp{false};
+    bool is_barracks{false};
+    bool is_mage_academy{false};
+    bool is_tower{false};
+    bool is_market{false};
     bool is_extractor{false};
+    bool is_garden{false};
+    bool is_reservoir{false};
+    bool is_farm{false};
+    int farm_food_remaining{0};
+    int farm_food_max{0};
+    bool has_process{false};
+    int process_percent{0};
+    bool process_is_research{false};
+    std::uint8_t house_variant{0U};
+    int garrison_count{0};
+    int garrison_capacity{0};
     bool is_mana_lake{false};
     bool lake_has_extractor{false};
     int mana_gen_ticks_remaining{0};
@@ -97,6 +116,8 @@ struct SimRenderSnapshot {
     std::vector<RenderEntityPose> units{};
     std::array<RenderHudPlayerStats, 8> hud_by_player{};
     std::array<std::uint8_t, 8> player_color_indices{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
+    std::array<std::uint8_t, 8> player_ages{};
+    std::uint8_t vision_source_slots_mask{0U};
 };
 
 class BuildingSightMemory;
@@ -161,6 +182,10 @@ class GameRenderer;
 [[nodiscard]] bool snapshot_can_place_extractor_at(
     const SimRenderSnapshot& snapshot,
     core::GridPos anchor_cell);
+
+[[nodiscard]] std::optional<core::GridPos> snapshot_extractor_snap_anchor(
+    const SimRenderSnapshot& snapshot,
+    core::GridPos hover_cell);
 
 [[nodiscard]] bool snapshot_cell_covered_by_mana_lake(
     const SimRenderSnapshot& snapshot,

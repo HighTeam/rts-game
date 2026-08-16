@@ -175,6 +175,89 @@ void push_bottom_buttons(MenuLayout& layout, std::vector<MenuButton> buttons)
     }
 }
 
+void push_left_right_buttons(MenuLayout& layout, MenuButton left, MenuButton right)
+{
+    const float row_y = layout.panel.y + layout.panel.height - PADDING - BUTTON_HEIGHT;
+    left.rect = MenuRect{
+        layout.panel.x + PADDING,
+        row_y,
+        WIDE_BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+    };
+    right.rect = MenuRect{
+        layout.panel.x + layout.panel.width - PADDING - WIDE_BUTTON_WIDTH,
+        row_y,
+        WIDE_BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+    };
+    layout.buttons.push_back(left);
+    layout.buttons.push_back(right);
+}
+
+void push_wrapped_label(MenuLayout& layout, const std::string& text, float& cursor_y)
+{
+    const float inner_width = layout.panel.width - PADDING * 2.0F;
+    int max_chars = 1;
+    while (max_chars < constants::ABOUT_DESCRIPTION_WRAP_MAX_CHARS
+        && render::HudOverlay::text_width_px(
+               static_cast<std::size_t>(max_chars + 1),
+               constants::HUD_PIXEL_SCALE)
+            <= inner_width) {
+        ++max_chars;
+    }
+
+    std::string line{};
+    std::string word{};
+    const auto flush_line = [&]() {
+        if (line.empty()) {
+            return;
+        }
+
+        layout.labels.push_back(MenuLabel{
+            line,
+            layout.panel.x + PADDING,
+            cursor_y,
+            constants::HUD_PIXEL_SCALE,
+        });
+        cursor_y += label_height() + static_cast<float>(constants::ABOUT_DESCRIPTION_LINE_GAP_PX);
+        line.clear();
+    };
+
+    for (const char character : text) {
+        if (character == ' ') {
+            if (word.empty()) {
+                continue;
+            }
+
+            const std::string candidate = line.empty() ? word : line + " " + word;
+            if (static_cast<int>(candidate.size()) > max_chars && !line.empty()) {
+                flush_line();
+                line = word;
+            }
+            else {
+                line = candidate;
+            }
+            word.clear();
+            continue;
+        }
+
+        word.push_back(character);
+    }
+
+    if (!word.empty()) {
+        const std::string candidate = line.empty() ? word : line + " " + word;
+        if (static_cast<int>(candidate.size()) > max_chars && !line.empty()) {
+            flush_line();
+            line = word;
+        }
+        else {
+            line = candidate;
+        }
+    }
+
+    flush_line();
+}
+
 [[nodiscard]] std::string fog_label(const bool enabled)
 {
     return enabled ? "Fog of War: Enabled" : "Fog of War: Disabled";
@@ -231,6 +314,7 @@ void reset_singleplayer_slots(MainMenuState& state)
     state.required_player_count = 0U;
     for (int slot = 0; slot < constants::MAX_PLAYER_SLOTS; ++slot) {
         state.slot_colors[static_cast<std::size_t>(slot)] = static_cast<std::uint8_t>(slot);
+        state.slot_teams[static_cast<std::size_t>(slot)] = constants::LOBBY_TEAM_NONE;
         if (slot == 0) {
             state.slot_kinds[static_cast<std::size_t>(slot)] = SingleplayerSlotKind::Host;
             continue;
@@ -354,6 +438,19 @@ void cycle_singleplayer_slot_color(MainMenuState& state, const std::uint8_t slot
             return;
         }
     }
+}
+
+void cycle_singleplayer_slot_team(MainMenuState& state, const std::uint8_t slot)
+{
+    if (slot >= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
+        return;
+    }
+
+    if (state.slot_kinds[slot] == SingleplayerSlotKind::Disabled) {
+        return;
+    }
+
+    state.slot_teams[slot] = sim::components::next_lobby_team(state.slot_teams[slot]);
 }
 
 void cycle_fog_mode(MainMenuState& state)
@@ -511,7 +608,7 @@ namespace {
 {
     const float width = static_cast<float>(constants::MAIN_MENU_PANEL_WIDTH_PX);
     const float height = PADDING * 2.0F + title_height() + SPLIT_BLOCK * 2.0F
-        + BUTTON_HEIGHT * 4.0F + BUTTON_GAP * 2.0F;
+        + BUTTON_HEIGHT * 5.0F + BUTTON_GAP * 3.0F;
     const float margin = static_cast<float>(constants::MAIN_MENU_PANEL_MARGIN_PX);
 
     MenuLayout layout{};
@@ -528,6 +625,7 @@ namespace {
     push_full_width_button(layout, MainMenuAction::Singleplayer, "Singleplayer", cursor_y);
     push_full_width_button(layout, MainMenuAction::OpenMultiplayer, "Multiplayer", cursor_y);
     push_full_width_button(layout, MainMenuAction::OpenSettings, "Settings", cursor_y);
+    push_full_width_button(layout, MainMenuAction::OpenAbout, "About", cursor_y);
     cursor_y -= BUTTON_GAP;
     push_split_line(layout, cursor_y);
     push_full_width_button(layout, MainMenuAction::ExitGame, "Exit", cursor_y);
@@ -730,6 +828,7 @@ namespace {
 
     const float color_width = static_cast<float>(constants::SINGLEPLAYER_COLOR_BUTTON_WIDTH_PX);
     const float kind_width = static_cast<float>(constants::SINGLEPLAYER_KIND_BUTTON_WIDTH_PX);
+    const float team_width = static_cast<float>(constants::SINGLEPLAYER_TEAM_BUTTON_WIDTH_PX);
     const float row_left = layout.panel.x + PADDING;
     const float row_width = layout.panel.width - PADDING * 2.0F;
     for (int slot = 0; slot < constants::MAX_PLAYER_SLOTS; ++slot) {
@@ -746,11 +845,14 @@ namespace {
         });
 
         const bool occupied = kind != SingleplayerSlotKind::Disabled;
+        const float kind_x = row_left + row_width - kind_width;
+        const float team_x = kind_x - BUTTON_GAP - team_width;
+        const float color_x = team_x - BUTTON_GAP - color_width;
         MenuButton color_button{};
         color_button.action = MainMenuAction::CycleSlotColor;
         color_button.label = color_name_for_index(state.slot_colors[static_cast<std::size_t>(slot)]);
         color_button.rect = MenuRect{
-            row_left + row_width - color_width - BUTTON_GAP - kind_width,
+            color_x,
             row.y,
             color_width,
             row.height,
@@ -759,6 +861,20 @@ namespace {
         color_button.slot = static_cast<std::uint8_t>(slot);
         color_button.extra = state.slot_colors[static_cast<std::size_t>(slot)];
         layout.buttons.push_back(color_button);
+
+        MenuButton team_button{};
+        team_button.action = MainMenuAction::CycleSlotTeam;
+        team_button.label = std::string(
+            sim::components::lobby_team_label(state.slot_teams[static_cast<std::size_t>(slot)]));
+        team_button.rect = MenuRect{
+            team_x,
+            row.y,
+            team_width,
+            row.height,
+        };
+        team_button.disabled = !occupied;
+        team_button.slot = static_cast<std::uint8_t>(slot);
+        layout.buttons.push_back(team_button);
 
         MenuButton kind_button{};
         kind_button.action = MainMenuAction::CycleSlotKind;
@@ -923,6 +1039,7 @@ namespace {
 
     const float color_width = static_cast<float>(constants::SINGLEPLAYER_COLOR_BUTTON_WIDTH_PX);
     const float kind_width = static_cast<float>(constants::SINGLEPLAYER_KIND_BUTTON_WIDTH_PX);
+    const float team_width = static_cast<float>(constants::SINGLEPLAYER_TEAM_BUTTON_WIDTH_PX);
     const float row_left = layout.panel.x + PADDING;
     const float row_width = layout.panel.width - PADDING * 2.0F;
     const bool settings_locked = !is_host;
@@ -952,7 +1069,8 @@ namespace {
         });
 
         const float kind_x = row_left + row_width - kind_width;
-        const float color_x = kind_x - BUTTON_GAP - color_width;
+        const float team_x = kind_x - BUTTON_GAP - team_width;
+        const float color_x = team_x - BUTTON_GAP - color_width;
         const float ready_width = static_cast<float>(constants::MAIN_MENU_LOBBY_READY_WIDTH_PX);
         const float ready_x = color_x - BUTTON_GAP - ready_width;
         const float ping_x =
@@ -999,6 +1117,19 @@ namespace {
         color_button.slot = static_cast<std::uint8_t>(slot);
         color_button.extra = info.color;
         layout.buttons.push_back(color_button);
+
+        MenuButton team_button{};
+        team_button.action = MainMenuAction::CycleSlotTeam;
+        team_button.label = std::string(sim::components::lobby_team_label(info.team));
+        team_button.rect = MenuRect{
+            team_x,
+            row.y,
+            team_width,
+            row.height,
+        };
+        team_button.disabled = !color_enabled;
+        team_button.slot = static_cast<std::uint8_t>(slot);
+        layout.buttons.push_back(team_button);
 
         MenuButton kind_button{};
         kind_button.action = MainMenuAction::CycleSlotKind;
@@ -1212,6 +1343,46 @@ namespace {
     return layout;
 }
 
+[[nodiscard]] MenuLayout build_about_layout(const sf::Vector2u window_size)
+{
+    const float width = static_cast<float>(constants::MAIN_MENU_DIALOG_WIDTH_PX);
+    const float height = PADDING * 2.0F + title_height() + SPLIT_BLOCK * 2.0F
+        + label_height() * 8.0F
+        + static_cast<float>(constants::ABOUT_DESCRIPTION_LINE_GAP_PX) * 6.0F
+        + LABEL_GAP + BUTTON_HEIGHT;
+    MenuLayout layout{};
+    layout.panel = centered_panel(window_size, width, height);
+
+    float cursor_y = layout.panel.y + PADDING;
+    push_title(layout, "About", cursor_y);
+    push_split_line(layout, cursor_y);
+    layout.labels.push_back(MenuLabel{
+        std::string(constants::WINDOW_TITLE),
+        layout.panel.x + PADDING,
+        cursor_y,
+        constants::HUD_PIXEL_SCALE,
+    });
+    cursor_y += label_height() + LABEL_GAP * 0.5F;
+    layout.labels.push_back(MenuLabel{
+        "Version: " + std::string(constants::GAME_VERSION),
+        layout.panel.x + PADDING,
+        cursor_y,
+        constants::HUD_PIXEL_SCALE,
+    });
+    cursor_y += label_height() + LABEL_GAP * 0.5F;
+    push_wrapped_label(layout, std::string(constants::GAME_DESCRIPTION), cursor_y);
+    push_split_line(layout, cursor_y);
+    push_left_right_buttons(
+        layout,
+        MenuButton{
+            MainMenuAction::AboutOpenWebsite,
+            std::string(constants::ABOUT_WEBSITE_BUTTON_LABEL),
+            MenuRect{},
+            false},
+        MenuButton{MainMenuAction::AboutClose, "Close", MenuRect{}, false});
+    return layout;
+}
+
 } // namespace
 
 MenuLayout build_menu_layout(
@@ -1237,6 +1408,8 @@ MenuLayout build_menu_layout(
         return build_pattern_picker_layout(window_size, state);
     case MainMenuScreen::Notice:
         return build_notice_layout(window_size, state);
+    case MainMenuScreen::About:
+        return build_about_layout(window_size);
     case MainMenuScreen::BrowseGames:
         return build_browse_layout(window_size, state);
     case MainMenuScreen::Settings:

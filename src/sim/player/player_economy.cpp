@@ -26,6 +26,50 @@ int count_player_units(const entt::registry& registry, const std::uint8_t player
     return count;
 }
 
+int count_enemy_units(const entt::registry& registry, const std::uint8_t player_slot)
+{
+    int count = 0;
+    const auto view = registry.view<components::UnitTag, components::PlayerOwnedTag, components::Health>();
+    for (const entt::entity entity : view) {
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        if (!components::is_opponent_entity(registry, entity, player_slot)) {
+            continue;
+        }
+
+        ++count;
+    }
+
+    return count;
+}
+
+bool player_has_completed_mill(const entt::registry& registry, const std::uint8_t player_slot)
+{
+    const auto view = registry.view<
+        components::MillTag,
+        components::PlayerOwnedTag,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 int count_completed_town_centers(const entt::registry& registry, const std::uint8_t player_slot)
 {
     int count = 0;
@@ -104,11 +148,39 @@ int count_completed_extractors(const entt::registry& registry, const std::uint8_
     return count;
 }
 
+int count_completed_reservoirs(const entt::registry& registry, const std::uint8_t player_slot)
+{
+    int count = 0;
+    const auto view = registry.view<
+        components::ReservoirTag,
+        components::PlayerOwnedTag,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        ++count;
+    }
+
+    return count;
+}
+
 int player_mana_cap_max(const entt::registry& registry, const std::uint8_t player_slot)
 {
     const int from_extractors =
         count_completed_extractors(registry, player_slot) * constants::MANA_CAP_PER_EXTRACTOR;
-    return std::min(from_extractors, constants::PLAYER_MANA_MAX);
+    const int from_reservoirs =
+        count_completed_reservoirs(registry, player_slot) * constants::MANA_CAP_PER_RESERVOIR;
+    return std::min(from_extractors + from_reservoirs, constants::PLAYER_MANA_MAX);
 }
 
 int player_civil_cap_max(const entt::registry& registry, const std::uint8_t player_slot)
@@ -329,6 +401,57 @@ bool try_deduct_player_money(
     return remaining <= 0;
 }
 
+bool can_afford_player_mana(
+    const entt::registry& registry,
+    const std::uint8_t player_slot,
+    const int amount)
+{
+    if (amount <= 0) {
+        return true;
+    }
+
+    return player_mana_total(registry, player_slot) >= amount;
+}
+
+bool try_deduct_player_mana(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const int amount)
+{
+    if (amount <= 0) {
+        return true;
+    }
+
+    if (!can_afford_player_mana(registry, player_slot, amount)) {
+        return false;
+    }
+
+    int remaining = amount;
+    const auto view = registry.view<
+        components::TownCenterTag,
+        components::PlayerOwnedTag,
+        components::Stockpile>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        auto& stockpile = view.get<components::Stockpile>(entity);
+        const int take = std::min(stockpile.mana, remaining);
+        stockpile.mana -= take;
+        remaining -= take;
+        if (remaining <= 0) {
+            return true;
+        }
+    }
+
+    return remaining <= 0;
+}
+
 void add_player_wood(
     entt::registry& registry,
     const std::uint8_t player_slot,
@@ -352,6 +475,33 @@ void add_player_wood(
         }
 
         view.get<components::Stockpile>(entity).wood += amount;
+        return;
+    }
+}
+
+void add_player_food(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const int amount)
+{
+    if (amount <= 0) {
+        return;
+    }
+
+    const auto view = registry.view<
+        components::TownCenterTag,
+        components::PlayerOwnedTag,
+        components::Stockpile>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        view.get<components::Stockpile>(entity).food += amount;
         return;
     }
 }

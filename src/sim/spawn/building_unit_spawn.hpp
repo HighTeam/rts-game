@@ -7,6 +7,7 @@
 #include <entt/entt.hpp>
 
 #include <optional>
+#include <vector>
 
 namespace aoa::sim::spawn {
 
@@ -16,6 +17,7 @@ namespace aoa::sim::spawn {
     const components::MapGrid& map,
     entt::registry& registry,
     const components::GridPosition& building_anchor,
-    const components::BuildingFootprint& building_footprint);
+    const components::BuildingFootprint& building_footprint,
+    const std::vector<core::GridPos>& reserved_cells = {});
 
 } // namespace aoa::sim::spawn

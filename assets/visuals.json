@@ -27,20 +27,44 @@
     "gold_mine_3": "textures/Ore pack/Ore/Ore12.png"
   },
   "buildings": {
-    "town_center_friendly": "textures/Isometric House Pack by Captainskeleto/House/15.png",
-    "town_center_enemy": "textures/Isometric House Pack by Captainskeleto/House/15.png",
-    "house_friendly": "textures/Isometric House Pack by Captainskeleto/House/00.png",
-    "house_enemy": "textures/Isometric House Pack by Captainskeleto/House/00.png",
-    "lumberjack_friendly": "textures/Isometric House Pack by Captainskeleto/House/43.png",
-    "lumberjack_enemy": "textures/Isometric House Pack by Captainskeleto/House/43.png",
-    "extractor_friendly": "textures/Evergrow/Town_Assets_Separated/64x80/Town_Assets_WaterWell_64x80.png",
-    "extractor_enemy": "textures/Evergrow/Town_Assets_Separated/64x80/Town_Assets_WaterWell_64x80.png"
+    "town_center": "textures/HighTeam/generated/earth/earth-tc1.png",
+    "town_center_mask": "textures/HighTeam/generated/earth/earth-tc1-mask.png",
+    "house_a": "textures/HighTeam/generated/earth/earth-house1a.png",
+    "house_a_mask": "textures/HighTeam/generated/earth/earth-house1a-mask.png",
+    "house_b": "textures/HighTeam/generated/earth/earth-house1b.png",
+    "house_b_mask": "textures/HighTeam/generated/earth/earth-house1b-mask.png",
+    "house_c": "textures/HighTeam/generated/earth/earth-house1c.png",
+    "house_c_mask": "textures/HighTeam/generated/earth/earth-house1c-mask.png",
+    "lumber_camp": "textures/HighTeam/generated/earth/earth-lumbercamp1.png",
+    "lumber_camp_mask": "textures/HighTeam/generated/earth/earth-lumbercamp1-mask.png",
+    "mill": "textures/HighTeam/generated/earth/earth-windmill1.png",
+    "mill_mask": "textures/HighTeam/generated/earth/earth-windmill1-mask.png",
+    "mining_camp": "textures/HighTeam/generated/earth/earth-miningcamp1.png",
+    "mining_camp_mask": "textures/HighTeam/generated/earth/earth-miningcamp1-mask.png",
+    "barracks": "textures/HighTeam/generated/earth/earth-barracks1.png",
+    "barracks_mask": "textures/HighTeam/generated/earth/earth-barracks1-mask.png",
+    "mage_academy": "textures/HighTeam/generated/earth/earth-mageacademy1.png",
+    "mage_academy_mask": "textures/HighTeam/generated/earth/earth-mageacademy1-mask.png",
+    "tower": "textures/HighTeam/generated/earth/earth-tower1.png",
+    "tower_mask": "textures/HighTeam/generated/earth/earth-tower1-mask.png",
+    "market": "textures/HighTeam/generated/earth/earth-market1.png",
+    "market_mask": "textures/HighTeam/generated/earth/earth-market1-mask.png",
+    "extractor": "textures/HighTeam/generated/earth/earth-extractor1.png",
+    "extractor_mask": "textures/HighTeam/generated/earth/earth-extractor1-mask.png",
+    "garden": "textures/HighTeam/generated/earth/earth-garden1.png",
+    "garden_mask": "textures/HighTeam/generated/earth/earth-garden1-mask.png",
+    "reservoir": "textures/HighTeam/generated/earth/earth-reservoir1.png",
+    "reservoir_mask": "textures/HighTeam/generated/earth/earth-reservoir1-mask.png",
+    "farm": "textures/HighTeam/generated/earth/earth-farm1.png",
+    "farm_depleted": "textures/HighTeam/generated/earth/earth-farm-depleted1.png",
+    "farm_depleted_mask": "textures/HighTeam/generated/earth/earth-farm-depleted1-mask.png"
   },
   "nature": {
     "mana_lake": "textures/HighTeam/Magic Lakes/magic_lake1.png"
   },
   "hud": {
-    "icon_atlas": "textures/Shikashi's Fantasy Icons Pack/2 - Transparent & Drop Shadow.png"
+    "icon_atlas": "textures/Shikashi's Fantasy Icons Pack/2 - Transparent & Drop Shadow.png",
+    "earth_build_icons": "textures/HighTeam/generated/earth/earth-hud-icons1.png"
   },
   "menu_slideshow": [
     "textures/Tree bg pack/Tree Background2.png",

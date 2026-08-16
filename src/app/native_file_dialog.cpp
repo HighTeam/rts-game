@@ -8,6 +8,7 @@
 #endif
 #include <Windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #endif
 
 #include <algorithm>
@@ -187,6 +188,20 @@ std::optional<std::filesystem::path> pick_save_file(
     (void)filter_pattern;
     (void)default_name;
     return std::nullopt;
+#endif
+}
+
+void open_url_in_browser(const std::string& url)
+{
+#ifdef _WIN32
+    const std::wstring wide_url = utf8_to_wide(url);
+    if (wide_url.empty()) {
+        return;
+    }
+
+    (void)ShellExecuteW(nullptr, L"open", wide_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)url;
 #endif
 }
 

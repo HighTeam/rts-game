@@ -13,8 +13,10 @@
 #include "sim/components/map_grid.hpp"
 #include "sim/components/building_footprint.hpp"
 #include "sim/systems/visibility_system.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/components/combat.hpp"
 #include "sim/components/world_position.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/spawn/unit_spawn.hpp"
@@ -35,6 +37,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace aoa::render {
 
@@ -95,6 +98,22 @@ void main()
     output_color = sampled * fragment_tint;
 }
 )";
+
+std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> g_draw_player_color_indices{
+    0U,
+    1U,
+    2U,
+    3U,
+    4U,
+    5U,
+    6U,
+    7U};
+
+void bind_draw_player_colors(
+    const std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS>& color_indices)
+{
+    g_draw_player_color_indices = color_indices;
+}
 
 unsigned int compile_shader(const unsigned int type, const char* source)
 {
@@ -341,77 +360,215 @@ struct FogTileCornerBrightness {
     return constants::MANA_LAKE_ANIMATION_FRAME_COUNT - 1;
 }
 
-[[nodiscard]] SceneTextureKind textured_building_kind(
+struct BuildingSpriteVisual {
+    SceneTextureKind color{SceneTextureKind::TownCenter};
+    SceneTextureKind mask{SceneTextureKind::TownCenterMask};
+    float offset_x{constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X};
+    float offset_y{constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y};
+    float width_scale{constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    bool has_team_mask{true};
+};
+
+[[nodiscard]] BuildingSpriteVisual building_sprite_visual(
     const bool is_house,
-    const bool is_lumberjack,
+    const bool is_lumber_camp,
+    const bool is_mill,
+    const bool is_mining_camp,
+    const bool is_barracks,
+    const bool is_mage_academy,
+    const bool is_tower,
+    const bool is_market,
     const bool is_extractor,
-    const bool is_enemy)
+    const std::uint8_t house_variant,
+    const bool is_garden = false,
+    const bool is_reservoir = false,
+    const bool is_farm = false,
+    const bool farm_depleted = false)
 {
-    if (is_extractor) {
-        return is_enemy ? SceneTextureKind::ExtractorEnemy : SceneTextureKind::ExtractorFriendly;
+    if (is_farm) {
+        if (farm_depleted) {
+            return {
+                SceneTextureKind::FarmDepleted,
+                SceneTextureKind::FarmDepletedMask,
+                constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+                constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+                constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+        }
+
+        return {
+            SceneTextureKind::Farm,
+            SceneTextureKind::Farm,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE,
+            false};
     }
 
-    if (is_lumberjack) {
-        return is_enemy ? SceneTextureKind::LumberjackEnemy : SceneTextureKind::LumberjackFriendly;
+    if (is_garden) {
+        return {
+            SceneTextureKind::Garden,
+            SceneTextureKind::GardenMask,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_reservoir) {
+        return {
+            SceneTextureKind::Reservoir,
+            SceneTextureKind::ReservoirMask,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_X,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_Y,
+            constants::RENDER_EXTRACTOR_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_extractor) {
+        return {
+            SceneTextureKind::Extractor,
+            SceneTextureKind::ExtractorMask,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_X,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_Y,
+            constants::RENDER_EXTRACTOR_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_tower) {
+        return {
+            SceneTextureKind::Tower,
+            SceneTextureKind::TowerMask,
+            constants::RENDER_TOWER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWER_SPRITE_WIDTH_SCALE};
     }
 
     if (is_house) {
-        return is_enemy ? SceneTextureKind::HouseEnemy : SceneTextureKind::HouseFriendly;
+        const SceneTextureKind color = house_variant == 1U
+            ? SceneTextureKind::HouseB
+            : (house_variant == 2U ? SceneTextureKind::HouseC : SceneTextureKind::HouseA);
+        const SceneTextureKind mask = house_variant == 1U
+            ? SceneTextureKind::HouseBMask
+            : (house_variant == 2U ? SceneTextureKind::HouseCMask : SceneTextureKind::HouseAMask);
+        return {
+            color,
+            mask,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    return is_enemy ? SceneTextureKind::TownCenterEnemy : SceneTextureKind::TownCenterFriendly;
-}
-
-[[nodiscard]] float textured_building_offset_x(
-    const bool is_house,
-    const bool is_lumberjack,
-    const bool is_extractor)
-{
-    if (is_extractor) {
-        return constants::RENDER_EXTRACTOR_SPRITE_OFFSET_X;
+    if (is_lumber_camp) {
+        return {
+            SceneTextureKind::LumberCamp,
+            SceneTextureKind::LumberCampMask,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_X,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    if (is_lumberjack) {
-        return constants::RENDER_LUMBERJACK_SPRITE_OFFSET_X;
+    if (is_mill) {
+        return {
+            SceneTextureKind::Mill,
+            SceneTextureKind::MillMask,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_X,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    if (is_house) {
-        return constants::RENDER_HOUSE_SPRITE_OFFSET_X;
+    if (is_mining_camp) {
+        return {
+            SceneTextureKind::MiningCamp,
+            SceneTextureKind::MiningCampMask,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_X,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    return constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X;
-}
-
-[[nodiscard]] float textured_building_offset_y(
-    const bool is_house,
-    const bool is_lumberjack,
-    const bool is_extractor)
-{
-    if (is_extractor) {
-        return constants::RENDER_EXTRACTOR_SPRITE_OFFSET_Y;
+    if (is_barracks) {
+        return {
+            SceneTextureKind::Barracks,
+            SceneTextureKind::BarracksMask,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    if (is_lumberjack) {
-        return constants::RENDER_LUMBERJACK_SPRITE_OFFSET_Y;
+    if (is_mage_academy) {
+        return {
+            SceneTextureKind::MageAcademy,
+            SceneTextureKind::MageAcademyMask,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    if (is_house) {
-        return constants::RENDER_HOUSE_SPRITE_OFFSET_Y;
+    if (is_market) {
+        return {
+            SceneTextureKind::Market,
+            SceneTextureKind::MarketMask,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
     }
 
-    return constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y;
+    return {
+        SceneTextureKind::TownCenter,
+        SceneTextureKind::TownCenterMask,
+        constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+        constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+        constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
 }
 
 [[nodiscard]] bool is_textured_building_kind(const SceneTextureKind kind)
 {
-    return kind == SceneTextureKind::TownCenterFriendly
-        || kind == SceneTextureKind::TownCenterEnemy
-        || kind == SceneTextureKind::HouseFriendly
-        || kind == SceneTextureKind::HouseEnemy
-        || kind == SceneTextureKind::LumberjackFriendly
-        || kind == SceneTextureKind::LumberjackEnemy
-        || kind == SceneTextureKind::ExtractorFriendly
-        || kind == SceneTextureKind::ExtractorEnemy;
+    return kind == SceneTextureKind::TownCenter
+        || kind == SceneTextureKind::TownCenterMask
+        || kind == SceneTextureKind::HouseA
+        || kind == SceneTextureKind::HouseAMask
+        || kind == SceneTextureKind::HouseB
+        || kind == SceneTextureKind::HouseBMask
+        || kind == SceneTextureKind::HouseC
+        || kind == SceneTextureKind::HouseCMask
+        || kind == SceneTextureKind::LumberCamp
+        || kind == SceneTextureKind::LumberCampMask
+        || kind == SceneTextureKind::Mill
+        || kind == SceneTextureKind::MillMask
+        || kind == SceneTextureKind::MiningCamp
+        || kind == SceneTextureKind::MiningCampMask
+        || kind == SceneTextureKind::Barracks
+        || kind == SceneTextureKind::BarracksMask
+        || kind == SceneTextureKind::MageAcademy
+        || kind == SceneTextureKind::MageAcademyMask
+        || kind == SceneTextureKind::Tower
+        || kind == SceneTextureKind::TowerMask
+        || kind == SceneTextureKind::Market
+        || kind == SceneTextureKind::MarketMask
+        || kind == SceneTextureKind::Extractor
+        || kind == SceneTextureKind::ExtractorMask
+        || kind == SceneTextureKind::Garden
+        || kind == SceneTextureKind::GardenMask
+        || kind == SceneTextureKind::Reservoir
+        || kind == SceneTextureKind::ReservoirMask
+        || kind == SceneTextureKind::Farm
+        || kind == SceneTextureKind::FarmDepleted
+        || kind == SceneTextureKind::FarmDepletedMask;
+}
+
+[[nodiscard]] BuildingSpriteVisual placement_ghost_visual(const app::CommandPanelMode mode)
+{
+    return building_sprite_visual(
+        mode == app::CommandPanelMode::PlaceHouse,
+        mode == app::CommandPanelMode::PlaceLumberCamp,
+        mode == app::CommandPanelMode::PlaceMill,
+        mode == app::CommandPanelMode::PlaceMiningCamp,
+        mode == app::CommandPanelMode::PlaceBarracks,
+        mode == app::CommandPanelMode::PlaceMageAcademy,
+        mode == app::CommandPanelMode::PlaceTower,
+        mode == app::CommandPanelMode::PlaceMarket,
+        mode == app::CommandPanelMode::PlaceExtractor,
+        0U,
+        mode == app::CommandPanelMode::PlaceGarden,
+        mode == app::CommandPanelMode::PlaceReservoir,
+        mode == app::CommandPanelMode::PlaceFarm,
+        false);
 }
 
 [[nodiscard]] int placement_ghost_footprint_tiles(const app::CommandPanelMode mode)
@@ -420,12 +577,48 @@ struct FogTileCornerBrightness {
         return constants::HOUSE_FOOTPRINT_TILES;
     }
 
-    if (mode == app::CommandPanelMode::PlaceLumberjack) {
-        return constants::LUMBERJACK_FOOTPRINT_TILES;
+    if (mode == app::CommandPanelMode::PlaceLumberCamp) {
+        return constants::LUMBER_CAMP_FOOTPRINT_TILES;
     }
 
     if (mode == app::CommandPanelMode::PlaceExtractor) {
         return constants::EXTRACTOR_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMill) {
+        return constants::MILL_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMiningCamp) {
+        return constants::MINING_CAMP_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceBarracks) {
+        return constants::BARRACKS_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMageAcademy) {
+        return constants::MAGE_ACADEMY_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceTower) {
+        return constants::TOWER_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMarket) {
+        return constants::MARKET_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceGarden) {
+        return constants::GARDEN_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceReservoir) {
+        return constants::RESERVOIR_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceFarm) {
+        return constants::FARM_FOOTPRINT_TILES;
     }
 
     return constants::TOWN_CENTER_FOOTPRINT_TILES;
@@ -457,10 +650,16 @@ struct FogTileCornerBrightness {
     const std::uint8_t player_slot)
 {
     std::vector<sim::systems::VisionSource> sources{};
+    std::uint8_t vision_mask = snapshot.vision_source_slots_mask;
+    if (vision_mask == 0U) {
+        vision_mask = sim::components::player_slot_bit(player_slot);
+    }
 
     const auto collect_from = [&](const std::vector<RenderEntityPose>& poses) {
         for (const RenderEntityPose& pose : poses) {
-            if (pose.player_slot != player_slot || pose.health_current <= 0) {
+            if (pose.health_current <= 0 || pose.shrouded || pose.is_nature || pose.is_mana_lake
+                || pose.is_projectile
+                || !sim::components::player_slot_bit_is_set(vision_mask, pose.player_slot)) {
                 continue;
             }
 
@@ -691,29 +890,110 @@ struct FogTileCornerBrightness {
     return false;
 }
 
-[[nodiscard]] float town_center_sprite_width_scale(
-    const sim::components::BuildingFootprint& footprint)
-{
-    return static_cast<float>(std::max(footprint.width, footprint.height))
-        * constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE;
-}
-
-[[nodiscard]] float extractor_sprite_width_scale(
-    const sim::components::BuildingFootprint& footprint)
-{
-    return static_cast<float>(std::max(footprint.width, footprint.height))
-        * constants::RENDER_EXTRACTOR_SPRITE_WIDTH_SCALE;
-}
-
 [[nodiscard]] float textured_building_width_scale(
-    const bool is_extractor,
     const sim::components::BuildingFootprint& footprint)
 {
-    if (is_extractor) {
-        return extractor_sprite_width_scale(footprint);
+    const int span = std::max(1, std::max(footprint.width, footprint.height));
+    return static_cast<float>(span) * constants::RENDER_BUILDING_SPRITE_FOOTPRINT_SCALE;
+}
+
+[[nodiscard]] std::pair<float, float> textured_building_sprite_offset(
+    const sim::components::BuildingFootprint& footprint)
+{
+    const int width = std::max(1, footprint.width);
+    const int height = std::max(1, footprint.height);
+    return {
+        static_cast<float>(width - width / 2) - 0.5F,
+        static_cast<float>(height - height / 2) - 0.5F,
+    };
+}
+
+[[nodiscard]] std::pair<float, float> mana_lake_sprite_offset(
+    const sim::components::BuildingFootprint& footprint)
+{
+    const int width = std::max(1, footprint.width);
+    const int height = std::max(1, footprint.height);
+    const float width_scale = textured_building_width_scale(footprint)
+        * constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE;
+    const float iso_tile_aspect = static_cast<float>(constants::RENDER_ISO_TILE_WIDTH)
+        / static_cast<float>(constants::RENDER_ISO_TILE_HEIGHT);
+    const float center_down_tiles = width_scale * iso_tile_aspect * 0.5F;
+    const float draw_origin_x = static_cast<float>(width / 2) + 0.5F;
+    const float draw_origin_y = static_cast<float>(height / 2) + 0.5F;
+    const float footprint_center_x = static_cast<float>(width) * 0.5F;
+    const float footprint_center_y = static_cast<float>(height) * 0.5F;
+    return {
+        footprint_center_x + center_down_tiles - draw_origin_x,
+        footprint_center_y + center_down_tiles - draw_origin_y,
+    };
+}
+
+[[nodiscard]] float building_footprint_sort_key(
+    const int anchor_x,
+    const int anchor_y,
+    const int width,
+    const int height,
+    const bool mask_layer)
+{
+    const int max_x = anchor_x + std::max(1, width) - 1;
+    const int max_y = anchor_y + std::max(1, height) - 1;
+    const float primary = static_cast<float>(max_x + max_y);
+    const float axis_tie =
+        static_cast<float>(max_x) * constants::RENDER_BUILDING_SORT_AXIS_TIE;
+    const float layer = mask_layer ? constants::RENDER_BUILDING_MASK_SORT_BIAS : 0.0F;
+    return primary + constants::RENDER_BUILDING_SORT_BIAS + axis_tie + layer;
+}
+
+[[nodiscard]] float farm_sprite_sort_key(
+    const int anchor_x,
+    const int anchor_y,
+    const bool mask_layer)
+{
+    const float layer = mask_layer ? constants::RENDER_BUILDING_MASK_SORT_BIAS : 0.0F;
+    return static_cast<float>(anchor_x + anchor_y) + constants::RENDER_FARM_SORT_BIAS + layer;
+}
+
+struct UnitPlaceholderStyle {
+    float r{constants::RENDER_MILITIA_BODY_R};
+    float g{constants::RENDER_MILITIA_BODY_G};
+    float b{constants::RENDER_MILITIA_BODY_B};
+    bool draw_hat{false};
+    float hat_r{1.0F};
+    float hat_g{1.0F};
+    float hat_b{1.0F};
+};
+
+[[nodiscard]] UnitPlaceholderStyle unit_placeholder_style(
+    const bool is_mage,
+    const bool is_worker,
+    const bool is_projectile,
+    const std::uint8_t player_slot)
+{
+    UnitPlaceholderStyle style{};
+    if (is_projectile) {
+        style.r = constants::RENDER_ROCK_PROJECTILE_R;
+        style.g = constants::RENDER_ROCK_PROJECTILE_G;
+        style.b = constants::RENDER_ROCK_PROJECTILE_B;
+        return style;
     }
 
-    return town_center_sprite_width_scale(footprint);
+    if (is_mage) {
+        style.r = constants::RENDER_MAGE_BODY_R;
+        style.g = constants::RENDER_MAGE_BODY_G;
+        style.b = constants::RENDER_MAGE_BODY_B;
+    }
+    else if (is_worker) {
+        style.r = constants::RENDER_WORKER_BODY_R;
+        style.g = constants::RENDER_WORKER_BODY_G;
+        style.b = constants::RENDER_WORKER_BODY_B;
+    }
+
+    style.draw_hat = true;
+    const auto& rgb = sim::components::player_slot_rgb(g_draw_player_color_indices, player_slot);
+    style.hat_r = rgb[0];
+    style.hat_g = rgb[1];
+    style.hat_b = rgb[2];
+    return style;
 }
 
 [[nodiscard]] sim::components::BuildingFootprint resolve_registry_building_footprint(
@@ -1668,7 +1948,7 @@ void GameRenderer::occluder_tile_screen_rect(
             ? static_cast<float>(constants::TOWN_CENTER_FOOTPRINT_TILES)
             : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
     const SceneTextureKind aspect_kind = is_building
-        ? SceneTextureKind::TownCenterFriendly
+        ? SceneTextureKind::TownCenter
         : SceneTextureKind::OakForestLarge;
     const float vertical_extent_scale = is_building
         ? constants::RENDER_BUILDING_OCCLUSION_SCISSOR_SCALE
@@ -2613,7 +2893,10 @@ void GameRenderer::draw_iso_object_sprite(
     const float offset_x_tiles,
     const float offset_y_tiles,
     const int frame_index,
-    const int frame_count) const
+    const int frame_count,
+    const float tint_r,
+    const float tint_g,
+    const float tint_b) const
 {
     const unsigned int texture_id = scene_textures_.texture_id(texture_kind);
     if (texture_id == 0U) {
@@ -2642,9 +2925,9 @@ void GameRenderer::draw_iso_object_sprite(
         sprite_height,
         depth[2],
         texture_id,
-        brightness,
-        brightness,
-        brightness,
+        brightness * tint_r,
+        brightness * tint_g,
+        brightness * tint_b,
         1.0F,
         uv_left,
         uv_left + frame_width);
@@ -2660,7 +2943,10 @@ void GameRenderer::queue_iso_object_sprite(
     const float offset_x_tiles,
     const float offset_y_tiles,
     const int frame_index,
-    const int frame_count) const
+    const int frame_count,
+    const float tint_r,
+    const float tint_g,
+    const float tint_b) const
 {
     if (scene_textures_.texture_id(texture_kind) == 0U) {
         return;
@@ -2674,6 +2960,9 @@ void GameRenderer::queue_iso_object_sprite(
             texture_kind,
             width_scale,
             brightness,
+            tint_r,
+            tint_g,
+            tint_b,
             offset_x_tiles,
             offset_y_tiles,
             frame_index,
@@ -2769,7 +3058,10 @@ void GameRenderer::flush_pending_depth_sorted_draws(unsigned int& active_texture
                 iso_draw.offset_x_tiles,
                 iso_draw.offset_y_tiles,
                 iso_draw.frame_index,
-                iso_draw.frame_count);
+                iso_draw.frame_count,
+                iso_draw.tint_r,
+                iso_draw.tint_g,
+                iso_draw.tint_b);
             continue;
         }
 
@@ -2785,11 +3077,26 @@ void GameRenderer::flush_pending_depth_sorted_draws(unsigned int& active_texture
         draw_entity_cylinder(
             unit_draw.world_x,
             unit_draw.world_z,
-            constants::RENDER_UNIT_HEIGHT,
-            constants::RENDER_UNIT_RADIUS,
+            unit_draw.height,
+            unit_draw.radius,
             unit_draw.r,
             unit_draw.g,
             unit_draw.b);
+        if (unit_draw.draw_hat) {
+            const float hat_total =
+                unit_draw.height * (1.0F + constants::RENDER_MAGE_HAT_HEIGHT_SCALE);
+            const float hat_start = unit_draw.height / hat_total;
+            draw_entity_cylinder(
+                unit_draw.world_x,
+                unit_draw.world_z,
+                hat_total,
+                unit_draw.radius * constants::RENDER_MAGE_HAT_SCALE,
+                unit_draw.silhouette_r,
+                unit_draw.silhouette_g,
+                unit_draw.silhouette_b,
+                hat_start,
+                1.0F);
+        }
         if (!scene_batch_.empty()) {
             flush_scene_batch();
         }
@@ -2894,8 +3201,8 @@ void GameRenderer::apply_iso_tile_scissor(
 
     const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
     const float tile_width = camera_.tile_width()
-        * (aspect_kind == SceneTextureKind::TownCenterFriendly
-            || aspect_kind == SceneTextureKind::TownCenterEnemy
+        * (aspect_kind == SceneTextureKind::TownCenter
+            || aspect_kind == SceneTextureKind::TownCenter
             ? static_cast<float>(constants::TOWN_CENTER_FOOTPRINT_TILES)
             : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
     const float sprite_height = tile_width * scene_textures_.aspect_ratio(aspect_kind)
@@ -2957,7 +3264,7 @@ void GameRenderer::draw_unit_occlusion_silhouette(
             is_building_cell
                 ? constants::RENDER_BUILDING_OCCLUSION_SCISSOR_SCALE
                 : constants::RENDER_TREE_OCCLUSION_SCISSOR_SCALE,
-            is_building_cell ? SceneTextureKind::TownCenterFriendly : SceneTextureKind::OakForestLarge);
+            is_building_cell ? SceneTextureKind::TownCenter : SceneTextureKind::OakForestLarge);
         draw_unit_projected_silhouette_outline_immediate(world_x, world_z, r, g, b);
     }
 
@@ -3767,9 +4074,12 @@ float GameRenderer::cap_unit_sort_below_buildings(
             continue;
         }
 
-        const float building_sort = static_cast<float>(
-            (anchor.cell.x + footprint.width - 1) + (anchor.cell.y + footprint.height - 1))
-            + constants::RENDER_BUILDING_SORT_BIAS;
+        const float building_sort = building_footprint_sort_key(
+            anchor.cell.x,
+            anchor.cell.y,
+            footprint.width,
+            footprint.height,
+            false);
         capped_sort = std::min(capped_sort, building_sort - 0.01F);
     }
 
@@ -3811,6 +4121,9 @@ void GameRenderer::draw_interaction_highlights(
             }
 
             if (registry->any_of<sim::components::UnitTag>(entity)) {
+                if (registry->any_of<sim::components::GarrisonedTag>(entity)) {
+                    continue;
+                }
                 const auto [world_x, world_z] = unit_render_world_xz(*registry, entity, interpolation_alpha);
                 draw_unit_selection_outline(world_x, world_z);
                 continue;
@@ -3919,7 +4232,8 @@ void GameRenderer::draw_interaction_highlights(
         }
 
         if (hover_unit != entt::null && registry->valid(hover_unit)
-            && registry->any_of<sim::components::GridPosition>(hover_unit)) {
+            && registry->any_of<sim::components::GridPosition>(hover_unit)
+            && !registry->any_of<sim::components::GarrisonedTag>(hover_unit)) {
             const auto [world_x, world_z] = unit_render_world_xz(*registry, hover_unit, interpolation_alpha);
             const bool is_selected = std::find(selected_entities.begin(), selected_entities.end(), hover_unit)
                 != selected_entities.end();
@@ -4167,6 +4481,10 @@ void GameRenderer::draw(
     }
 
     const entt::entity world = *world_view.begin();
+    if (registry.any_of<sim::components::MatchSession>(world)) {
+        bind_draw_player_colors(
+            registry.get<sim::components::MatchSession>(world).player_color_indices);
+    }
     const auto& map = world_view.get<sim::components::MapGrid>(world);
     const sim::components::FogOfWarState* fog = nullptr;
     if (fog_of_war_enabled_ && registry.any_of<sim::components::FogOfWarState>(world)) {
@@ -4216,6 +4534,10 @@ void GameRenderer::draw(
         for (const entt::entity entity : footprint_view) {
             const auto& health = footprint_view.get<sim::components::Health>(entity);
             if (health.current.raw() <= 0) {
+                continue;
+            }
+
+            if (registry.any_of<sim::components::FarmTag>(entity)) {
                 continue;
             }
 
@@ -4546,17 +4868,19 @@ void GameRenderer::draw(
                 }
             }
 
+            const auto [lake_offset_x, lake_offset_y] = mana_lake_sprite_offset(footprint);
             queue_iso_object_sprite(
                 anchor.cell.x + footprint.width / 2,
                 anchor.cell.y + footprint.height / 2,
                 SceneTextureKind::ManaLake,
-                constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE,
+                textured_building_width_scale(footprint)
+                    * constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE,
                 brightness,
                 static_cast<float>(
                     (anchor.cell.x + footprint.width - 1) + (anchor.cell.y + footprint.height - 1))
                     + constants::RENDER_MANA_LAKE_SORT_BIAS,
-                constants::RENDER_MANA_LAKE_SPRITE_OFFSET_X,
-                constants::RENDER_MANA_LAKE_SPRITE_OFFSET_Y,
+                lake_offset_x,
+                lake_offset_y,
                 mana_lake_frame,
                 constants::MANA_LAKE_ANIMATION_FRAME_COUNT);
         }
@@ -4575,16 +4899,27 @@ void GameRenderer::draw(
 
             const bool is_town_center = registry.any_of<sim::components::TownCenterTag>(entity);
             const bool is_house = registry.any_of<sim::components::HouseTag>(entity);
-            const bool is_lumberjack = registry.any_of<sim::components::LumberjackTag>(entity);
+            const bool is_lumber_camp = registry.any_of<sim::components::LumberCampTag>(entity);
+            const bool is_mill = registry.any_of<sim::components::MillTag>(entity);
+            const bool is_mining_camp = registry.any_of<sim::components::MiningCampTag>(entity);
+            const bool is_barracks = registry.any_of<sim::components::BarracksTag>(entity);
+            const bool is_mage_academy = registry.any_of<sim::components::MageAcademyTag>(entity);
+            const bool is_tower = registry.any_of<sim::components::TowerTag>(entity);
+            const bool is_market = registry.any_of<sim::components::MarketTag>(entity);
             const bool is_extractor = registry.any_of<sim::components::ExtractorTag>(entity);
-            if (!is_town_center && !is_house && !is_lumberjack && !is_extractor) {
+            const bool is_garden = registry.any_of<sim::components::GardenTag>(entity);
+            const bool is_reservoir = registry.any_of<sim::components::ReservoirTag>(entity);
+            const bool is_farm = registry.any_of<sim::components::FarmTag>(entity);
+            if (!is_town_center && !is_house && !is_lumber_camp && !is_mill && !is_mining_camp
+                && !is_barracks && !is_mage_academy && !is_tower && !is_market && !is_extractor
+                && !is_garden && !is_reservoir && !is_farm) {
                 continue;
             }
 
             const bool under_construction = visible
                 ? registry.any_of<sim::components::UnderConstructionTag>(entity)
                 : remembered_under_construction(entity);
-            if (under_construction) {
+            if (under_construction && !is_farm) {
                 continue;
             }
 
@@ -4598,28 +4933,125 @@ void GameRenderer::draw(
                 brightness = constants::FOG_EXPLORED_SHROUD_BRIGHTNESS;
             }
 
-            const SceneTextureKind building_kind =
-                textured_building_kind(is_house, is_lumberjack, is_extractor, is_enemy);
+            const std::uint8_t house_variant = registry.any_of<sim::components::BuildingVisualVariant>(entity)
+                ? registry.get<sim::components::BuildingVisualVariant>(entity).index
+                : 0U;
+            const bool farm_depleted = is_farm
+                && (under_construction
+                    || !registry.any_of<sim::components::FarmFood>(entity)
+                    || registry.get<sim::components::FarmFood>(entity).remaining <= 0);
+            const BuildingSpriteVisual visual = building_sprite_visual(
+                is_house,
+                is_lumber_camp,
+                is_mill,
+                is_mining_camp,
+                is_barracks,
+                is_mage_academy,
+                is_tower,
+                is_market,
+                is_extractor,
+                house_variant,
+                is_garden,
+                is_reservoir,
+                is_farm,
+                farm_depleted);
             const int center_x = anchor.cell.x + footprint.width / 2;
             const int center_y = anchor.cell.y + footprint.height / 2;
-            const float width_scale = textured_building_width_scale(is_extractor, footprint);
-            const float sort_key = static_cast<float>(
-                (anchor.cell.x + footprint.width - 1) + (anchor.cell.y + footprint.height - 1))
-                + constants::RENDER_BUILDING_SORT_BIAS;
-            const float offset_x =
-                textured_building_offset_x(is_house, is_lumberjack, is_extractor);
-            const float offset_y =
-                textured_building_offset_y(is_house, is_lumberjack, is_extractor);
+            const float width_scale = textured_building_width_scale(footprint);
+            const auto [offset_x, offset_y] = textured_building_sprite_offset(footprint);
+            const float sort_key = is_farm
+                ? farm_sprite_sort_key(anchor.cell.x, anchor.cell.y, false)
+                : building_footprint_sort_key(
+                    anchor.cell.x,
+                    anchor.cell.y,
+                    footprint.width,
+                    footprint.height,
+                    false);
+            (void)is_enemy;
             queue_iso_object_sprite(
                 center_x,
                 center_y,
-                building_kind,
+                visual.color,
                 width_scale,
                 brightness,
                 sort_key,
                 offset_x,
                 offset_y);
+            if (visual.has_team_mask) {
+                const std::uint8_t owner_slot = sim::components::entity_player_slot(registry, entity);
+                const auto& rgb = sim::components::player_slot_rgb(g_draw_player_color_indices, owner_slot);
+                queue_iso_object_sprite(
+                    center_x,
+                    center_y,
+                    visual.mask,
+                    width_scale,
+                    brightness,
+                    is_farm
+                        ? farm_sprite_sort_key(anchor.cell.x, anchor.cell.y, true)
+                        : building_footprint_sort_key(
+                            anchor.cell.x,
+                            anchor.cell.y,
+                            footprint.width,
+                            footprint.height,
+                            true),
+                    offset_x,
+                    offset_y,
+                    0,
+                    1,
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
         }
+
+        const auto queue_live_unit_draw = [&](
+            const entt::entity entity,
+            const float world_x,
+            const float world_z,
+            const bool is_mage,
+            const bool is_projectile) {
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                is_mage,
+                registry.any_of<sim::components::WorkerUnitTag>(entity),
+                is_projectile,
+                sim::components::entity_player_slot(registry, entity));
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
+
+            const int unit_tile_x = static_cast<int>(std::floor(world_x));
+            const int unit_tile_y = static_cast<int>(std::floor(world_z));
+            const float sort_key = cap_unit_sort_below_buildings(
+                unit_depth_sort_key(world_x, world_z),
+                unit_tile_x,
+                unit_tile_y,
+                building_anchors,
+                building_footprints);
+
+            PendingUnitDraw unit_draw{
+                sort_key,
+                world_x,
+                world_z,
+                r,
+                g,
+                b,
+                r,
+                g,
+                b,
+            };
+            if (style.draw_hat) {
+                unit_draw.draw_hat = true;
+                unit_draw.silhouette_r = style.hat_r;
+                unit_draw.silhouette_g = style.hat_g;
+                unit_draw.silhouette_b = style.hat_b;
+            }
+            if (is_projectile) {
+                unit_draw.radius = constants::ROCK_PROJECTILE_RADIUS;
+                unit_draw.height = constants::ROCK_PROJECTILE_RADIUS * 2.0F;
+            }
+            queue_unit_draw(unit_draw);
+        };
 
         const auto unit_view = registry.view<
             sim::components::UnitTag,
@@ -4628,6 +5060,9 @@ void GameRenderer::draw(
         for (const entt::entity entity : unit_view) {
             const auto& health = unit_view.get<sim::components::Health>(entity);
             if (health.current.raw() <= 0) {
+                continue;
+            }
+            if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
                 continue;
             }
 
@@ -4644,48 +5079,33 @@ void GameRenderer::draw(
                 }
             }
 
-            float base_r = 0.25F;
-            float base_g = 0.55F;
-            float base_b = 0.85F;
-            if (registry.any_of<sim::components::EnemyTag>(entity)
-                || (registry.any_of<sim::components::PlayerOwnedTag>(entity)
-                    && sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
-                base_r = 0.85F;
-                base_g = 0.25F;
-                base_b = 0.25F;
+            queue_live_unit_draw(
+                entity,
+                world_x,
+                world_z,
+                registry.any_of<sim::components::MageUnitTag>(entity),
+                false);
+        }
+
+        const auto projectile_view = registry.view<
+            sim::components::Projectile,
+            sim::components::WorldPosition>();
+        for (const entt::entity entity : projectile_view) {
+            const auto& projectile_world =
+                projectile_view.get<sim::components::WorldPosition>(entity);
+            const float world_x = projectile_world.x.to_float();
+            const float world_z = projectile_world.y.to_float();
+            if (fog != nullptr) {
+                const core::GridPos visibility_cell{
+                    static_cast<int>(std::floor(world_x)),
+                    static_cast<int>(std::floor(world_z)),
+                };
+                if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)) {
+                    continue;
+                }
             }
-            else if (registry.any_of<sim::components::WorkerUnitTag>(entity)) {
-                base_r = 0.85F;
-                base_g = 0.75F;
-                base_b = 0.20F;
-            }
 
-            float r = base_r;
-            float g = base_g;
-            float b = base_b;
-            apply_team_color(base_r, base_g, base_b, r, g, b);
-
-            const int unit_tile_x = static_cast<int>(std::floor(world_x));
-            const int unit_tile_y = static_cast<int>(std::floor(world_z));
-            const float sort_key = cap_unit_sort_below_buildings(
-                unit_depth_sort_key(world_x, world_z),
-                unit_tile_x,
-                unit_tile_y,
-                building_anchors,
-                building_footprints);
-
-            queue_unit_draw(
-                PendingUnitDraw{
-                    sort_key,
-                    world_x,
-                    world_z,
-                    r,
-                    g,
-                    b,
-                    r,
-                    g,
-                    b,
-                });
+            queue_live_unit_draw(entity, world_x, world_z, false, true);
         }
 
         flush_pending_depth_sorted_draws(active_textured_batch);
@@ -4697,6 +5117,9 @@ void GameRenderer::draw(
             if (health.current.raw() <= 0) {
                 continue;
             }
+            if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
+                continue;
+            }
 
             const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
             if (fog != nullptr) {
@@ -4711,26 +5134,15 @@ void GameRenderer::draw(
                 }
             }
 
-            float base_r = 0.25F;
-            float base_g = 0.55F;
-            float base_b = 0.85F;
-            if (registry.any_of<sim::components::EnemyTag>(entity)
-                || (registry.any_of<sim::components::PlayerOwnedTag>(entity)
-                    && sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
-                base_r = 0.85F;
-                base_g = 0.25F;
-                base_b = 0.25F;
-            }
-            else if (registry.any_of<sim::components::WorkerUnitTag>(entity)) {
-                base_r = 0.85F;
-                base_g = 0.75F;
-                base_b = 0.20F;
-            }
-
-            float silhouette_r = base_r;
-            float silhouette_g = base_g;
-            float silhouette_b = base_b;
-            apply_team_color(base_r, base_g, base_b, silhouette_r, silhouette_g, silhouette_b);
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                registry.any_of<sim::components::MageUnitTag>(entity),
+                registry.any_of<sim::components::WorkerUnitTag>(entity),
+                false,
+                sim::components::entity_player_slot(registry, entity));
+            float silhouette_r = style.r;
+            float silhouette_g = style.g;
+            float silhouette_b = style.b;
+            apply_team_color(style.r, style.g, style.b, silhouette_r, silhouette_g, silhouette_b);
 
             const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
                 world_x,
@@ -4786,8 +5198,17 @@ void GameRenderer::draw(
         if (use_textured_tiles
             && (registry.any_of<sim::components::TownCenterTag>(entity)
                 || registry.any_of<sim::components::HouseTag>(entity)
-                || registry.any_of<sim::components::LumberjackTag>(entity)
-                || registry.any_of<sim::components::ExtractorTag>(entity))) {
+                || registry.any_of<sim::components::LumberCampTag>(entity)
+                || registry.any_of<sim::components::MillTag>(entity)
+                || registry.any_of<sim::components::MiningCampTag>(entity)
+                || registry.any_of<sim::components::BarracksTag>(entity)
+                || registry.any_of<sim::components::MageAcademyTag>(entity)
+                || registry.any_of<sim::components::TowerTag>(entity)
+                || registry.any_of<sim::components::MarketTag>(entity)
+                || registry.any_of<sim::components::ExtractorTag>(entity)
+                || registry.any_of<sim::components::GardenTag>(entity)
+                || registry.any_of<sim::components::ReservoirTag>(entity)
+                || registry.any_of<sim::components::FarmTag>(entity))) {
             continue;
         }
 
@@ -4831,6 +5252,9 @@ void GameRenderer::draw(
             if (health.current.raw() <= 0) {
                 continue;
             }
+            if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
+                continue;
+            }
 
             const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
             if (fog != nullptr) {
@@ -4845,26 +5269,15 @@ void GameRenderer::draw(
                 }
             }
 
-            float base_r = 0.25F;
-            float base_g = 0.55F;
-            float base_b = 0.85F;
-            if (registry.any_of<sim::components::EnemyTag>(entity)
-                || (registry.any_of<sim::components::PlayerOwnedTag>(entity)
-                    && sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
-                base_r = 0.85F;
-                base_g = 0.25F;
-                base_b = 0.25F;
-            }
-            else if (registry.any_of<sim::components::WorkerUnitTag>(entity)) {
-                base_r = 0.85F;
-                base_g = 0.75F;
-                base_b = 0.20F;
-            }
-
-            float r = base_r;
-            float g = base_g;
-            float b = base_b;
-            apply_team_color(base_r, base_g, base_b, r, g, b);
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                registry.any_of<sim::components::MageUnitTag>(entity),
+                registry.any_of<sim::components::WorkerUnitTag>(entity),
+                false,
+                sim::components::entity_player_slot(registry, entity));
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
 
             draw_entity_cylinder(
                 world_x,
@@ -4874,6 +5287,21 @@ void GameRenderer::draw(
                 r,
                 g,
                 b);
+            if (style.draw_hat) {
+                const float hat_total = constants::RENDER_UNIT_HEIGHT
+                    * (1.0F + constants::RENDER_MAGE_HAT_HEIGHT_SCALE);
+                const float hat_start = constants::RENDER_UNIT_HEIGHT / hat_total;
+                draw_entity_cylinder(
+                    world_x,
+                    world_z,
+                    hat_total,
+                    constants::RENDER_UNIT_RADIUS * constants::RENDER_MAGE_HAT_SCALE,
+                    style.hat_r,
+                    style.hat_g,
+                    style.hat_b,
+                    hat_start,
+                    1.0F);
+            }
 
             const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
                 world_x,
@@ -4932,35 +5360,28 @@ void GameRenderer::draw(
                 ghost_g,
                 ghost_b,
                 constants::RENDER_SELECTION_OUTLINE_SCALE);
-            const bool placing_house =
-                hud_context_input.command_panel_mode == app::CommandPanelMode::PlaceHouse;
-            const bool placing_lumberjack =
-                hud_context_input.command_panel_mode == app::CommandPanelMode::PlaceLumberjack;
-            const bool placing_extractor =
-                hud_context_input.command_panel_mode == app::CommandPanelMode::PlaceExtractor;
             const int center_x = placement_ghost_anchor->x + footprint / 2;
             const int center_y = placement_ghost_anchor->y + footprint / 2;
             unsigned int ghost_batch = 0U;
-            const SceneTextureKind ghost_kind =
-                textured_building_kind(placing_house, placing_lumberjack, placing_extractor, false);
-            const float offset_x =
-                textured_building_offset_x(placing_house, placing_lumberjack, placing_extractor);
-            const float offset_y =
-                textured_building_offset_y(placing_house, placing_lumberjack, placing_extractor);
+            const BuildingSpriteVisual ghost_visual =
+                placement_ghost_visual(hud_context_input.command_panel_mode);
+            const sim::components::BuildingFootprint ghost_footprint{footprint, footprint};
+            const auto [ghost_offset_x, ghost_offset_y] =
+                textured_building_sprite_offset(ghost_footprint);
             queue_iso_object_sprite(
                 center_x,
                 center_y,
-                ghost_kind,
-                textured_building_width_scale(
-                    placing_extractor,
-                    sim::components::BuildingFootprint{footprint, footprint}),
+                ghost_visual.color,
+                textured_building_width_scale(ghost_footprint),
                 constants::RENDER_GHOST_BUILDING_ALPHA,
-                static_cast<float>(
-                    placement_ghost_anchor->x + placement_ghost_anchor->y + footprint + footprint
-                    - 2)
-                    + constants::RENDER_BUILDING_SORT_BIAS,
-                offset_x,
-                offset_y);
+                building_footprint_sort_key(
+                    placement_ghost_anchor->x,
+                    placement_ghost_anchor->y,
+                    footprint,
+                    footprint,
+                    false),
+                ghost_offset_x,
+                ghost_offset_y);
             flush_pending_depth_sorted_draws(ghost_batch);
             glEnable(GL_DEPTH_TEST);
         }
@@ -5081,6 +5502,8 @@ void GameRenderer::draw_snapshot(
         return;
     }
 
+    bind_draw_player_colors(snapshot.player_color_indices);
+
     if (!map_framed_) {
         try_frame_player_start(snapshot.map_width, snapshot.map_height, nullptr, &snapshot);
     }
@@ -5097,7 +5520,7 @@ void GameRenderer::draw_snapshot(
         snapshot_building_footprints.clear();
 
         for (const RenderEntityPose& pose : snapshot.buildings) {
-            if (pose.health_current <= 0) {
+            if (pose.health_current <= 0 || pose.is_farm) {
                 continue;
             }
 
@@ -5436,11 +5859,17 @@ void GameRenderer::draw_snapshot(
                 continue;
             }
 
+            const sim::components::BuildingFootprint lake_footprint{
+                pose.footprint_width,
+                pose.footprint_height,
+            };
+            const auto [lake_offset_x, lake_offset_y] = mana_lake_sprite_offset(lake_footprint);
             queue_iso_object_sprite(
                 pose.grid_x + pose.footprint_width / 2,
                 pose.grid_y + pose.footprint_height / 2,
                 SceneTextureKind::ManaLake,
-                constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE,
+                textured_building_width_scale(lake_footprint)
+                    * constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE,
                 snapshot_cell_is_visible(snapshot, core::GridPos{pose.grid_x, pose.grid_y})
                     ? 1.0F
                     : constants::FOG_EXPLORED_SHROUD_BRIGHTNESS,
@@ -5448,17 +5877,19 @@ void GameRenderer::draw_snapshot(
                     (pose.grid_x + pose.footprint_width - 1)
                     + (pose.grid_y + pose.footprint_height - 1))
                     + constants::RENDER_MANA_LAKE_SORT_BIAS,
-                constants::RENDER_MANA_LAKE_SPRITE_OFFSET_X,
-                constants::RENDER_MANA_LAKE_SPRITE_OFFSET_Y,
+                lake_offset_x,
+                lake_offset_y,
                 snapshot_mana_lake_frame,
                 constants::MANA_LAKE_ANIMATION_FRAME_COUNT);
         }
 
         for (const RenderEntityPose& pose : snapshot.buildings) {
-            if ((!pose.is_town_center && !pose.is_house && !pose.is_lumberjack
-                    && !pose.is_extractor)
+            if ((!pose.is_town_center && !pose.is_house && !pose.is_lumber_camp && !pose.is_mill
+                    && !pose.is_mining_camp && !pose.is_barracks && !pose.is_mage_academy
+                    && !pose.is_tower && !pose.is_market && !pose.is_extractor && !pose.is_garden
+                    && !pose.is_reservoir && !pose.is_farm)
                 || pose.health_current <= 0
-                || pose.under_construction) {
+                || (pose.under_construction && !pose.is_farm)) {
                 continue;
             }
 
@@ -5467,33 +5898,72 @@ void GameRenderer::draw_snapshot(
                 brightness = constants::FOG_EXPLORED_SHROUD_BRIGHTNESS;
             }
 
-            const bool is_enemy = pose.player_slot != local_player_slot_;
-            const SceneTextureKind building_kind =
-                textured_building_kind(pose.is_house, pose.is_lumberjack, pose.is_extractor, is_enemy);
+            const BuildingSpriteVisual visual = building_sprite_visual(
+                pose.is_house,
+                pose.is_lumber_camp,
+                pose.is_mill,
+                pose.is_mining_camp,
+                pose.is_barracks,
+                pose.is_mage_academy,
+                pose.is_tower,
+                pose.is_market,
+                pose.is_extractor,
+                pose.house_variant,
+                pose.is_garden,
+                pose.is_reservoir,
+                pose.is_farm,
+                pose.is_farm
+                    && (pose.under_construction || pose.farm_food_remaining <= 0));
             const int center_x = pose.grid_x + pose.footprint_width / 2;
             const int center_y = pose.grid_y + pose.footprint_height / 2;
             const sim::components::BuildingFootprint footprint{
                 pose.footprint_width,
                 pose.footprint_height,
             };
-            const float width_scale =
-                textured_building_width_scale(pose.is_extractor, footprint);
-            const float sort_key = static_cast<float>(
-                (pose.grid_x + pose.footprint_width - 1) + (pose.grid_y + pose.footprint_height - 1))
-                + constants::RENDER_BUILDING_SORT_BIAS;
-            const float offset_x =
-                textured_building_offset_x(pose.is_house, pose.is_lumberjack, pose.is_extractor);
-            const float offset_y =
-                textured_building_offset_y(pose.is_house, pose.is_lumberjack, pose.is_extractor);
+            const float width_scale = textured_building_width_scale(footprint);
+            const auto [offset_x, offset_y] = textured_building_sprite_offset(footprint);
+            const float sort_key = pose.is_farm
+                ? farm_sprite_sort_key(pose.grid_x, pose.grid_y, false)
+                : building_footprint_sort_key(
+                    pose.grid_x,
+                    pose.grid_y,
+                    pose.footprint_width,
+                    pose.footprint_height,
+                    false);
             queue_iso_object_sprite(
                 center_x,
                 center_y,
-                building_kind,
+                visual.color,
                 width_scale,
                 brightness,
                 sort_key,
                 offset_x,
                 offset_y);
+            if (visual.has_team_mask) {
+                const auto& rgb =
+                    sim::components::player_slot_rgb(g_draw_player_color_indices, pose.player_slot);
+                queue_iso_object_sprite(
+                    center_x,
+                    center_y,
+                    visual.mask,
+                    width_scale,
+                    brightness,
+                    pose.is_farm
+                        ? farm_sprite_sort_key(pose.grid_x, pose.grid_y, true)
+                        : building_footprint_sort_key(
+                            pose.grid_x,
+                            pose.grid_y,
+                            pose.footprint_width,
+                            pose.footprint_height,
+                            true),
+                    offset_x,
+                    offset_y,
+                    0,
+                    1,
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
         }
 
         sim::components::MapGrid snapshot_occlusion_map{};
@@ -5505,7 +5975,7 @@ void GameRenderer::draw_snapshot(
         snapshot_occlusion_map.mine_money = snapshot.mine_money;
 
         for (const RenderEntityPose& pose : snapshot.units) {
-            if (pose.health_current <= 0) {
+            if (pose.health_current <= 0 && !pose.is_projectile) {
                 continue;
             }
 
@@ -5518,24 +5988,12 @@ void GameRenderer::draw_snapshot(
                 }
             }
 
-            float base_r = 0.25F;
-            float base_g = 0.55F;
-            float base_b = 0.85F;
-            if (pose.is_enemy) {
-                base_r = 0.85F;
-                base_g = 0.25F;
-                base_b = 0.25F;
-            }
-            else if (pose.is_worker) {
-                base_r = 0.85F;
-                base_g = 0.75F;
-                base_b = 0.20F;
-            }
-
-            float r = base_r;
-            float g = base_g;
-            float b = base_b;
-            apply_team_color(base_r, base_g, base_b, r, g, b);
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                pose.is_mage, pose.is_worker, pose.is_projectile, pose.player_slot);
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
             const int unit_tile_x = static_cast<int>(std::floor(world_x));
             const int unit_tile_y = static_cast<int>(std::floor(world_z));
             const float sort_key = cap_unit_sort_below_buildings(
@@ -5544,18 +6002,28 @@ void GameRenderer::draw_snapshot(
                 unit_tile_y,
                 snapshot_building_anchors,
                 snapshot_building_footprints);
-            queue_unit_draw(
-                PendingUnitDraw{
-                    sort_key,
-                    world_x,
-                    world_z,
-                    r,
-                    g,
-                    b,
-                    r,
-                    g,
-                    b,
-                });
+            PendingUnitDraw unit_draw{
+                sort_key,
+                world_x,
+                world_z,
+                r,
+                g,
+                b,
+                r,
+                g,
+                b,
+            };
+            if (style.draw_hat) {
+                unit_draw.draw_hat = true;
+                unit_draw.silhouette_r = style.hat_r;
+                unit_draw.silhouette_g = style.hat_g;
+                unit_draw.silhouette_b = style.hat_b;
+            }
+            if (pose.is_projectile) {
+                unit_draw.radius = constants::ROCK_PROJECTILE_RADIUS;
+                unit_draw.height = constants::ROCK_PROJECTILE_RADIUS * 2.0F;
+            }
+            queue_unit_draw(unit_draw);
         }
 
         flush_pending_depth_sorted_draws(active_textured_batch);
@@ -5563,7 +6031,7 @@ void GameRenderer::draw_snapshot(
 
         glDisable(GL_DEPTH_TEST);
         for (const RenderEntityPose& pose : snapshot.units) {
-            if (pose.health_current <= 0) {
+            if (pose.health_current <= 0 && !pose.is_projectile) {
                 continue;
             }
 
@@ -5576,24 +6044,12 @@ void GameRenderer::draw_snapshot(
                 }
             }
 
-            float base_r = 0.25F;
-            float base_g = 0.55F;
-            float base_b = 0.85F;
-            if (pose.is_enemy) {
-                base_r = 0.85F;
-                base_g = 0.25F;
-                base_b = 0.25F;
-            }
-            else if (pose.is_worker) {
-                base_r = 0.85F;
-                base_g = 0.75F;
-                base_b = 0.20F;
-            }
-
-            float silhouette_r = base_r;
-            float silhouette_g = base_g;
-            float silhouette_b = base_b;
-            apply_team_color(base_r, base_g, base_b, silhouette_r, silhouette_g, silhouette_b);
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                pose.is_mage, pose.is_worker, pose.is_projectile, pose.player_slot);
+            float silhouette_r = style.r;
+            float silhouette_g = style.g;
+            float silhouette_b = style.b;
+            apply_team_color(style.r, style.g, style.b, silhouette_r, silhouette_g, silhouette_b);
 
             const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
                 world_x,
@@ -5625,7 +6081,10 @@ void GameRenderer::draw_snapshot(
         }
 
         if (use_textured_tiles
-            && (pose.is_town_center || pose.is_house || pose.is_lumberjack || pose.is_extractor)) {
+            && (pose.is_town_center || pose.is_house || pose.is_lumber_camp || pose.is_extractor
+                || pose.is_mill || pose.is_mining_camp || pose.is_barracks || pose.is_mage_academy
+                || pose.is_tower || pose.is_market || pose.is_garden || pose.is_reservoir
+                || pose.is_farm)) {
             continue;
         }
 
@@ -5670,7 +6129,7 @@ void GameRenderer::draw_snapshot(
         snapshot_occlusion_map.mine_money = snapshot.mine_money;
 
         for (const RenderEntityPose& pose : snapshot.units) {
-            if (pose.health_current <= 0) {
+            if (pose.health_current <= 0 && !pose.is_projectile) {
                 continue;
             }
 
@@ -5683,24 +6142,12 @@ void GameRenderer::draw_snapshot(
                 }
             }
 
-            float base_r = 0.25F;
-            float base_g = 0.55F;
-            float base_b = 0.85F;
-            if (pose.is_enemy) {
-                base_r = 0.85F;
-                base_g = 0.25F;
-                base_b = 0.25F;
-            }
-            else if (pose.is_worker) {
-                base_r = 0.85F;
-                base_g = 0.75F;
-                base_b = 0.20F;
-            }
-
-            float r = base_r;
-            float g = base_g;
-            float b = base_b;
-            apply_team_color(base_r, base_g, base_b, r, g, b);
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                pose.is_mage, pose.is_worker, pose.is_projectile, pose.player_slot);
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
             draw_entity_cylinder(
                 world_x,
                 world_z,
@@ -5709,6 +6156,21 @@ void GameRenderer::draw_snapshot(
                 r,
                 g,
                 b);
+            if (style.draw_hat) {
+                const float hat_total = constants::RENDER_UNIT_HEIGHT
+                    * (1.0F + constants::RENDER_MAGE_HAT_HEIGHT_SCALE);
+                const float hat_start = constants::RENDER_UNIT_HEIGHT / hat_total;
+                draw_entity_cylinder(
+                    world_x,
+                    world_z,
+                    hat_total,
+                    constants::RENDER_UNIT_RADIUS * constants::RENDER_MAGE_HAT_SCALE,
+                    style.hat_r,
+                    style.hat_g,
+                    style.hat_b,
+                    hat_start,
+                    1.0F);
+            }
 
             const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
                 world_x,
@@ -5770,35 +6232,28 @@ void GameRenderer::draw_snapshot(
                 ghost_g,
                 ghost_b,
                 constants::RENDER_SELECTION_OUTLINE_SCALE);
-            const bool placing_house =
-                hud_context_input.command_panel_mode == app::CommandPanelMode::PlaceHouse;
-            const bool placing_lumberjack =
-                hud_context_input.command_panel_mode == app::CommandPanelMode::PlaceLumberjack;
-            const bool placing_extractor =
-                hud_context_input.command_panel_mode == app::CommandPanelMode::PlaceExtractor;
             const int center_x = placement_ghost_anchor->x + footprint / 2;
             const int center_y = placement_ghost_anchor->y + footprint / 2;
             unsigned int ghost_batch = 0U;
-            const SceneTextureKind ghost_kind =
-                textured_building_kind(placing_house, placing_lumberjack, placing_extractor, false);
-            const float offset_x =
-                textured_building_offset_x(placing_house, placing_lumberjack, placing_extractor);
-            const float offset_y =
-                textured_building_offset_y(placing_house, placing_lumberjack, placing_extractor);
+            const BuildingSpriteVisual ghost_visual =
+                placement_ghost_visual(hud_context_input.command_panel_mode);
+            const sim::components::BuildingFootprint ghost_footprint{footprint, footprint};
+            const auto [ghost_offset_x, ghost_offset_y] =
+                textured_building_sprite_offset(ghost_footprint);
             queue_iso_object_sprite(
                 center_x,
                 center_y,
-                ghost_kind,
-                textured_building_width_scale(
-                    placing_extractor,
-                    sim::components::BuildingFootprint{footprint, footprint}),
+                ghost_visual.color,
+                textured_building_width_scale(ghost_footprint),
                 constants::RENDER_GHOST_BUILDING_ALPHA,
-                static_cast<float>(
-                    placement_ghost_anchor->x + placement_ghost_anchor->y + footprint + footprint
-                    - 2)
-                    + constants::RENDER_BUILDING_SORT_BIAS,
-                offset_x,
-                offset_y);
+                building_footprint_sort_key(
+                    placement_ghost_anchor->x,
+                    placement_ghost_anchor->y,
+                    footprint,
+                    footprint,
+                    false),
+                ghost_offset_x,
+                ghost_offset_y);
             flush_pending_depth_sorted_draws(ghost_batch);
             glEnable(GL_DEPTH_TEST);
         }

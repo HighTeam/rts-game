@@ -26,6 +26,7 @@ enum class MainMenuScreen : std::uint8_t {
     MapPatternSelect,
     BrowseGames,
     Notice,
+    About,
 };
 
 enum class SingleplayerGameStyle : std::uint8_t {
@@ -77,6 +78,7 @@ enum class MainMenuAction : std::uint8_t {
     CycleVictoryCondition,
     CycleSlotKind,
     CycleSlotColor,
+    CycleSlotTeam,
     SingleplayerStart,
     SingleplayerBack,
     OpenBrowseGames,
@@ -87,6 +89,9 @@ enum class MainMenuAction : std::uint8_t {
     BrowseHost,
     BrowseConnect,
     NoticeOk,
+    OpenAbout,
+    AboutOpenWebsite,
+    AboutClose,
 };
 
 enum class MenuTextField : std::uint8_t {
@@ -167,6 +172,7 @@ struct MainMenuState {
     std::uint8_t required_player_count{0U};
     std::array<SingleplayerSlotKind, constants::MAX_PLAYER_SLOTS> slot_kinds{};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_colors{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_teams{};
     sim::components::FogOfWarMode fog_mode{sim::components::FogOfWarMode::Enabled};
     bool cheats_enabled{false};
     std::uint8_t map_pattern{constants::MAP_PATTERN_COMMONS_INDEX};
@@ -227,6 +233,8 @@ void apply_required_player_count(MainMenuState& state, std::uint8_t player_count
 void cycle_singleplayer_slot_kind(MainMenuState& state, std::uint8_t slot);
 
 void cycle_singleplayer_slot_color(MainMenuState& state, std::uint8_t slot);
+
+void cycle_singleplayer_slot_team(MainMenuState& state, std::uint8_t slot);
 
 void cycle_fog_mode(MainMenuState& state);
 

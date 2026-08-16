@@ -8,6 +8,7 @@
 #include "render/game_renderer.hpp"
 #include "data/content_types.hpp"
 #include "sim/components/building_footprint.hpp"
+#include "sim/components/building_process.hpp"
 #include "sim/components/combat.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
@@ -105,9 +106,7 @@ RenderEntityPose capture_entity_pose(
         pose.health_max = health.max.to_int();
     }
 
-    pose.is_enemy = registry.any_of<sim::components::EnemyTag>(entity)
-        || (registry.any_of<sim::components::PlayerOwnedTag>(entity)
-            && sim::components::entity_player_slot(registry, entity) != local_player_slot);
+    pose.is_enemy = sim::components::is_opponent_entity(registry, entity, local_player_slot);
     pose.is_worker = registry.any_of<sim::components::WorkerUnitTag>(entity);
     if (pose.is_worker && registry.any_of<sim::components::CarriedWood>(entity)) {
         pose.carried_wood = registry.get<sim::components::CarriedWood>(entity).amount;
@@ -119,10 +118,52 @@ RenderEntityPose capture_entity_pose(
         pose.carried_money = registry.get<sim::components::CarriedMoney>(entity).amount;
     }
     pose.is_militia = registry.any_of<sim::components::MilitiaUnitTag>(entity);
+    pose.is_mage = registry.any_of<sim::components::MageUnitTag>(entity);
+    pose.is_projectile = registry.any_of<sim::components::Projectile>(entity);
     pose.is_town_center = registry.any_of<sim::components::TownCenterTag>(entity);
     pose.is_house = registry.any_of<sim::components::HouseTag>(entity);
-    pose.is_lumberjack = registry.any_of<sim::components::LumberjackTag>(entity);
+    pose.is_lumber_camp = registry.any_of<sim::components::LumberCampTag>(entity);
+    pose.is_mill = registry.any_of<sim::components::MillTag>(entity);
+    pose.is_mining_camp = registry.any_of<sim::components::MiningCampTag>(entity);
+    pose.is_barracks = registry.any_of<sim::components::BarracksTag>(entity);
+    pose.is_mage_academy = registry.any_of<sim::components::MageAcademyTag>(entity);
+    pose.is_tower = registry.any_of<sim::components::TowerTag>(entity);
+    pose.is_market = registry.any_of<sim::components::MarketTag>(entity);
     pose.is_extractor = registry.any_of<sim::components::ExtractorTag>(entity);
+    pose.is_garden = registry.any_of<sim::components::GardenTag>(entity);
+    pose.is_reservoir = registry.any_of<sim::components::ReservoirTag>(entity);
+    pose.is_farm = registry.any_of<sim::components::FarmTag>(entity);
+    if (registry.any_of<sim::components::DefinitionRef>(entity)) {
+        const std::string& archetype_id = registry.get<sim::components::DefinitionRef>(entity).id;
+        if (archetype_id == constants::GARDEN_BUILDING_ID) {
+            pose.is_garden = true;
+        }
+        if (archetype_id == constants::RESERVOIR_BUILDING_ID) {
+            pose.is_reservoir = true;
+        }
+        if (archetype_id == constants::FARM_BUILDING_ID) {
+            pose.is_farm = true;
+        }
+    }
+    if (registry.any_of<sim::components::FarmFood>(entity)) {
+        const auto& farm_food = registry.get<sim::components::FarmFood>(entity);
+        pose.farm_food_remaining = farm_food.remaining;
+        pose.farm_food_max = farm_food.max;
+    }
+    if (sim::components::building_has_active_process(registry, entity)) {
+        const auto& process = registry.get<sim::components::BuildingProcess>(entity);
+        pose.has_process = true;
+        pose.process_percent = sim::components::building_process_percent(process);
+        pose.process_is_research = sim::components::building_process_is_research(process.kind);
+    }
+    if (registry.any_of<sim::components::BuildingVisualVariant>(entity)) {
+        pose.house_variant = registry.get<sim::components::BuildingVisualVariant>(entity).index;
+    }
+    if (registry.any_of<sim::components::GarrisonHold>(entity)) {
+        const auto& hold = registry.get<sim::components::GarrisonHold>(entity);
+        pose.garrison_count = static_cast<int>(hold.units.size());
+        pose.garrison_capacity = static_cast<int>(hold.capacity);
+    }
     pose.is_mana_lake = registry.any_of<sim::components::ManaLakeTag>(entity);
     if (pose.is_mana_lake) {
         pose.lake_has_extractor = sim::spawn::find_extractor_on_mana_lake(
@@ -251,8 +292,14 @@ SimRenderSnapshot capture_sim_render_snapshot(
     snapshot.bush_food = map.bush_food;
     snapshot.mine_money = map.mine_money;
     if (registry.any_of<sim::components::MatchSession>(world)) {
-        snapshot.player_color_indices =
-            registry.get<sim::components::MatchSession>(world).player_color_indices;
+        const auto& session = registry.get<sim::components::MatchSession>(world);
+        snapshot.player_color_indices = session.player_color_indices;
+        snapshot.player_ages = session.player_ages;
+        snapshot.vision_source_slots_mask =
+            sim::components::cartography_vision_slots_mask(session, local_player_slot);
+    }
+    else {
+        snapshot.vision_source_slots_mask = sim::components::player_slot_bit(local_player_slot);
     }
 
     const sim::components::FogOfWarState* fog = nullptr;
@@ -379,6 +426,17 @@ SimRenderSnapshot capture_sim_render_snapshot(
             continue;
         }
 
+        if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
+            continue;
+        }
+
+        snapshot.units.push_back(capture_entity_pose(registry, entity, local_player_slot));
+    }
+
+    const auto projectile_view = registry.view<
+        sim::components::Projectile,
+        sim::components::WorldPosition>();
+    for (const entt::entity entity : projectile_view) {
         snapshot.units.push_back(capture_entity_pose(registry, entity, local_player_slot));
     }
 
@@ -459,6 +517,7 @@ namespace {
     return pose.entity != entt::null
         && pose.health_current > 0
         && !pose.is_enemy
+        && !pose.is_projectile
         && pose.player_slot == local_player_slot;
 }
 
@@ -930,6 +989,35 @@ bool snapshot_can_place_extractor_at(
     }
 
     return false;
+}
+
+std::optional<core::GridPos> snapshot_extractor_snap_anchor(
+    const SimRenderSnapshot& snapshot,
+    const core::GridPos hover_cell)
+{
+    for (const RenderEntityPose& pose : snapshot.buildings) {
+        if (!pose.is_mana_lake || pose.lake_has_extractor) {
+            continue;
+        }
+
+        if (pose.footprint_width != constants::EXTRACTOR_FOOTPRINT_TILES
+            || pose.footprint_height != constants::EXTRACTOR_FOOTPRINT_TILES) {
+            continue;
+        }
+
+        const sim::components::BuildingFootprint footprint{
+            pose.footprint_width,
+            pose.footprint_height,
+        };
+        const sim::components::GridPosition anchor_pos{{pose.grid_x, pose.grid_y}};
+        if (!sim::components::building_contains_cell(anchor_pos, footprint, hover_cell)) {
+            continue;
+        }
+
+        return core::GridPos{pose.grid_x, pose.grid_y};
+    }
+
+    return std::nullopt;
 }
 
 std::vector<entt::entity> pick_player_units_in_screen_rect(

@@ -18,9 +18,20 @@ enum class EntitySnapshotCategory : std::uint8_t {
     Militia = 1,
     TownCenter = 2,
     House = 3,
-    Lumberjack = 4,
+    LumberCamp = 4,
     Extractor = 5,
     ManaLake = 6,
+    Mill = 7,
+    MiningCamp = 8,
+    Barracks = 9,
+    MageAcademy = 10,
+    Tower = 11,
+    Market = 12,
+    Mage = 13,
+    Projectile = 14,
+    Garden = 15,
+    Reservoir = 16,
+    Farm = 17,
 };
 
 struct EntitySnapshotKey {

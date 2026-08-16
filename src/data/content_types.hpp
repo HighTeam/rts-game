@@ -32,7 +32,13 @@ struct ArchetypeDefinition {
     int spawn_worker_food_cost{0};
     int spawn_militia_food_cost{0};
     int spawn_militia_money_cost{0};
+    int spawn_mage_money_cost{0};
+    int spawn_mage_mana_cost{0};
     int build_wood_cost{0};
+    int build_money_cost{0};
+    int build_mana_cost{0};
+    int attack_range{0};
+    int attack_mana_cost{0};
     int wood_capacity{0};
     int food_capacity{0};
     int money_capacity{0};

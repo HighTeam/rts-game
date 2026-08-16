@@ -9,6 +9,7 @@
 #include "render/building_sight_memory.hpp"
 #include "render/hud_icons.hpp"
 #include "render/minimap_math.hpp"
+#include "sim/components/building_process.hpp"
 #include "sim/components/combat.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
@@ -571,6 +572,9 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_minus = {
         0U, 0U, 0U, 0x1FU, 0U, 0U, 0U,
     };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_question = {
+        0U, 0x0EU, 0x11U, 0x02U, 0x04U, 0U, 0x04U,
+    };
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_equals = {
         0U, 0U, 0x1FU, 0U, 0x1FU, 0U, 0U,
     };
@@ -579,6 +583,12 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
     };
     static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_plus = {
         0U, 0x04U, 0x04U, 0x1FU, 0x04U, 0x04U, 0U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_percent = {
+        0x13U, 0x14U, 0x08U, 0x04U, 0x02U, 0x05U, 0x19U,
+    };
+    static const std::array<std::uint8_t, GLYPH_HEIGHT> glyph_underscore = {
+        0U, 0U, 0U, 0U, 0U, 0U, 0x1FU,
     };
 
     switch (character) {
@@ -730,12 +740,18 @@ const std::array<std::uint8_t, GLYPH_HEIGHT>& glyph_rows(const char character)
         return glyph_apostrophe;
     case '-':
         return glyph_minus;
+    case '?':
+        return glyph_question;
     case '=':
         return glyph_equals;
     case '*':
         return glyph_asterisk;
     case '+':
         return glyph_plus;
+    case '%':
+        return glyph_percent;
+    case '_':
+        return glyph_underscore;
     default:
         return glyph_space;
     }
@@ -925,22 +941,62 @@ std::string format_zoom_line(const float camera_zoom)
         return HudIcon::Firecamp;
     case app::CommandPanelAction::BuildHouse:
         return HudIcon::House;
-    case app::CommandPanelAction::BuildLumberjack:
-        return HudIcon::Axe;
+    case app::CommandPanelAction::BuildLumberCamp:
+        return HudIcon::LumberCamp;
     case app::CommandPanelAction::BuildExtractor:
         return HudIcon::ManaPlus;
+    case app::CommandPanelAction::BuildMill:
+        return HudIcon::Mill;
+    case app::CommandPanelAction::BuildMiningCamp:
+        return HudIcon::MiningCamp;
+    case app::CommandPanelAction::BuildBarracks:
+        return HudIcon::MilitiaHat;
+    case app::CommandPanelAction::BuildMageAcademy:
+        return HudIcon::ManaPlus;
+    case app::CommandPanelAction::BuildTower:
+        return HudIcon::Firecamp;
+    case app::CommandPanelAction::BuildMarket:
+        return HudIcon::House;
+    case app::CommandPanelAction::SpawnMage:
+        return HudIcon::ManaPlus;
+    case app::CommandPanelAction::Garrison:
+        return HudIcon::Boots;
+    case app::CommandPanelAction::UnloadGarrison:
+        return HudIcon::ArrowSe;
+    case app::CommandPanelAction::AdvanceAge:
+        return HudIcon::ManaStar;
     case app::CommandPanelAction::Attack:
         return HudIcon::Sword;
     case app::CommandPanelAction::Stop:
         return HudIcon::Boots;
     case app::CommandPanelAction::Build:
         return HudIcon::Hammer;
+    case app::CommandPanelAction::OpenMilitaryBuild:
+        return HudIcon::Sword;
+    case app::CommandPanelAction::BuildGarden:
+        return HudIcon::Food;
+    case app::CommandPanelAction::BuildReservoir:
+        return HudIcon::ManaPlus;
+    case app::CommandPanelAction::BuildFarm:
+        return HudIcon::Food;
     case app::CommandPanelAction::Back:
         return HudIcon::ArrowSe;
     case app::CommandPanelAction::SpawnWorker:
         return HudIcon::BlueTShirt;
     case app::CommandPanelAction::SpawnMilitia:
         return HudIcon::MilitiaHat;
+    case app::CommandPanelAction::ResearchCartography:
+        return HudIcon::Map;
+    case app::CommandPanelAction::ResearchSpy:
+        return HudIcon::ClosedEye;
+    case app::CommandPanelAction::MarketSellWood:
+        return HudIcon::Wood;
+    case app::CommandPanelAction::MarketSellFood:
+        return HudIcon::Food;
+    case app::CommandPanelAction::MarketBuyWood:
+        return HudIcon::MoneyDeposit;
+    case app::CommandPanelAction::MarketBuyFood:
+        return HudIcon::MoneyReceive;
     case app::CommandPanelAction::Deselect:
         return HudIcon::HandDown;
     case app::CommandPanelAction::None:
@@ -948,6 +1004,37 @@ std::string format_zoom_line(const float camera_zoom)
     }
 
     return HudIcon::HandDown;
+}
+
+[[nodiscard]] std::optional<EarthBuildIcon> earth_build_icon_for_action(
+    const app::CommandPanelAction action)
+{
+    switch (action) {
+    case app::CommandPanelAction::BuildHouse:
+        return EarthBuildIcon::House;
+    case app::CommandPanelAction::BuildTownCenter:
+        return EarthBuildIcon::TownCenter;
+    case app::CommandPanelAction::BuildMarket:
+        return EarthBuildIcon::Market;
+    case app::CommandPanelAction::BuildBarracks:
+        return EarthBuildIcon::Barracks;
+    case app::CommandPanelAction::BuildTower:
+        return EarthBuildIcon::Tower;
+    case app::CommandPanelAction::BuildMageAcademy:
+        return EarthBuildIcon::MageAcademy;
+    case app::CommandPanelAction::BuildExtractor:
+        return EarthBuildIcon::Extractor;
+    case app::CommandPanelAction::BuildGarden:
+        return EarthBuildIcon::Garden;
+    case app::CommandPanelAction::BuildReservoir:
+        return EarthBuildIcon::Reservoir;
+    case app::CommandPanelAction::BuildFarm:
+        return EarthBuildIcon::Farm;
+    default:
+        break;
+    }
+
+    return std::nullopt;
 }
 
 void apply_player_title_color(HudInfoPanel& panel, const std::uint8_t player_slot)
@@ -973,17 +1060,27 @@ void apply_nature_title_color(HudInfoPanel& panel)
     panel.title_b = constants::HUD_TEXT_B;
 }
 
-// Cooldown counts down, so an empty cooldown means the next mana drop is imminent.
-[[nodiscard]] int extraction_percent_from_ticks(const int ticks_remaining)
+// Cooldown counts down, so an empty cooldown means the next drop is imminent.
+[[nodiscard]] int production_percent_from_ticks(const int ticks_remaining, const int interval)
 {
     constexpr int FULL_PERCENT = 100;
-    constexpr int interval = constants::EXTRACTOR_MANA_GEN_INTERVAL_TICKS;
-    if constexpr (interval <= 0) {
+    if (interval <= 0) {
         return FULL_PERCENT;
     }
 
     const int clamped = std::clamp(ticks_remaining, 0, interval);
     return ((interval - clamped) * FULL_PERCENT) / interval;
+}
+
+[[nodiscard]] int extraction_percent_from_ticks(const int ticks_remaining)
+{
+    return production_percent_from_ticks(
+        ticks_remaining, constants::EXTRACTOR_MANA_GEN_INTERVAL_TICKS);
+}
+
+[[nodiscard]] int garden_percent_from_ticks(const int ticks_remaining)
+{
+    return production_percent_from_ticks(ticks_remaining, constants::GARDEN_PROD_INTERVAL_TICKS);
 }
 
 [[nodiscard]] const char* ground_type_debug_name(const sim::components::GroundType ground)
@@ -1191,7 +1288,11 @@ void fill_info_panel_from_live_entity(
               unit_context.multiplayer,
               &unit_context.player_names);
 
-    if (registry.any_of<sim::components::MilitiaUnitTag>(entity)) {
+    if (registry.any_of<sim::components::MageUnitTag>(entity)) {
+        panel.title = "Mage" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::MilitiaUnitTag>(entity)) {
         panel.title = "Militia" + suffix;
         apply_player_title_color(panel, player_slot);
     }
@@ -1202,13 +1303,43 @@ void fill_info_panel_from_live_entity(
     else if (registry.any_of<sim::components::TownCenterTag>(entity)) {
         panel.title = "Town Center" + suffix;
         apply_player_title_color(panel, player_slot);
+        if (registry.any_of<sim::components::GarrisonHold>(entity)) {
+            const auto& hold = registry.get<sim::components::GarrisonHold>(entity);
+            panel.debug_lines.push_back(
+                "Civil inside " + std::to_string(hold.units.size()) + "/"
+                + std::to_string(hold.capacity));
+        }
     }
     else if (registry.any_of<sim::components::HouseTag>(entity)) {
         panel.title = "House" + suffix;
         apply_player_title_color(panel, player_slot);
     }
-    else if (registry.any_of<sim::components::LumberjackTag>(entity)) {
-        panel.title = "Lumberjack" + suffix;
+    else if (registry.any_of<sim::components::LumberCampTag>(entity)) {
+        panel.title = "Lumber camp" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::MillTag>(entity)) {
+        panel.title = "Mill" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::MiningCampTag>(entity)) {
+        panel.title = "Mining camp" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::BarracksTag>(entity)) {
+        panel.title = "Barracks" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::MageAcademyTag>(entity)) {
+        panel.title = "Mage academy" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::TowerTag>(entity)) {
+        panel.title = "Tower" + suffix;
+        apply_player_title_color(panel, player_slot);
+    }
+    else if (registry.any_of<sim::components::MarketTag>(entity)) {
+        panel.title = "Market" + suffix;
         apply_player_title_color(panel, player_slot);
     }
     else if (registry.any_of<sim::components::ExtractorTag>(entity)) {
@@ -1230,6 +1361,43 @@ void fill_info_panel_from_live_entity(
         panel.has_mana_rate = true;
         panel.mana_rate = constants::EXTRACTOR_MANA_GEN_AMOUNT;
         return;
+    }
+    else if (registry.any_of<sim::components::GardenTag>(entity)
+        || (registry.any_of<sim::components::DefinitionRef>(entity)
+            && registry.get<sim::components::DefinitionRef>(entity).id
+                == constants::GARDEN_BUILDING_ID)) {
+        panel.title = "Garden" + suffix;
+        apply_player_title_color(panel, player_slot);
+        if (!registry.any_of<sim::components::UnderConstructionTag>(entity)) {
+            panel.has_garden_production = true;
+            const int remaining = registry.any_of<sim::components::ManaGenerationCooldown>(entity)
+                ? registry.get<sim::components::ManaGenerationCooldown>(entity).ticks_remaining
+                : 0;
+            panel.garden_percent = garden_percent_from_ticks(remaining);
+        }
+    }
+    else if (registry.any_of<sim::components::ReservoirTag>(entity)
+        || (registry.any_of<sim::components::DefinitionRef>(entity)
+            && registry.get<sim::components::DefinitionRef>(entity).id
+                == constants::RESERVOIR_BUILDING_ID)) {
+        panel.title = "Reservoir" + suffix;
+        apply_player_title_color(panel, player_slot);
+        panel.debug_lines.push_back(
+            "Mana cap +" + std::to_string(constants::MANA_CAP_PER_RESERVOIR));
+    }
+    else if (registry.any_of<sim::components::FarmTag>(entity)
+        || (registry.any_of<sim::components::DefinitionRef>(entity)
+            && registry.get<sim::components::DefinitionRef>(entity).id
+                == constants::FARM_BUILDING_ID)) {
+        panel.title = "Farm" + suffix;
+        apply_player_title_color(panel, player_slot);
+        if (!registry.any_of<sim::components::UnderConstructionTag>(entity)
+            && registry.any_of<sim::components::FarmFood>(entity)) {
+            const auto& farm_food = registry.get<sim::components::FarmFood>(entity);
+            panel.carry_amount = farm_food.remaining;
+            panel.carry_icon = HudIcon::Food;
+            panel.carry_is_remaining = true;
+        }
     }
     else if (is_nature) {
         panel.title = "Other (Nature)";
@@ -1277,6 +1445,19 @@ void fill_info_panel_from_live_entity(
             panel.carry_icon = HudIcon::Wood;
         }
     }
+
+    if (!is_nature) {
+        panel.has_relation = true;
+        panel.is_friend =
+            !sim::components::is_opponent_entity(registry, entity, local_player_slot);
+    }
+
+    if (sim::components::building_has_active_process(registry, entity)) {
+        const auto& process = registry.get<sim::components::BuildingProcess>(entity);
+        panel.has_process = true;
+        panel.process_percent = sim::components::building_process_percent(process);
+        panel.process_is_research = sim::components::building_process_is_research(process.kind);
+    }
 }
 
 void fill_info_panel_from_pose(
@@ -1294,7 +1475,11 @@ void fill_info_panel_from_pose(
               unit_context.multiplayer,
               &unit_context.player_names);
 
-    if (pose.is_militia) {
+    if (pose.is_mage) {
+        panel.title = "Mage" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_militia) {
         panel.title = "Militia" + suffix;
         apply_player_title_color(panel, pose.player_slot);
     }
@@ -1305,6 +1490,11 @@ void fill_info_panel_from_pose(
     else if (pose.is_town_center) {
         panel.title = "Town Center" + suffix;
         apply_player_title_color(panel, pose.player_slot);
+        if (pose.garrison_capacity > 0) {
+            panel.debug_lines.push_back(
+                "Civil inside " + std::to_string(pose.garrison_count) + "/"
+                + std::to_string(pose.garrison_capacity));
+        }
     }
     else if (pose.is_house) {
         panel.title = "House" + suffix;
@@ -1328,9 +1518,56 @@ void fill_info_panel_from_pose(
         panel.mana_rate = constants::EXTRACTOR_MANA_GEN_AMOUNT;
         return;
     }
-    else if (pose.is_lumberjack) {
-        panel.title = "Lumberjack" + suffix;
+    else if (pose.is_lumber_camp) {
+        panel.title = "Lumber camp" + suffix;
         apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_mill) {
+        panel.title = "Mill" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_mining_camp) {
+        panel.title = "Mining camp" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_barracks) {
+        panel.title = "Barracks" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_mage_academy) {
+        panel.title = "Mage academy" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_tower) {
+        panel.title = "Tower" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_market) {
+        panel.title = "Market" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+    }
+    else if (pose.is_garden || pose.archetype_id == constants::GARDEN_BUILDING_ID) {
+        panel.title = "Garden" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+        if (!pose.under_construction) {
+            panel.has_garden_production = true;
+            panel.garden_percent = garden_percent_from_ticks(pose.mana_gen_ticks_remaining);
+        }
+    }
+    else if (pose.is_reservoir || pose.archetype_id == constants::RESERVOIR_BUILDING_ID) {
+        panel.title = "Reservoir" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+        panel.debug_lines.push_back(
+            "Mana cap +" + std::to_string(constants::MANA_CAP_PER_RESERVOIR));
+    }
+    else if (pose.is_farm || pose.archetype_id == constants::FARM_BUILDING_ID) {
+        panel.title = "Farm" + suffix;
+        apply_player_title_color(panel, pose.player_slot);
+        if (!pose.under_construction) {
+            panel.carry_amount = pose.farm_food_remaining;
+            panel.carry_icon = HudIcon::Food;
+            panel.carry_is_remaining = true;
+        }
     }
     else if (pose.is_nature) {
         panel.title = "Other (Nature)";
@@ -1360,6 +1597,17 @@ void fill_info_panel_from_pose(
     else if (pose.carried_wood > 0) {
         panel.carry_amount = pose.carried_wood;
         panel.carry_icon = HudIcon::Wood;
+    }
+
+    if (!pose.is_nature) {
+        panel.has_relation = true;
+        panel.is_friend = !pose.is_enemy;
+    }
+
+    if (pose.has_process) {
+        panel.has_process = true;
+        panel.process_percent = pose.process_percent;
+        panel.process_is_research = pose.process_is_research;
     }
 }
 
@@ -1510,8 +1758,32 @@ void fill_info_panel_from_pose(
             panel.title = "House" + suffix;
             apply_player_title_color(panel, owner_slot);
         }
-        else if (unit_context.selected_building_is_lumberjack) {
-            panel.title = "Lumberjack" + suffix;
+        else if (unit_context.selected_building_is_lumber_camp) {
+            panel.title = "Lumber camp" + suffix;
+            apply_player_title_color(panel, owner_slot);
+        }
+        else if (unit_context.selected_building_is_mill) {
+            panel.title = "Mill" + suffix;
+            apply_player_title_color(panel, owner_slot);
+        }
+        else if (unit_context.selected_building_is_mining_camp) {
+            panel.title = "Mining camp" + suffix;
+            apply_player_title_color(panel, owner_slot);
+        }
+        else if (unit_context.selected_building_is_barracks) {
+            panel.title = "Barracks" + suffix;
+            apply_player_title_color(panel, owner_slot);
+        }
+        else if (unit_context.selected_building_is_mage_academy) {
+            panel.title = "Mage academy" + suffix;
+            apply_player_title_color(panel, owner_slot);
+        }
+        else if (unit_context.selected_building_is_tower) {
+            panel.title = "Tower" + suffix;
+            apply_player_title_color(panel, owner_slot);
+        }
+        else if (unit_context.selected_building_is_market) {
+            panel.title = "Market" + suffix;
             apply_player_title_color(panel, owner_slot);
         }
         else if (unit_context.selected_building_is_extractor) {
@@ -1520,9 +1792,33 @@ void fill_info_panel_from_pose(
             panel.has_mana_rate = true;
             panel.mana_rate = constants::EXTRACTOR_MANA_GEN_AMOUNT;
         }
+        else if (unit_context.selected_building_is_garden) {
+            panel.title = "Garden" + suffix;
+            apply_player_title_color(panel, owner_slot);
+            panel.has_garden_production = true;
+            panel.garden_percent = unit_context.selected_garden_percent;
+        }
+        else if (unit_context.selected_building_is_reservoir) {
+            panel.title = "Reservoir" + suffix;
+            apply_player_title_color(panel, owner_slot);
+            panel.debug_lines.push_back(
+                "Mana cap +" + std::to_string(constants::MANA_CAP_PER_RESERVOIR));
+        }
+        else if (unit_context.selected_building_is_farm) {
+            panel.title = "Farm" + suffix;
+            apply_player_title_color(panel, owner_slot);
+            panel.carry_amount = unit_context.selected_farm_food_remaining;
+            panel.carry_icon = HudIcon::Food;
+            panel.carry_is_remaining = true;
+        }
         else {
             panel.title = "Town Center" + suffix;
             apply_player_title_color(panel, owner_slot);
+            if (unit_context.selected_garrison_capacity > 0) {
+                panel.debug_lines.push_back(
+                    "Civil inside " + std::to_string(unit_context.selected_garrison_count) + "/"
+                    + std::to_string(unit_context.selected_garrison_capacity));
+            }
         }
 
         if (unit_context.selected_single_unit != entt::null) {
@@ -1714,8 +2010,8 @@ void fill_info_panel_from_pose(
             return panel;
         }
 
-        if (unit_context.selected_building_is_lumberjack) {
-            panel.title = "Lumberjack" + suffix;
+        if (unit_context.selected_building_is_lumber_camp) {
+            panel.title = "Lumber camp" + suffix;
             apply_player_title_color(panel, owner_slot);
             return panel;
         }
@@ -2611,6 +2907,16 @@ HudIconAtlas& HudOverlay::icon_atlas() const
     return icon_atlas_;
 }
 
+EarthBuildIconAtlas& HudOverlay::earth_build_icon_atlas() const
+{
+    if (!earth_build_icon_atlas_load_attempted_) {
+        earth_build_icon_atlas_load_attempted_ = true;
+        (void)earth_build_icon_atlas_.load(core::default_assets_directory());
+    }
+
+    return earth_build_icon_atlas_;
+}
+
 void HudOverlay::invalidate_gl_cache()
 {
     if (hud_shader_program_ != 0U) {
@@ -2633,6 +2939,8 @@ void HudOverlay::invalidate_gl_cache()
     }
     icon_atlas_.destroy_gl_resources();
     icon_atlas_load_attempted_ = false;
+    earth_build_icon_atlas_.destroy_gl_resources();
+    earth_build_icon_atlas_load_attempted_ = false;
     destroy_hud_draw_geometry();
 }
 
@@ -2641,7 +2949,8 @@ void HudOverlay::draw_icon(
     const float x,
     const float y,
     const float size,
-    const HudIcon icon) const
+    const HudIcon icon,
+    const float alpha) const
 {
     if (window_size.x == 0U || window_size.y == 0U || size <= 0.0F) {
         return;
@@ -2679,7 +2988,55 @@ void HudOverlay::draw_icon(
         bottom_left[0], bottom_left[1], u0, v1,
     };
 
-    submit_hud_textured_quad(vertices, hud_textured_shader_program(), atlas.texture_id());
+    submit_hud_textured_quad(
+        vertices, hud_tinted_texture_shader_program(), atlas.texture_id(), alpha);
+}
+
+void HudOverlay::draw_earth_build_icon(
+    const sf::Vector2u window_size,
+    const float x,
+    const float y,
+    const float size,
+    const EarthBuildIcon icon,
+    const float alpha) const
+{
+    if (window_size.x == 0U || window_size.y == 0U || size <= 0.0F) {
+        return;
+    }
+
+    EarthBuildIconAtlas& atlas = earth_build_icon_atlas();
+    if (!atlas.ready()) {
+        return;
+    }
+
+    float u0 = 0.0F;
+    float v0 = 0.0F;
+    float u1 = 1.0F;
+    float v1 = 1.0F;
+    atlas.icon_uv(icon, u0, v0, u1, v1);
+
+    const float window_width = static_cast<float>(window_size.x);
+    const float window_height = static_cast<float>(window_size.y);
+    const auto to_ndc = [&](const float px, const float py) {
+        const float ndc_x = (px / window_width) * 2.0F - 1.0F;
+        const float ndc_y = 1.0F - (py / window_height) * 2.0F;
+        return std::array<float, 2>{ndc_x, ndc_y};
+    };
+
+    const auto top_left = to_ndc(x, y);
+    const auto top_right = to_ndc(x + size, y);
+    const auto bottom_right = to_ndc(x + size, y + size);
+    const auto bottom_left = to_ndc(x, y + size);
+
+    const std::array<float, 16> vertices = {
+        top_left[0], top_left[1], u0, v0,
+        top_right[0], top_right[1], u1, v0,
+        bottom_right[0], bottom_right[1], u1, v1,
+        bottom_left[0], bottom_left[1], u0, v1,
+    };
+
+    submit_hud_textured_quad(
+        vertices, hud_tinted_texture_shader_program(), atlas.texture_id(), alpha);
 }
 
 void HudOverlay::draw_resource_bar(
@@ -2763,6 +3120,7 @@ void HudOverlay::draw_command_panel(
 {
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
+    enable_rgb_blend_keep_framebuffer_opaque();
 
     const unsigned int shader_program = hud_shader_program();
     const app::CommandPanelFrame frame = app::command_panel_frame_rect(window_size);
@@ -2789,8 +3147,8 @@ void HudOverlay::draw_command_panel(
             else if (button.action == app::CommandPanelAction::BuildHouse) {
                 hover_name_label = "House";
             }
-            else if (button.action == app::CommandPanelAction::BuildLumberjack) {
-                hover_name_label = "Lumberjack";
+            else if (button.action == app::CommandPanelAction::BuildLumberCamp) {
+                hover_name_label = "Lumber camp";
             }
             else if (button.action == app::CommandPanelAction::BuildExtractor) {
                 hover_name_label = "Extractor";
@@ -2798,30 +3156,138 @@ void HudOverlay::draw_command_panel(
             else if (button.action == app::CommandPanelAction::BuildTownCenter) {
                 hover_name_label = "Town Center";
             }
+            else if (button.action == app::CommandPanelAction::BuildMill) {
+                hover_name_label = "Mill";
+            }
+            else if (button.action == app::CommandPanelAction::BuildMiningCamp) {
+                hover_name_label = "Mining camp";
+            }
+            else if (button.action == app::CommandPanelAction::BuildBarracks) {
+                hover_name_label = "Barracks";
+            }
+            else if (button.action == app::CommandPanelAction::BuildMageAcademy) {
+                hover_name_label = "Mage academy";
+            }
+            else if (button.action == app::CommandPanelAction::BuildTower) {
+                hover_name_label = "Tower";
+            }
+            else if (button.action == app::CommandPanelAction::BuildMarket) {
+                hover_name_label = "Market";
+            }
+            else if (button.action == app::CommandPanelAction::BuildGarden) {
+                hover_name_label = "Garden";
+            }
+            else if (button.action == app::CommandPanelAction::BuildReservoir) {
+                hover_name_label = "Reservoir";
+            }
+            else if (button.action == app::CommandPanelAction::BuildFarm) {
+                hover_name_label = "Farm";
+            }
+            else if (button.action == app::CommandPanelAction::Build) {
+                hover_name_label = std::string(constants::HUD_HOVER_ECONOMY_BUILDINGS);
+            }
+            else if (button.action == app::CommandPanelAction::OpenMilitaryBuild) {
+                hover_name_label = "Military buildings";
+            }
+            else if (button.action == app::CommandPanelAction::SpawnMage) {
+                hover_name_label = "Mage";
+            }
+            else if (button.action == app::CommandPanelAction::Garrison) {
+                hover_name_label = "Go inside a building";
+            }
+            else if (button.action == app::CommandPanelAction::UnloadGarrison) {
+                hover_name_label = "Remove all units from TC";
+            }
+            else if (button.action == app::CommandPanelAction::AdvanceAge) {
+                hover_name_label = build_options.next_age_name.empty()
+                    ? std::string("New age")
+                    : std::string(build_options.next_age_name);
+            }
+            else if (button.action == app::CommandPanelAction::Kill) {
+                hover_name_label = std::string(constants::HUD_HOVER_KILL);
+            }
+            else if (button.action == app::CommandPanelAction::Destroy) {
+                hover_name_label = std::string(constants::HUD_HOVER_DESTROY);
+            }
+            else if (button.action == app::CommandPanelAction::Deselect) {
+                hover_name_label = std::string(constants::HUD_HOVER_DESELECT);
+            }
+            else if (button.action == app::CommandPanelAction::Back) {
+                hover_name_label = std::string(constants::HUD_HOVER_BACK);
+            }
+            else if (button.action == app::CommandPanelAction::Stop) {
+                hover_name_label = std::string(constants::HUD_HOVER_STOP);
+            }
+            else if (button.action == app::CommandPanelAction::Attack) {
+                hover_name_label = std::string(constants::HUD_HOVER_ATTACK);
+            }
+            else if (button.action == app::CommandPanelAction::ResearchSpy) {
+                hover_name_label = std::string(constants::HUD_HOVER_SPY);
+            }
+            else if (button.action == app::CommandPanelAction::ResearchCartography) {
+                hover_name_label = std::string(constants::HUD_HOVER_CARTOGRAPHY);
+            }
+            else if (button.action == app::CommandPanelAction::MarketSellWood) {
+                hover_name_label = std::string(constants::HUD_HOVER_SELL_WOOD);
+            }
+            else if (button.action == app::CommandPanelAction::MarketSellFood) {
+                hover_name_label = std::string(constants::HUD_HOVER_SELL_FOOD);
+            }
+            else if (button.action == app::CommandPanelAction::MarketBuyWood) {
+                hover_name_label = std::string(constants::HUD_HOVER_BUY_WOOD);
+            }
+            else if (button.action == app::CommandPanelAction::MarketBuyFood) {
+                hover_name_label = std::string(constants::HUD_HOVER_BUY_FOOD);
+            }
 
             hover_cost_parts.clear();
-            if (button.cost_food > 0) {
-                hover_cost_parts.emplace_back(button.cost_food, HudIcon::Food);
+            if (button.locked) {
+                if (button.action == app::CommandPanelAction::BuildGarden) {
+                    hover_name_label = std::string(constants::HUD_HOVER_REQUIRES_MODERN_AGE);
+                }
+                else if (button.action == app::CommandPanelAction::BuildFarm) {
+                    hover_name_label = std::string(constants::HUD_HOVER_REQUIRES_MILL);
+                }
+                else if (button.action == app::CommandPanelAction::ResearchSpy) {
+                    hover_name_label = std::string(constants::HUD_HOVER_REQUIRES_ETERNITY_AGE);
+                }
+                else {
+                    hover_name_label = std::string(constants::HUD_HOVER_REQUIRES_ELEMENTAL_AGE);
+                }
             }
-            if (button.cost_wood > 0) {
-                hover_cost_parts.emplace_back(button.cost_wood, HudIcon::Wood);
-            }
-            if (button.cost_money > 0) {
-                hover_cost_parts.emplace_back(button.cost_money, HudIcon::Money);
+            else {
+                if (button.cost_food > 0) {
+                    hover_cost_parts.emplace_back(button.cost_food, HudIcon::Food);
+                }
+                if (button.cost_wood > 0) {
+                    hover_cost_parts.emplace_back(button.cost_wood, HudIcon::Wood);
+                }
+                if (button.cost_money > 0) {
+                    hover_cost_parts.emplace_back(button.cost_money, HudIcon::Money);
+                }
+                if (button.cost_mana > 0) {
+                    hover_cost_parts.emplace_back(button.cost_mana, HudIcon::Mana);
+                }
             }
         }
 
-        const bool pressed = !button.disabled
+        const bool pressed = !button.disabled && !button.locked
             && ((hovered && mouse_down) || (pressed_slot >= 0 && button.slot == pressed_slot));
-        float button_r = button.disabled
-            ? constants::HUD_UNAFFORDABLE_R
-            : constants::HUD_OPTIONS_BUTTON_R;
-        float button_g = button.disabled
-            ? constants::HUD_UNAFFORDABLE_G
-            : constants::HUD_OPTIONS_BUTTON_G;
-        float button_b = button.disabled
-            ? constants::HUD_UNAFFORDABLE_B
-            : constants::HUD_OPTIONS_BUTTON_B;
+        float button_r = button.locked
+            ? constants::HUD_LOCKED_OPTION_BUTTON_R
+            : (button.disabled
+                ? constants::HUD_UNAFFORDABLE_R
+                : constants::HUD_OPTIONS_BUTTON_R);
+        float button_g = button.locked
+            ? constants::HUD_LOCKED_OPTION_BUTTON_G
+            : (button.disabled
+                ? constants::HUD_UNAFFORDABLE_G
+                : constants::HUD_OPTIONS_BUTTON_G);
+        float button_b = button.locked
+            ? constants::HUD_LOCKED_OPTION_BUTTON_B
+            : (button.disabled
+                ? constants::HUD_UNAFFORDABLE_B
+                : constants::HUD_OPTIONS_BUTTON_B);
         if (!button.disabled && hovered && !pressed) {
             button_r = std::min(1.0F, button_r * constants::HUD_OPTIONS_BUTTON_HOVER_BRIGHTEN);
             button_g = std::min(1.0F, button_g * constants::HUD_OPTIONS_BUTTON_HOVER_BRIGHTEN);
@@ -2841,37 +3307,99 @@ void HudOverlay::draw_command_panel(
         const float draw_w = button.width - press_offset;
         const float draw_h = button.height - press_offset;
 
-        draw_screen_quad(
-            window_size,
-            shader_program,
-            draw_x,
-            draw_y,
-            draw_w,
-            draw_h,
-            button_r * 0.6F,
-            button_g * 0.6F,
-            button_b * 0.6F);
-        draw_screen_quad(
-            window_size,
-            shader_program,
-            draw_x + 1.0F,
-            draw_y + 1.0F,
-            draw_w - 2.0F,
-            draw_h - 2.0F,
-            button_r,
-            button_g,
-            button_b);
+        if (button.locked) {
+            const float border = constants::HUD_LOCKED_OPTION_BORDER_PX;
+            const float border_a = constants::HUD_LOCKED_OPTION_BORDER_A;
+            draw_screen_quad(
+                window_size,
+                shader_program,
+                draw_x,
+                draw_y,
+                draw_w,
+                border,
+                button_r,
+                button_g,
+                button_b,
+                border_a);
+            draw_screen_quad(
+                window_size,
+                shader_program,
+                draw_x,
+                draw_y + draw_h - border,
+                draw_w,
+                border,
+                button_r,
+                button_g,
+                button_b,
+                border_a);
+            draw_screen_quad(
+                window_size,
+                shader_program,
+                draw_x,
+                draw_y + border,
+                border,
+                draw_h - border * 2.0F,
+                button_r,
+                button_g,
+                button_b,
+                border_a);
+            draw_screen_quad(
+                window_size,
+                shader_program,
+                draw_x + draw_w - border,
+                draw_y + border,
+                border,
+                draw_h - border * 2.0F,
+                button_r,
+                button_g,
+                button_b,
+                border_a);
+        }
+        else {
+            draw_screen_quad(
+                window_size,
+                shader_program,
+                draw_x,
+                draw_y,
+                draw_w,
+                draw_h,
+                button_r * 0.6F,
+                button_g * 0.6F,
+                button_b * 0.6F,
+                1.0F);
+            draw_screen_quad(
+                window_size,
+                shader_program,
+                draw_x + 1.0F,
+                draw_y + 1.0F,
+                draw_w - 2.0F,
+                draw_h - 2.0F,
+                button_r,
+                button_g,
+                button_b,
+                1.0F);
+        }
 
         const float inset = static_cast<float>(constants::HUD_ICON_OPTION_INSET_PX);
-        const float icon_size = std::max(1.0F, std::min(draw_w, draw_h) - inset * 2.0F);
+        const float max_fit = std::max(1.0F, std::min(draw_w, draw_h) - inset * 2.0F);
+        const float icon_size = std::min(
+            max_fit, static_cast<float>(constants::HUD_ICON_DRAW_SIZE_PX));
         const float icon_x = draw_x + (draw_w - icon_size) * 0.5F;
         const float icon_y = draw_y + (draw_h - icon_size) * 0.5F;
-        draw_icon(
-            window_size,
-            icon_x,
-            icon_y,
-            icon_size,
-            icon_for_command_action(button.action));
+        const float icon_a = button.locked ? constants::HUD_LOCKED_OPTION_ICON_A : 1.0F;
+        const std::optional<EarthBuildIcon> earth_icon = earth_build_icon_for_action(button.action);
+        if (earth_icon.has_value()) {
+            draw_earth_build_icon(window_size, icon_x, icon_y, icon_size, *earth_icon, icon_a);
+        }
+        else {
+            draw_icon(
+                window_size,
+                icon_x,
+                icon_y,
+                icon_size,
+                icon_for_command_action(button.action),
+                icon_a);
+        }
     }
 
     const float hover_text_height =
@@ -3018,6 +3546,20 @@ void HudOverlay::draw_info_panel(const sf::Vector2u window_size, const HudInfoPa
         text_y += line_height;
     }
 
+    if (panel.has_relation && can_draw_line(line_height)) {
+        draw_string(
+            window_size,
+            text_x,
+            text_y,
+            panel.is_friend
+                ? std::string(constants::HUD_FRIEND_LABEL)
+                : std::string(constants::HUD_ENEMY_LABEL),
+            panel.is_friend ? constants::HUD_FRIEND_R : constants::HUD_ENEMY_R,
+            panel.is_friend ? constants::HUD_FRIEND_G : constants::HUD_ENEMY_G,
+            panel.is_friend ? constants::HUD_FRIEND_B : constants::HUD_ENEMY_B);
+        text_y += line_height;
+    }
+
     if (panel.has_health && can_draw_line(line_height)) {
         draw_string(
             window_size,
@@ -3025,6 +3567,24 @@ void HudOverlay::draw_info_panel(const sf::Vector2u window_size, const HudInfoPa
             text_y,
             "HP: " + std::to_string(panel.health_current) + "/"
                 + std::to_string(panel.health_max),
+            constants::HUD_TEXT_R,
+            constants::HUD_TEXT_G,
+            constants::HUD_TEXT_B);
+        text_y += line_height;
+    }
+
+    if (panel.has_process && can_draw_line(line_height)) {
+        const std::string process_label =
+            std::string(
+                panel.process_is_research
+                    ? constants::HUD_RESEARCH_PROGRESS_PREFIX
+                    : constants::HUD_TRAINING_PROGRESS_PREFIX)
+            + std::to_string(panel.process_percent) + "%";
+        draw_string(
+            window_size,
+            text_x,
+            text_y,
+            process_label,
             constants::HUD_TEXT_R,
             constants::HUD_TEXT_G,
             constants::HUD_TEXT_B);
@@ -3114,6 +3674,47 @@ void HudOverlay::draw_info_panel(const sf::Vector2u window_size, const HudInfoPa
         text_y += line_height;
     }
 
+    if (panel.has_garden_production) {
+        const float prod_icon_size = static_cast<float>(constants::HUD_ICON_TILE_SIZE_PX);
+        const float prod_line_height =
+            std::max(line_height, prod_icon_size + static_cast<float>(constants::HUD_LINE_SPACING));
+        if (can_draw_line(prod_line_height)) {
+            const float char_step = static_cast<float>(
+                (GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
+            const float label_y =
+                text_y
+                + (prod_icon_size - static_cast<float>(GLYPH_HEIGHT * constants::HUD_PIXEL_SCALE))
+                    * 0.5F;
+            float cursor_x = text_x;
+            const auto draw_fragment = [&](const std::string& text) {
+                draw_string(
+                    window_size,
+                    cursor_x,
+                    label_y,
+                    text,
+                    constants::HUD_TEXT_R,
+                    constants::HUD_TEXT_G,
+                    constants::HUD_TEXT_B);
+                cursor_x += static_cast<float>(text.size()) * char_step;
+            };
+            const auto draw_resource_icon = [&](const HudIcon icon) {
+                draw_icon(window_size, cursor_x, text_y, prod_icon_size, icon);
+                cursor_x += prod_icon_size + icon_gap;
+            };
+
+            draw_fragment("Produces +");
+            draw_fragment(std::to_string(constants::GARDEN_PROD_WOOD));
+            draw_resource_icon(HudIcon::Wood);
+            draw_fragment("+");
+            draw_fragment(std::to_string(constants::GARDEN_PROD_FOOD));
+            draw_resource_icon(HudIcon::Food);
+            draw_fragment(
+                "/ " + std::to_string(constants::GARDEN_PROD_INTERVAL_SECONDS) + "s ("
+                + std::to_string(panel.garden_percent) + "%)");
+            text_y += prod_line_height;
+        }
+    }
+
     if (panel.has_combat_stats) {
         if (can_draw_line(line_height)) {
             draw_string(
@@ -3158,6 +3759,23 @@ void HudOverlay::draw_info_panel(const sf::Vector2u window_size, const HudInfoPa
     }
 }
 
+void HudOverlay::draw_age_title(const sf::Vector2u window_size, const constants::PlayerAge age) const
+{
+    const std::string_view name = sim::components::player_age_name(age);
+    const float char_step = static_cast<float>(
+        (GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
+    const float text_width = static_cast<float>(name.size()) * char_step;
+    const float x = (static_cast<float>(window_size.x) - text_width) * 0.5F;
+    draw_string(
+        window_size,
+        x,
+        constants::HUD_MARGIN_Y,
+        std::string(name),
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G,
+        constants::HUD_TEXT_B);
+}
+
 void HudOverlay::draw_chat(
     const sf::Vector2u window_size,
     const float top_y,
@@ -3172,31 +3790,15 @@ void HudOverlay::draw_chat(
         static_cast<float>(GLYPH_HEIGHT * constants::HUD_PIXEL_SCALE + constants::HUD_LINE_SPACING);
     const float char_step = static_cast<float>(
         (GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
-    const float pad = static_cast<float>(constants::HUD_FLOATING_LABEL_PAD_PX);
-    float longest_line_width = 0.0F;
-    int visible_lines = 0;
-    for (const app::ChatLine& line : unit_context.chat_lines) {
-        if (visible_lines >= constants::CHAT_MAX_VISIBLE_LINES) {
-            break;
+    const auto chat_player_name = [&](const std::uint8_t player_slot) {
+        if (player_slot < unit_context.player_names.size()
+            && !unit_context.player_names[player_slot].empty()) {
+            return unit_context.player_names[player_slot];
         }
-        const std::string text = line.system
-            ? line.text
-            : ("P" + std::to_string(static_cast<int>(line.player_slot) + 1) + ": " + line.text);
-        longest_line_width = std::max(longest_line_width, static_cast<float>(text.size()) * char_step);
-        ++visible_lines;
-    }
-    if (visible_lines > 0) {
-        draw_screen_quad(
-            window_size,
-            hud_shader_program(),
-            x - pad,
-            y - pad,
-            longest_line_width + pad * 2.0F,
-            static_cast<float>(visible_lines) * line_height + pad * 2.0F,
-            constants::HUD_OPTIONS_FRAME_R,
-            constants::HUD_OPTIONS_FRAME_G,
-            constants::HUD_OPTIONS_FRAME_B);
-    }
+
+        return std::string("Player ") + std::to_string(static_cast<int>(player_slot) + 1);
+    };
+
     float text_y = y;
     int drawn_lines = 0;
     for (const app::ChatLine& line : unit_context.chat_lines) {
@@ -3204,17 +3806,52 @@ void HudOverlay::draw_chat(
             break;
         }
 
-        const std::string text = line.system
-            ? line.text
-            : ("P" + std::to_string(static_cast<int>(line.player_slot) + 1) + ": " + line.text);
-        draw_string(
-            window_size,
-            x,
-            text_y,
-            text,
-            constants::HUD_TEXT_R,
-            constants::HUD_TEXT_G,
-            constants::HUD_TEXT_B);
+        if (line.system && !line.spans.empty()) {
+            float span_x = x;
+            for (const app::ChatTextSpan& span : line.spans) {
+                if (span.text.empty()) {
+                    continue;
+                }
+
+                float r = constants::HUD_TEXT_R;
+                float g = constants::HUD_TEXT_G;
+                float b = constants::HUD_TEXT_B;
+                if (span.use_player_color) {
+                    const auto& rgb = sim::components::player_slot_rgb(
+                        hud_player_color_indices, span.color_player_slot);
+                    r = rgb[0];
+                    g = rgb[1];
+                    b = rgb[2];
+                }
+
+                draw_string(window_size, span_x, text_y, span.text, r, g, b);
+                span_x += static_cast<float>(span.text.size()) * char_step;
+            }
+        }
+        else if (line.system) {
+            draw_string(
+                window_size,
+                x,
+                text_y,
+                line.text,
+                constants::HUD_TEXT_R,
+                constants::HUD_TEXT_G,
+                constants::HUD_TEXT_B);
+        }
+        else {
+            const std::string name = chat_player_name(line.player_slot);
+            const auto& rgb = sim::components::player_slot_rgb(
+                hud_player_color_indices, line.player_slot);
+            draw_string(window_size, x, text_y, name, rgb[0], rgb[1], rgb[2]);
+            draw_string(
+                window_size,
+                x + static_cast<float>(name.size()) * char_step,
+                text_y,
+                ": " + line.text,
+                constants::HUD_TEXT_R,
+                constants::HUD_TEXT_G,
+                constants::HUD_TEXT_B);
+        }
         text_y += line_height;
         ++drawn_lines;
     }
@@ -3908,6 +4545,11 @@ void HudOverlay::draw(
         civil_cap_current,
         civil_cap_max);
     left_y += resource_line_height;
+    if (unit_context.has_match_session) {
+        draw_age_title(
+            window_size,
+            sim::components::player_age(unit_context.match_session, local_player_slot));
+    }
     draw_chat(window_size, left_y, unit_context);
 
     const HudInfoPanel info_panel =
@@ -4018,6 +4660,13 @@ void HudOverlay::draw_snapshot(
         local_stats.civil_cap_current,
         local_stats.civil_cap_max);
     left_y += resource_line_height;
+    if (local_player_slot < snapshot.player_ages.size()) {
+        const std::uint8_t raw = snapshot.player_ages[local_player_slot];
+        const auto age = raw > static_cast<std::uint8_t>(constants::PlayerAge::Spirit)
+            ? constants::PlayerAge::Human
+            : static_cast<constants::PlayerAge>(raw);
+        draw_age_title(window_size, age);
+    }
     draw_chat(window_size, left_y, unit_context);
 
     const HudInfoPanel info_panel =

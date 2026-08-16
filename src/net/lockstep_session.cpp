@@ -11,6 +11,7 @@
 #include "net/reconnect_wire.hpp"
 #include "render/sim_render_snapshot.hpp"
 #include "sim/components/match_session.hpp"
+#include "sim/components/map_grid.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/snapshot/entity_snapshot_key.hpp"
 #include "sim/snapshot/sim_snapshot.hpp"
@@ -57,8 +58,13 @@ bool validate_snapshot_roundtrip(sim::Simulation& source, const std::vector<std:
         return false;
     }
 
-    (void)source;
-    return true;
+    sim::Simulation probe{};
+    if (!probe.apply_snapshot(snapshot_bytes)) {
+        sim::diagnose_snapshot_roundtrip_failure(source, probe, snapshot_bytes);
+        return false;
+    }
+
+    return probe.state_hash() == source.state_hash();
 }
 
 [[nodiscard]] bool ai_should_think_this_tick(
@@ -147,12 +153,44 @@ bool LockstepSession::apply_reconnect_snapshot_locally(const std::span<const std
         return false;
     }
 
+    restore_match_identity_after_snapshot();
+
     // Entity ids are remapped by snapshot restore; last-seen poses are invalid.
     building_sight_memory_.clear();
     simulation_.snapshot_world_positions_for_render();
     publish_render_snapshot_locked();
     sync_command_sequences_from_input_log();
     return true;
+}
+
+void LockstepSession::restore_match_identity_after_snapshot()
+{
+    const auto world_view =
+        simulation_.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+    if (world_view.begin() == world_view.end()) {
+        return;
+    }
+
+    auto& match_session = world_view.get<sim::components::MatchSession>(*world_view.begin());
+    match_session.player_color_indices = lobby_slot_colors_;
+    if (session_player_count_ > 0U
+        && session_player_count_ <= static_cast<std::uint8_t>(aoa::constants::MAX_PLAYER_SLOTS)) {
+        match_session.playing_slots_mask =
+            static_cast<std::uint8_t>((1U << session_player_count_) - 1U);
+    }
+
+    if (!lobby_settings_configured_) {
+        return;
+    }
+
+    match_session.civil_population_map_cap =
+        static_cast<int>(lobby_settings_.civil_population_map_cap);
+    match_session.fog_of_war_mode =
+        static_cast<sim::components::FogOfWarMode>(lobby_settings_.fog_mode);
+    match_session.fog_of_war_enabled = lobby_settings_.fog_of_war_enabled;
+    match_session.cheats_enabled = lobby_settings_.cheats_enabled;
+    match_session.victory_condition =
+        static_cast<sim::components::VictoryCondition>(lobby_settings_.victory_condition);
 }
 
 LockstepSession::LockstepSession(
@@ -954,6 +992,10 @@ void LockstepSession::submit_local_command(sim::player::PlayerCommand command)
         return;
     }
 
+    if (commands_blocked_during_resync()) {
+        return;
+    }
+
     if (ai_fallback_ && role_ != LockstepRole::Host) {
         return;
     }
@@ -979,7 +1021,13 @@ void LockstepSession::submit_local_command(sim::player::PlayerCommand command)
     if ((command.type == sim::player::PlayerCommandType::Attack
             || command.type == sim::player::PlayerCommandType::SpawnWorker
             || command.type == sim::player::PlayerCommandType::SpawnMilitia
-            || command.type == sim::player::PlayerCommandType::DestroyBuilding)
+            || command.type == sim::player::PlayerCommandType::SpawnMage
+            || command.type == sim::player::PlayerCommandType::DestroyBuilding
+            || command.type == sim::player::PlayerCommandType::Garrison
+            || command.type == sim::player::PlayerCommandType::UnloadGarrison
+            || command.type == sim::player::PlayerCommandType::AdvanceAge
+            || command.type == sim::player::PlayerCommandType::ResumeBuild
+            || command.type == sim::player::PlayerCommandType::RenewFarm)
         && command.target_entity != entt::null && !command.target_entity_key.has_value()) {
         return;
     }
@@ -1004,6 +1052,27 @@ void LockstepSession::configure_ai_slots(
     const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_ai)
 {
     slot_is_ai_ = slot_is_ai;
+}
+
+void LockstepSession::configure_lobby_settings(
+    const LobbySettings& settings,
+    const std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS>& slot_teams,
+    const std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS>& slot_colors)
+{
+    lobby_settings_ = settings;
+    lobby_slot_teams_ = slot_teams;
+    lobby_slot_colors_ = slot_colors;
+    lobby_settings_configured_ = true;
+}
+
+bool LockstepSession::commands_blocked_during_resync() const
+{
+    if (awaiting_reconnect_handshake_blocks_tick_advance(
+            role_, awaiting_reconnect_handshake_, session_player_count_)) {
+        return true;
+    }
+
+    return !session_ready_ && !ai_fallback_;
 }
 
 std::uint8_t LockstepSession::expected_human_player_count() const
@@ -1101,16 +1170,11 @@ bool LockstepSession::try_accept_mid_match_lobby_rejoin(
         return false;
     }
 
-    LobbySettings settings{};
+    LobbySettings settings = lobby_settings_;
     settings.player_count = session_player_count_;
-    settings.civil_population_map_cap =
-        static_cast<std::uint8_t>(aoa::constants::CIVIL_POPULATION_MAP_CAP_DEFAULT);
-    settings.fog_of_war_enabled = true;
 
-    std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> slot_colors{};
-    for (std::uint8_t slot = 0U; slot < slot_colors.size(); ++slot) {
-        slot_colors[slot] = slot;
-    }
+    std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> slot_colors = lobby_slot_colors_;
+    std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> slot_teams = lobby_slot_teams_;
 
     const auto world_view =
         simulation_.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
@@ -1120,7 +1184,16 @@ bool LockstepSession::try_accept_mid_match_lobby_rejoin(
             static_cast<std::uint8_t>(std::clamp(match_session.civil_population_map_cap, 0, 255));
         settings.fog_of_war_enabled = match_session.fog_of_war_enabled;
         settings.fog_mode = static_cast<std::uint8_t>(match_session.fog_of_war_mode);
+        settings.cheats_enabled = match_session.cheats_enabled;
+        settings.victory_condition = static_cast<std::uint8_t>(match_session.victory_condition);
         slot_colors = match_session.player_color_indices;
+
+        if (simulation_.registry().all_of<sim::components::MapGrid>(*world_view.begin())) {
+            const auto& map =
+                simulation_.registry().get<sim::components::MapGrid>(*world_view.begin());
+            settings.map_width = static_cast<std::int16_t>(map.width);
+            settings.map_height = static_cast<std::int16_t>(map.height);
+        }
     }
 
     LobbyStateMessage state{};
@@ -1133,6 +1206,7 @@ bool LockstepSession::try_accept_mid_match_lobby_rejoin(
         state.slots[slot].kind =
             slot == 0U ? LobbySlotKind::Host : LobbySlotKind::Enabled;
         state.slots[slot].color = slot_colors[slot];
+        state.slots[slot].team = slot_teams[slot];
         state.slots[slot].name = player_names_[slot].empty()
             ? ("Player " + std::to_string(static_cast<int>(slot) + 1))
             : player_names_[slot];
@@ -1809,7 +1883,7 @@ void LockstepSession::maybe_timeout_resync_handshake()
 bool LockstepSession::should_send_reconnect_snapshot_now() const
 {
     if (!is_multi_peer_session(session_player_count_) && client_resync_ready_
-        && !awaiting_reconnect_handshake_) {
+        && !awaiting_reconnect_handshake_ && !opponent_needs_snapshot_) {
         return false;
     }
 
@@ -1856,7 +1930,7 @@ void LockstepSession::maybe_send_pending_reconnect_snapshot()
         return;
     }
 
-    if (client_resync_ready_ && !awaiting_reconnect_handshake_) {
+    if (client_resync_ready_ && !awaiting_reconnect_handshake_ && !opponent_needs_snapshot_) {
         opponent_needs_snapshot_ = false;
         return;
     }
@@ -1927,7 +2001,7 @@ void LockstepSession::send_join_accepted_to_all_connected_clients()
 
 void LockstepSession::send_reconnect_snapshot()
 {
-    if (client_resync_ready_ && !awaiting_reconnect_handshake_) {
+    if (client_resync_ready_ && !awaiting_reconnect_handshake_ && !opponent_needs_snapshot_) {
         opponent_needs_snapshot_ = false;
         LockstepDebugLog::log_event(
             "snapshot_send_skipped",
@@ -2522,6 +2596,7 @@ void LockstepSession::handle_reconnect_snapshot(const std::vector<std::byte>& pa
         session_ready_ = false;
         reconnect_request_sent_ = false;
         std::cerr << "lockstep reconnect: failed to apply snapshot — will retry on next request\n";
+        push_system_chat("Failed to apply match snapshot. Retrying...");
         return;
     }
 
@@ -3111,6 +3186,7 @@ void LockstepSession::process_received_packet(
         && decoded_message->first == NetMessageKind::LobbyJoin) {
         const auto join = decode_lobby_join(decoded_message->second);
         if (join.has_value()
+            && join->version == aoa::constants::GAME_VERSION
             && try_accept_mid_match_lobby_rejoin(sender_slot, join->name)) {
             return;
         }

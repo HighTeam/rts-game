@@ -8,6 +8,14 @@
 
 namespace aoa::sim::systems {
 
+[[nodiscard]] entt::entity find_deposit_building(
+    entt::registry& registry,
+    std::uint8_t player_slot,
+    core::GridPos worker_pos,
+    int carried_wood,
+    int carried_food,
+    int carried_money);
+
 void run_gameplay_systems(entt::registry& registry);
 void compute_state_hash(entt::registry& registry);
 void snapshot_world_positions_for_render(entt::registry& registry);

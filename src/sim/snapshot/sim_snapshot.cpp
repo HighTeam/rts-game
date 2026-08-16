@@ -8,6 +8,8 @@
 
 #include "data/content_types.hpp"
 
+#include "sim/components/building_process.hpp"
+
 #include "sim/components/combat.hpp"
 
 #include "sim/components/content_pack.hpp"
@@ -66,7 +68,7 @@ namespace {
 
 constexpr std::uint32_t SNAPSHOT_MAGIC = 0x414F4153U; // AOAS
 
-constexpr std::uint16_t SNAPSHOT_VERSION = 16U;
+constexpr std::uint16_t SNAPSHOT_VERSION = 21U;
 
 
 
@@ -101,6 +103,8 @@ enum class EntityStateFlags : std::uint16_t {
     CarriedFood = 1U << 13,
 
     CarriedMoney = 1U << 14,
+
+    Garrisoned = 1U << 15,
 
 };
 
@@ -159,6 +163,12 @@ struct EntityStateRecord {
     components::MovePath move_path{};
 
     components::MoveSegment move_segment{};
+
+    std::uint8_t process_kind{0U};
+
+    std::int32_t process_ticks_remaining{0};
+
+    std::int32_t process_ticks_total{0};
 
 };
 
@@ -258,7 +268,7 @@ void append_entity_snapshot_key(std::vector<std::byte>& out, const snapshot::Ent
 
 
 
-    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::ManaLake)) {
+    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::Farm)) {
 
         return false;
 
@@ -431,6 +441,13 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
         record.carried_food = registry.get<components::CarriedFood>(entity).amount;
 
     }
+    else if (registry.any_of<components::FarmFood>(entity)) {
+
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::CarriedFood);
+
+        record.carried_food = registry.get<components::FarmFood>(entity).remaining;
+
+    }
 
 
 
@@ -532,6 +549,27 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
 
     }
 
+    if (registry.any_of<components::Projectile>(entity)) {
+        const auto& projectile = registry.get<components::Projectile>(entity);
+        record.carried_wood = projectile.pierce_damage;
+        if (projectile.target != entt::null) {
+            const auto target_key = snapshot::compute_entity_snapshot_key(registry, projectile.target);
+            if (target_key.has_value()) {
+                record.flags |= static_cast<std::uint16_t>(EntityStateFlags::AttackOrder);
+                record.attack_target_key = *target_key;
+            }
+        }
+    }
+
+    if (registry.any_of<components::GarrisonedTag>(entity)) {
+        record.flags |= static_cast<std::uint16_t>(EntityStateFlags::Garrisoned);
+        const entt::entity building = registry.get<components::GarrisonedTag>(entity).building;
+        const auto building_key = snapshot::compute_entity_snapshot_key(registry, building);
+        if (building_key.has_value()) {
+            record.attack_target_key = *building_key;
+        }
+    }
+
 
 
     if (registry.any_of<components::GatherCooldown>(entity)) {
@@ -591,6 +629,20 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
         record.flags |= static_cast<std::uint16_t>(EntityStateFlags::MoveSegment);
 
         record.move_segment = registry.get<components::MoveSegment>(entity);
+
+    }
+
+
+
+    if (registry.any_of<components::BuildingProcess>(entity)) {
+
+        const auto& process = registry.get<components::BuildingProcess>(entity);
+
+        record.process_kind = static_cast<std::uint8_t>(process.kind);
+
+        record.process_ticks_remaining = process.ticks_remaining;
+
+        record.process_ticks_total = process.ticks_total;
 
     }
 
@@ -775,6 +827,12 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
         append_pod(out, record.move_segment.blocked_ticks);
 
     }
+
+    append_pod(out, record.process_kind);
+
+    append_pod(out, record.process_ticks_remaining);
+
+    append_pod(out, record.process_ticks_total);
 
 }
 
@@ -1053,6 +1111,16 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
 
 
+    if (!read_pod(cursor, record.process_kind)
+        || !read_pod(cursor, record.process_ticks_remaining)
+        || !read_pod(cursor, record.process_ticks_total)) {
+
+        return std::nullopt;
+
+    }
+
+
+
     return record;
 
 }
@@ -1307,15 +1375,15 @@ entt::entity ensure_entity_for_record(
 
     }
 
-    case snapshot::EntitySnapshotCategory::Lumberjack: {
+    case snapshot::EntitySnapshotCategory::LumberCamp: {
 
-        const auto* lumberjack_archetype = data::find_structure_archetype(
+        const auto* lumber_camp_archetype = data::find_structure_archetype(
 
             content_pack.content,
 
-            std::string(constants::LUMBERJACK_BUILDING_ID));
+            std::string(constants::LUMBER_CAMP_BUILDING_ID));
 
-        if (lumberjack_archetype == nullptr) {
+        if (lumber_camp_archetype == nullptr) {
 
             return entt::null;
 
@@ -1326,11 +1394,11 @@ entt::entity ensure_entity_for_record(
         const bool under_construction =
             (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
 
-        return spawn::spawn_player_lumberjack(
+        return spawn::spawn_player_lumber_camp(
 
             registry,
 
-            *lumberjack_archetype,
+            *lumber_camp_archetype,
 
             record.grid_cell,
 
@@ -1373,6 +1441,182 @@ entt::entity ensure_entity_for_record(
 
     }
 
+    case snapshot::EntitySnapshotCategory::Mill: {
+        const auto* mill_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::MILL_BUILDING_ID));
+        if (mill_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_mill(
+            registry,
+            *mill_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::MiningCamp: {
+        const auto* mining_camp_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::MINING_CAMP_BUILDING_ID));
+        if (mining_camp_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_mining_camp(
+            registry,
+            *mining_camp_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Barracks: {
+        const auto* barracks_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::BARRACKS_BUILDING_ID));
+        if (barracks_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_barracks(
+            registry,
+            *barracks_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::MageAcademy: {
+        const auto* mage_academy_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::MAGE_ACADEMY_BUILDING_ID));
+        if (mage_academy_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_mage_academy(
+            registry,
+            *mage_academy_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Tower: {
+        const auto* tower_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::TOWER_BUILDING_ID));
+        if (tower_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_tower(
+            registry,
+            *tower_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Market: {
+        const auto* market_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::MARKET_BUILDING_ID));
+        if (market_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_market(
+            registry,
+            *market_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Garden: {
+        const auto* garden_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::GARDEN_BUILDING_ID));
+        if (garden_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_garden(
+            registry,
+            *garden_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Reservoir: {
+        const auto* reservoir_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::RESERVOIR_BUILDING_ID));
+        if (reservoir_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_reservoir(
+            registry,
+            *reservoir_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Farm: {
+        const auto* farm_archetype = data::find_structure_archetype(
+            content_pack.content,
+            std::string(constants::FARM_BUILDING_ID));
+        if (farm_archetype == nullptr) {
+            return entt::null;
+        }
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+        return spawn::spawn_player_farm(
+            registry,
+            *farm_archetype,
+            record.grid_cell,
+            record.key.player_slot,
+            under_construction);
+    }
+    case snapshot::EntitySnapshotCategory::Mage: {
+        const auto* mage_archetype = data::find_unit_archetype(
+            content_pack.content,
+            std::string(constants::MAGE_UNIT_ID));
+        if (mage_archetype == nullptr) {
+            return entt::null;
+        }
+
+        return spawn::spawn_player_mage(
+            registry,
+            *mage_archetype,
+            record.grid_cell,
+            record.key.player_slot);
+    }
+    case snapshot::EntitySnapshotCategory::Projectile: {
+        return spawn::spawn_rock_projectile(
+            registry,
+            record.world_x,
+            record.world_y,
+            entt::null,
+            record.key.player_slot,
+            record.carried_wood);
+    }
     case snapshot::EntitySnapshotCategory::ManaLake: {
 
         const auto* mana_lake_archetype = data::find_structure_archetype(
@@ -1443,6 +1687,8 @@ void clear_optional_components(entt::registry& registry, const entt::entity enti
 
     registry.remove<components::CarriedFood>(entity);
 
+    registry.remove<components::FarmFood>(entity);
+
     registry.remove<components::CarriedMoney>(entity);
 
     registry.remove<components::Stockpile>(entity);
@@ -1465,9 +1711,15 @@ void clear_optional_components(entt::registry& registry, const entt::entity enti
 
     registry.remove<components::ManualControlTag>(entity);
 
+    registry.remove<components::GarrisonedTag>(entity);
+
+    registry.remove<components::GarrisonOrder>(entity);
+
     registry.remove<components::MovePath>(entity);
 
     registry.remove<components::MoveSegment>(entity);
+
+    registry.remove<components::BuildingProcess>(entity);
 
     registry.remove<components::EntitySnapshotIdentity>(entity);
 
@@ -1497,9 +1749,18 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
     if (record.key.category != snapshot::EntitySnapshotCategory::TownCenter
         && record.key.category != snapshot::EntitySnapshotCategory::House
-        && record.key.category != snapshot::EntitySnapshotCategory::Lumberjack
+        && record.key.category != snapshot::EntitySnapshotCategory::LumberCamp
         && record.key.category != snapshot::EntitySnapshotCategory::Extractor
-        && record.key.category != snapshot::EntitySnapshotCategory::ManaLake) {
+        && record.key.category != snapshot::EntitySnapshotCategory::ManaLake
+        && record.key.category != snapshot::EntitySnapshotCategory::Mill
+        && record.key.category != snapshot::EntitySnapshotCategory::MiningCamp
+        && record.key.category != snapshot::EntitySnapshotCategory::Barracks
+        && record.key.category != snapshot::EntitySnapshotCategory::MageAcademy
+        && record.key.category != snapshot::EntitySnapshotCategory::Tower
+        && record.key.category != snapshot::EntitySnapshotCategory::Market
+        && record.key.category != snapshot::EntitySnapshotCategory::Garden
+        && record.key.category != snapshot::EntitySnapshotCategory::Reservoir
+        && record.key.category != snapshot::EntitySnapshotCategory::Farm) {
 
         auto& world = registry.get_or_emplace<components::WorldPosition>(entity);
 
@@ -1536,9 +1797,14 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
 
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::CarriedFood)) != 0U) {
-
-        registry.get_or_emplace<components::CarriedFood>(entity).amount = record.carried_food;
-
+        if (record.key.category == snapshot::EntitySnapshotCategory::Farm) {
+            auto& farm_food = registry.get_or_emplace<components::FarmFood>(entity);
+            farm_food.remaining = record.carried_food;
+            farm_food.max = constants::FARM_FOOD_AMOUNT;
+        }
+        else {
+            registry.get_or_emplace<components::CarriedFood>(entity).amount = record.carried_food;
+        }
     }
 
 
@@ -1667,6 +1933,19 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
 
 
+    if (record.process_kind != 0U && record.process_ticks_total > 0) {
+
+        registry.emplace<components::BuildingProcess>(
+            entity,
+            components::BuildingProcess{
+                static_cast<components::BuildingProcessKind>(record.process_kind),
+                record.process_ticks_remaining,
+                record.process_ticks_total});
+
+    }
+
+
+
     snapshot::set_entity_snapshot_identity(registry, entity, record.key);
 
 }
@@ -1677,17 +1956,41 @@ void apply_entity_attack_orders(entt::registry& registry, const EntityStateRecor
 
 {
 
-    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::AttackOrder)) == 0U) {
+    const entt::entity entity = snapshot::resolve_entity_snapshot_key(registry, record.key);
+
+    if (entity == entt::null) {
 
         return;
 
     }
 
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::Garrisoned)) != 0U) {
+        const entt::entity building =
+            snapshot::resolve_entity_snapshot_key(registry, record.attack_target_key);
+        if (building != entt::null) {
+            registry.emplace_or_replace<components::GarrisonedTag>(
+                entity,
+                components::GarrisonedTag{building});
+            if (registry.any_of<components::GarrisonHold>(building)) {
+                auto& hold = registry.get<components::GarrisonHold>(building);
+                if (std::find(hold.units.begin(), hold.units.end(), entity) == hold.units.end()) {
+                    hold.units.push_back(entity);
+                }
+            }
+        }
+    }
 
+    if (registry.any_of<components::Projectile>(entity)) {
+        auto& projectile = registry.get<components::Projectile>(entity);
+        projectile.pierce_damage = record.carried_wood;
+        if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::AttackOrder)) != 0U) {
+            projectile.target =
+                snapshot::resolve_entity_snapshot_key(registry, record.attack_target_key);
+        }
+        return;
+    }
 
-    const entt::entity entity = snapshot::resolve_entity_snapshot_key(registry, record.key);
-
-    if (entity == entt::null) {
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::AttackOrder)) == 0U) {
 
         return;
 
@@ -1757,6 +2060,10 @@ struct DecodedSnapshot {
 
     SimSnapshot metadata{};
 
+    int map_width{0};
+
+    int map_height{0};
+
     std::vector<int> forest_wood{};
 
     std::vector<int> bush_food{};
@@ -1821,6 +2128,36 @@ struct DecodedSnapshot {
 
         return std::nullopt;
 
+    }
+
+    for (std::uint8_t& age : decoded.metadata.player_ages) {
+        if (!read_pod(cursor, age)) {
+            return std::nullopt;
+        }
+    }
+
+    for (std::uint8_t& side : decoded.metadata.player_side_indices) {
+        if (!read_pod(cursor, side)) {
+            return std::nullopt;
+        }
+    }
+
+    for (std::uint8_t& cartography : decoded.metadata.player_cartography) {
+        if (!read_pod(cursor, cartography)) {
+            return std::nullopt;
+        }
+    }
+
+    for (std::uint8_t& spy : decoded.metadata.player_spy) {
+        if (!read_pod(cursor, spy)) {
+            return std::nullopt;
+        }
+    }
+
+    for (std::uint8_t& built_mill : decoded.metadata.player_built_mill) {
+        if (!read_pod(cursor, built_mill)) {
+            return std::nullopt;
+        }
     }
 
 
@@ -1900,6 +2237,24 @@ struct DecodedSnapshot {
         cursor = cursor.subspan(command_size);
 
     }
+
+
+
+    std::int32_t map_width = 0;
+
+    std::int32_t map_height = 0;
+
+    if (!read_pod(cursor, map_width) || !read_pod(cursor, map_height) || map_width <= 0
+
+        || map_height <= 0) {
+
+        return std::nullopt;
+
+    }
+
+    decoded.map_width = map_width;
+
+    decoded.map_height = map_height;
 
 
 
@@ -2249,6 +2604,14 @@ SimSnapshot Simulation::export_snapshot() const
 
         snapshot.fog_of_war_enabled = session.fog_of_war_enabled ? 1U : 0U;
 
+        snapshot.player_ages = session.player_ages;
+
+        snapshot.player_side_indices = session.player_side_indices;
+
+        snapshot.player_cartography = session.player_cartography;
+        snapshot.player_spy = session.player_spy;
+        snapshot.player_built_mill = session.player_built_mill;
+
     }
 
 
@@ -2341,6 +2704,26 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
     append_pod(out, metadata.civil_population_map_cap);
 
     append_pod(out, metadata.fog_of_war_enabled);
+
+    for (const std::uint8_t age : metadata.player_ages) {
+        append_pod(out, age);
+    }
+
+    for (const std::uint8_t side : metadata.player_side_indices) {
+        append_pod(out, side);
+    }
+
+    for (const std::uint8_t cartography : metadata.player_cartography) {
+        append_pod(out, cartography);
+    }
+
+    for (const std::uint8_t spy : metadata.player_spy) {
+        append_pod(out, spy);
+    }
+
+    for (const std::uint8_t built_mill : metadata.player_built_mill) {
+        append_pod(out, built_mill);
+    }
 
 
 
@@ -2439,6 +2822,10 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
 
     const auto forest_count = static_cast<std::uint32_t>(map.forest_wood.size());
+
+    append_pod(out, static_cast<std::int32_t>(map.width));
+
+    append_pod(out, static_cast<std::int32_t>(map.height));
 
     append_pod(out, forest_count);
 
@@ -2644,65 +3031,30 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
     auto& map = simulation.registry().get<components::MapGrid>(world);
 
-    if (decoded->forest_wood.size() != map.forest_wood.size()) {
-
-        std::cerr << "snapshot restore: forest size mismatch\n";
-
+    const std::size_t cell_count = static_cast<std::size_t>(decoded->map_width)
+        * static_cast<std::size_t>(decoded->map_height);
+    if (decoded->map_width <= 0 || decoded->map_height <= 0
+        || decoded->forest_wood.size() != cell_count || decoded->map_tiles.size() != cell_count) {
+        std::cerr << "snapshot restore: map dimension mismatch\n";
         return false;
-
     }
 
+    if (decoded->bush_food.size() != cell_count || decoded->mine_money.size() != cell_count
+        || decoded->map_ground.size() != cell_count) {
+        std::cerr << "snapshot restore: map layer size mismatch\n";
+        return false;
+    }
 
-
+    map.width = decoded->map_width;
+    map.height = decoded->map_height;
     map.forest_wood = decoded->forest_wood;
-
-    if (decoded->bush_food.size() != map.bush_food.size()) {
-
-        if (map.bush_food.size() != map.forest_wood.size()) {
-            map.bush_food.assign(map.forest_wood.size(), 0);
-        }
-
-        if (decoded->bush_food.size() != map.bush_food.size()) {
-            std::cerr << "snapshot restore: bush food size mismatch\n";
-            return false;
-        }
-    }
-
     map.bush_food = decoded->bush_food;
-
-    if (map.mine_money.size() != map.forest_wood.size()) {
-        map.mine_money.assign(map.forest_wood.size(), 0);
-    }
-
-    if (decoded->mine_money.size() != map.mine_money.size()) {
-        std::cerr << "snapshot restore: mine money size mismatch\n";
-        return false;
-    }
-
     map.mine_money = decoded->mine_money;
-
-    if (decoded->map_tiles.size() != map.tiles.size()) {
-
-        std::cerr << "snapshot restore: map tile size mismatch\n";
-
-        return false;
-
-    }
-
-
-
     map.tiles = decoded->map_tiles;
-
-    if (map.ground.size() != map.tiles.size()) {
-        map.ground.assign(map.tiles.size(), components::GroundType::Grass);
-    }
-
-    if (decoded->map_ground.size() != map.ground.size()) {
-        std::cerr << "snapshot restore: map ground size mismatch\n";
-        return false;
-    }
-
     map.ground = decoded->map_ground;
+    map.layer_hash_valid = false;
+
+    systems::initialize_fog_of_war(simulation.registry());
 
     if (simulation.registry().any_of<components::FogOfWarState>(world)) {
         auto& fog = simulation.registry().get<components::FogOfWarState>(world);
@@ -2761,6 +3113,8 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
                     decoded->fog_memory_mine_money.end());
             }
         }
+
+        fog.hash_valid = false;
     }
 
     auto& session = simulation.registry().get_or_emplace<components::MatchSession>(world);
@@ -2772,6 +3126,14 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
     session.civil_population_map_cap = decoded->metadata.civil_population_map_cap;
 
     session.fog_of_war_enabled = decoded->metadata.fog_of_war_enabled != 0U;
+
+    session.player_ages = decoded->metadata.player_ages;
+
+    session.player_side_indices = decoded->metadata.player_side_indices;
+
+    session.player_cartography = decoded->metadata.player_cartography;
+    session.player_spy = decoded->metadata.player_spy;
+    session.player_built_mill = decoded->metadata.player_built_mill;
 
     session.ai_control_transitions = decoded->metadata.ai_control_transitions;
 

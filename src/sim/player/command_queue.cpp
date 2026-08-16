@@ -73,7 +73,19 @@ bool command_needs_entity_key_annotation(const PlayerCommand& command)
 
     if (command.type != PlayerCommandType::Attack && command.type != PlayerCommandType::SpawnWorker
         && command.type != PlayerCommandType::SpawnMilitia
-        && command.type != PlayerCommandType::DestroyBuilding) {
+        && command.type != PlayerCommandType::SpawnMage
+        && command.type != PlayerCommandType::DestroyBuilding
+        && command.type != PlayerCommandType::Garrison
+        && command.type != PlayerCommandType::UnloadGarrison
+        && command.type != PlayerCommandType::AdvanceAge
+        && command.type != PlayerCommandType::ResumeBuild
+        && command.type != PlayerCommandType::RenewFarm
+        && command.type != PlayerCommandType::ResearchCartography
+        && command.type != PlayerCommandType::ResearchSpy
+        && command.type != PlayerCommandType::MarketSellWood
+        && command.type != PlayerCommandType::MarketSellFood
+        && command.type != PlayerCommandType::MarketBuyWood
+        && command.type != PlayerCommandType::MarketBuyFood) {
         return false;
     }
 
@@ -121,8 +133,21 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
         }
         break;
     case PlayerCommandType::SpawnMilitia:
-        if (town_center_matches_slot(registry, command.target_entity, command.player_slot)) {
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::BarracksTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
             issue_spawn_militia_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::SpawnMage:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MageAcademyTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_spawn_mage_order(registry, command.target_entity);
         }
         break;
     case PlayerCommandType::KillUnits:
@@ -147,8 +172,8 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
             filter_command_units(registry, command.unit_ids, command.player_slot),
             command.cell);
         break;
-    case PlayerCommandType::BuildLumberjack:
-        issue_build_lumberjack_order(
+    case PlayerCommandType::BuildLumberCamp:
+        issue_build_lumber_camp_order(
             registry,
             filter_command_units(registry, command.unit_ids, command.player_slot),
             command.cell);
@@ -158,6 +183,79 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
             registry,
             filter_command_units(registry, command.unit_ids, command.player_slot),
             command.cell);
+        break;
+    case PlayerCommandType::BuildMill:
+        issue_build_mill_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildMiningCamp:
+        issue_build_mining_camp_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildBarracks:
+        issue_build_barracks_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildMageAcademy:
+        issue_build_mage_academy_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildTower:
+        issue_build_tower_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildMarket:
+        issue_build_market_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildGarden:
+        issue_build_garden_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildReservoir:
+        issue_build_reservoir_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildFarm:
+        issue_build_farm_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::Garrison:
+        issue_garrison_orders(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.target_entity);
+        break;
+    case PlayerCommandType::UnloadGarrison:
+        if (town_center_matches_slot(registry, command.target_entity, command.player_slot)) {
+            issue_unload_garrison_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::AdvanceAge:
+        if (town_center_matches_slot(registry, command.target_entity, command.player_slot)) {
+            issue_advance_age_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::CheatGrantResources:
+        issue_cheat_oknocraft_infinity(registry);
         break;
     case PlayerCommandType::ResumeBuild:
         if (registry.valid(command.target_entity)
@@ -169,6 +267,74 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
                 registry,
                 filter_command_units(registry, command.unit_ids, command.player_slot),
                 command.target_entity);
+        }
+        break;
+    case PlayerCommandType::RenewFarm:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<
+                components::FarmTag,
+                components::BuildingTag,
+                components::PlayerOwnedTag>(command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_renew_farm_order(
+                registry,
+                filter_command_units(registry, command.unit_ids, command.player_slot),
+                command.target_entity);
+        }
+        break;
+    case PlayerCommandType::ResearchCartography:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MarketTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_research_cartography_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::ResearchSpy:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::TownCenterTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_research_spy_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::MarketSellWood:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MarketTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_market_sell_wood_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::MarketSellFood:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MarketTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_market_sell_food_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::MarketBuyWood:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MarketTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_market_buy_wood_order(registry, command.target_entity);
+        }
+        break;
+    case PlayerCommandType::MarketBuyFood:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MarketTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_market_buy_food_order(registry, command.target_entity);
         }
         break;
     case PlayerCommandType::DestroyBuilding:

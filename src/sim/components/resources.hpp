@@ -43,6 +43,11 @@ struct ManaGenerationCooldown {
     int ticks_remaining{0};
 };
 
+struct FarmFood {
+    int remaining{0};
+    int max{0};
+};
+
 // Set on an extractor; points at the mana lake footprint it was built on.
 struct ManaLakeRef {
     entt::entity lake{entt::null};

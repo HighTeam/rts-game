@@ -7,6 +7,7 @@
 #include "sim/components/map_grid.hpp"
 #include "sim/components/world_position.hpp"
 
+#include <cstdint>
 #include <entt/entt.hpp>
 #include <vector>
 
@@ -46,6 +47,13 @@ void reset_pathfind_profile();
     bool allow_forest);
 
 [[nodiscard]] bool is_movement_blocked(
+    entt::registry& registry,
+    core::GridPos cell,
+    entt::entity ignore = entt::null,
+    entt::entity also_ignore = entt::null);
+
+// Actual unit bodies only. Path waypoints do not block construction.
+[[nodiscard]] bool is_cell_blocked_for_building(
     entt::registry& registry,
     core::GridPos cell,
     entt::entity ignore = entt::null,
@@ -117,6 +125,23 @@ void reset_pathfind_profile();
     entt::registry& registry,
     entt::entity from,
     entt::entity to);
+
+/// Nearest walkable cell on a farm footprint. `prefer_not` is skipped when another cell exists.
+[[nodiscard]] core::GridPos find_best_farm_stand_tile(
+    const components::MapGrid& map,
+    entt::registry& registry,
+    entt::entity farm,
+    entt::entity mover,
+    core::GridPos prefer_not = {-1, -1});
+
+/// Deterministic wander cell on a farm footprint, avoiding `avoid` when possible.
+[[nodiscard]] core::GridPos pick_farm_wander_cell(
+    const components::MapGrid& map,
+    entt::registry& registry,
+    entt::entity farm,
+    entt::entity mover,
+    core::GridPos avoid,
+    std::uint32_t seed);
 
 /// Nearest walkable Chebyshev-1 stand around a building, or a melee neighbor for units.
 /// Building stands return {-1,-1} when no walkable tile exists.

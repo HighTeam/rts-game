@@ -36,7 +36,8 @@ std::optional<core::GridPos> find_building_unit_spawn_cell(
     const components::MapGrid& map,
     entt::registry& registry,
     const components::GridPosition& building_anchor,
-    const components::BuildingFootprint& building_footprint)
+    const components::BuildingFootprint& building_footprint,
+    const std::vector<core::GridPos>& reserved_cells)
 {
     for (int ring = 1; ring <= constants::BUILDING_UNIT_SPAWN_MAX_RING; ++ring) {
         std::vector<core::GridPos> ring_cells{};
@@ -81,6 +82,17 @@ std::optional<core::GridPos> find_building_unit_spawn_cell(
 
         for (const core::GridPos candidate : ring_cells) {
             if (!systems::is_tile_walkable(map, candidate, false)) {
+                continue;
+            }
+
+            bool reserved = false;
+            for (const core::GridPos taken : reserved_cells) {
+                if (taken == candidate) {
+                    reserved = true;
+                    break;
+                }
+            }
+            if (reserved) {
                 continue;
             }
 

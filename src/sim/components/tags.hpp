@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstdint>
+#include <entt/entt.hpp>
+#include <vector>
+
 namespace aoa::sim::components {
 
 struct WorldTag {};
@@ -11,14 +15,35 @@ struct EnemyTag {};
 
 struct TownCenterTag {};
 struct HouseTag {};
-struct LumberjackTag {};
+struct LumberCampTag {};
+struct MillTag {};
+struct MiningCampTag {};
+struct BarracksTag {};
+struct MageAcademyTag {};
+struct TowerTag {};
+struct MarketTag {};
 struct ExtractorTag {};
+struct GardenTag {};
+struct ReservoirTag {};
+struct FarmTag {};
 // Nature mana pool: no owner, no health, never destroyed by the extractor built on it.
 struct ManaLakeTag {};
-// Completed buildings that accept wood drop-off (TC + Lumberjack).
 struct WoodDropOffTag {};
+struct FoodDropOffTag {};
+struct MoneyDropOffTag {};
 struct WorkerUnitTag {};
 struct MilitiaUnitTag {};
+struct MageUnitTag {};
 struct UnderConstructionTag {};
+struct GarrisonedTag {
+    entt::entity building{entt::null};
+};
+struct BuildingVisualVariant {
+    std::uint8_t index{0U};
+};
+struct GarrisonHold {
+    std::vector<entt::entity> units{};
+    std::uint8_t capacity{5U};
+};
 
 } // namespace aoa::sim::components

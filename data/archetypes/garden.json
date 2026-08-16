@@ -1,0 +1,12 @@
+{
+  "id": "garden",
+  "kind": "structure",
+  "display_name": "Garden",
+  "max_hp": 500,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "build_wood_cost": 200,
+  "build_money_cost": 100,
+  "build_mana_cost": 50,
+  "vision_range": 4
+}

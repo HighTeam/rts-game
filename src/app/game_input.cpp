@@ -4,6 +4,7 @@
 #include "core/constants.hpp"
 #include "core/grid.hpp"
 #include "sim/components/building_footprint.hpp"
+#include "sim/components/building_process.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
 #include "sim/components/fog_of_war.hpp"
@@ -11,7 +12,9 @@
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/match_session.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/player_slot.hpp"
+#include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/persistence/save_game.hpp"
 #include "sim/player/player_command.hpp"
@@ -41,6 +44,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 namespace aoa::app {
 
@@ -97,8 +101,12 @@ void GameInput::play_order_ack_sfx(
 
     if (command.type == PlayerCommandType::BuildTownCenter
         || command.type == PlayerCommandType::BuildHouse
-        || command.type == PlayerCommandType::BuildLumberjack
-        || command.type == PlayerCommandType::ResumeBuild) {
+        || command.type == PlayerCommandType::BuildLumberCamp
+        || command.type == PlayerCommandType::BuildGarden
+        || command.type == PlayerCommandType::BuildReservoir
+        || command.type == PlayerCommandType::BuildFarm
+        || command.type == PlayerCommandType::ResumeBuild
+        || command.type == PlayerCommandType::RenewFarm) {
         game_audio_->play_sfx(audio::SfxId::Building);
         return;
     }
@@ -160,7 +168,8 @@ void GameInput::play_select_ack_if_own_units(
     }
 
     if (!selection_has_worker(simulation, render_snapshot)
-        && !selection_has_militia(simulation, render_snapshot)) {
+        && !selection_has_militia(simulation, render_snapshot)
+        && !selection_has_mage(simulation, render_snapshot)) {
         return;
     }
 
@@ -263,6 +272,94 @@ bool GameInput::selection_has_militia(
     return false;
 }
 
+bool GameInput::selection_has_mage(
+    sim::Simulation& simulation,
+    const render::SimRenderSnapshot* render_snapshot) const
+{
+    if (selection_.units.empty()) {
+        return false;
+    }
+
+    if (render_snapshot != nullptr) {
+        for (const entt::entity entity : selection_.units) {
+            for (const render::RenderEntityPose& pose : render_snapshot->units) {
+                if (pose.entity == entity && pose.is_mage && pose.health_current > 0
+                    && pose.player_slot == local_player_slot_) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    auto& registry = simulation.registry();
+    for (const entt::entity entity : selection_.units) {
+        if (!registry.valid(entity)) {
+            continue;
+        }
+
+        if (!registry.any_of<sim::components::MageUnitTag>(entity)) {
+            continue;
+        }
+
+        if (sim::components::entity_player_slot(registry, entity) != local_player_slot_) {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+bool GameInput::try_issue_garrison_on_building(
+    sim::Simulation& simulation,
+    const render::SimRenderSnapshot* render_snapshot,
+    const entt::entity building)
+{
+    if (building == entt::null || selection_.units.empty()) {
+        return false;
+    }
+
+    bool is_town_center = false;
+    bool under_construction = false;
+    if (render_snapshot != nullptr) {
+        for (const render::RenderEntityPose& pose : render_snapshot->buildings) {
+            if (pose.entity != building) {
+                continue;
+            }
+
+            is_town_center = pose.is_town_center;
+            under_construction = pose.under_construction;
+            break;
+        }
+    }
+    else {
+        auto& registry = simulation.registry();
+        if (!registry.valid(building)) {
+            return false;
+        }
+
+        is_town_center = registry.any_of<sim::components::TownCenterTag>(building);
+        under_construction = registry.any_of<sim::components::UnderConstructionTag>(building);
+    }
+
+    if (!is_town_center || under_construction) {
+        return false;
+    }
+
+    sim::player::PlayerCommand command = make_command(
+        simulation,
+        sim::player::PlayerCommandType::Garrison,
+        selection_.units,
+        render_snapshot);
+    command.target_entity = building;
+    submit_player_command(simulation, std::move(command));
+    garrison_targeting_mode_ = false;
+    return true;
+}
+
 CommandPanelBuildOptions GameInput::current_build_options(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot) const
@@ -270,7 +367,7 @@ CommandPanelBuildOptions GameInput::current_build_options(
     CommandPanelBuildOptions options{};
     options.town_center_wood_cost = constants::TOWN_CENTER_BUILD_WOOD_COST;
     options.house_wood_cost = constants::HOUSE_BUILD_WOOD_COST;
-    options.lumberjack_wood_cost = constants::LUMBERJACK_BUILD_WOOD_COST;
+    options.lumber_camp_wood_cost = constants::LUMBER_CAMP_BUILD_WOOD_COST;
     options.worker_food_cost = constants::WORKER_FOOD_COST;
     options.militia_food_cost = constants::MILITIA_FOOD_COST;
     options.militia_money_cost = constants::MILITIA_MONEY_COST;
@@ -282,6 +379,29 @@ CommandPanelBuildOptions GameInput::current_build_options(
         if (world_view.begin() != world_view.end()) {
             world = *world_view.begin();
         }
+    }
+
+    if (world != entt::null && registry.any_of<sim::components::MatchSession>(world)) {
+        const auto& session = registry.get<sim::components::MatchSession>(world);
+        const sim::components::AgeAdvanceCost age_cost = sim::components::age_advance_cost(
+            sim::components::player_age(session, local_player_slot_));
+        options.can_advance_age = age_cost.can_advance;
+        options.next_age_name = age_cost.next_name;
+        options.age_food_cost = age_cost.food;
+        options.age_money_cost = age_cost.money;
+        options.age_mana_cost = age_cost.mana;
+        options.unlocked_elemental_buildings = sim::components::slot_age_at_least(
+            session, local_player_slot_, constants::PlayerAge::Magic);
+        options.unlocked_garden = sim::components::slot_age_at_least(
+            session, local_player_slot_, constants::PlayerAge::Technology);
+        options.unlocked_spy = sim::components::slot_age_at_least(
+            session, local_player_slot_, constants::PlayerAge::Spirit);
+        options.unlocked_farm = sim::components::slot_has_built_mill(session, local_player_slot_)
+            || sim::player::player_has_completed_mill(registry, local_player_slot_);
+        options.has_cartography = sim::components::slot_has_cartography(session, local_player_slot_);
+        options.has_spy = sim::components::slot_has_spy(session, local_player_slot_);
+        options.spy_money_cost = sim::player::count_enemy_units(registry, local_player_slot_)
+            * constants::SPY_GOLD_PER_ENEMY_UNIT;
     }
 
     if (world != entt::null && registry.any_of<sim::components::ContentPack>(world)) {
@@ -309,9 +429,77 @@ CommandPanelBuildOptions GameInput::current_build_options(
 
         const data::ArchetypeDefinition* lumberjack = data::find_archetype(
             content_pack.content,
-            std::string(constants::LUMBERJACK_BUILDING_ID));
+            std::string(constants::LUMBER_CAMP_BUILDING_ID));
         if (lumberjack != nullptr && lumberjack->build_wood_cost > 0) {
-            options.lumberjack_wood_cost = lumberjack->build_wood_cost;
+            options.lumber_camp_wood_cost = lumberjack->build_wood_cost;
+        }
+
+        const auto load_build_cost = [&](const std::string_view id, int& wood, int* money, int* mana) {
+            const data::ArchetypeDefinition* archetype =
+                data::find_archetype(content_pack.content, std::string(id));
+            if (archetype == nullptr) {
+                return;
+            }
+
+            if (archetype->build_wood_cost > 0) {
+                wood = archetype->build_wood_cost;
+            }
+            if (money != nullptr && archetype->build_money_cost > 0) {
+                *money = archetype->build_money_cost;
+            }
+            if (mana != nullptr && archetype->build_mana_cost > 0) {
+                *mana = archetype->build_mana_cost;
+            }
+        };
+        if (town_center != nullptr) {
+            if (town_center->build_money_cost > 0) {
+                options.town_center_money_cost = town_center->build_money_cost;
+            }
+            if (town_center->build_mana_cost > 0) {
+                options.town_center_mana_cost = town_center->build_mana_cost;
+            }
+        }
+        load_build_cost(constants::MILL_BUILDING_ID, options.mill_wood_cost, nullptr, nullptr);
+        load_build_cost(
+            constants::MINING_CAMP_BUILDING_ID, options.mining_camp_wood_cost, nullptr, nullptr);
+        load_build_cost(constants::BARRACKS_BUILDING_ID, options.barracks_wood_cost, nullptr, nullptr);
+        load_build_cost(
+            constants::MAGE_ACADEMY_BUILDING_ID,
+            options.mage_academy_wood_cost,
+            &options.mage_academy_money_cost,
+            &options.mage_academy_mana_cost);
+        load_build_cost(
+            constants::TOWER_BUILDING_ID,
+            options.tower_wood_cost,
+            &options.tower_money_cost,
+            nullptr);
+        load_build_cost(constants::MARKET_BUILDING_ID, options.market_wood_cost, nullptr, nullptr);
+        load_build_cost(
+            constants::GARDEN_BUILDING_ID,
+            options.garden_wood_cost,
+            &options.garden_money_cost,
+            &options.garden_mana_cost);
+        load_build_cost(
+            constants::RESERVOIR_BUILDING_ID,
+            options.reservoir_wood_cost,
+            &options.reservoir_money_cost,
+            nullptr);
+        load_build_cost(constants::FARM_BUILDING_ID, options.farm_wood_cost, nullptr, nullptr);
+        const data::ArchetypeDefinition* barracks =
+            data::find_archetype(content_pack.content, std::string(constants::BARRACKS_BUILDING_ID));
+        if (barracks != nullptr && barracks->spawn_militia_food_cost > 0) {
+            options.militia_food_cost = barracks->spawn_militia_food_cost;
+        }
+        if (barracks != nullptr && barracks->spawn_militia_money_cost > 0) {
+            options.militia_money_cost = barracks->spawn_militia_money_cost;
+        }
+        const data::ArchetypeDefinition* academy = data::find_archetype(
+            content_pack.content, std::string(constants::MAGE_ACADEMY_BUILDING_ID));
+        if (academy != nullptr && academy->spawn_mage_money_cost > 0) {
+            options.mage_money_cost = academy->spawn_mage_money_cost;
+        }
+        if (academy != nullptr && academy->spawn_mage_mana_cost > 0) {
+            options.mage_mana_cost = academy->spawn_mage_mana_cost;
         }
     }
 
@@ -320,29 +508,77 @@ CommandPanelBuildOptions GameInput::current_build_options(
         const int town_wood = render_snapshot->hud_by_player[local_player_slot_].town_wood;
         const int town_food = render_snapshot->hud_by_player[local_player_slot_].town_food;
         const int town_money = render_snapshot->hud_by_player[local_player_slot_].town_money;
-        options.can_afford_town_center = town_wood >= options.town_center_wood_cost;
+        const int town_mana = render_snapshot->hud_by_player[local_player_slot_].town_mana;
+        options.can_afford_town_center = town_wood >= options.town_center_wood_cost
+            && town_money >= options.town_center_money_cost
+            && town_mana >= options.town_center_mana_cost;
         options.can_afford_house = town_wood >= options.house_wood_cost;
-        options.can_afford_lumberjack = town_wood >= options.lumberjack_wood_cost;
+        options.can_afford_lumber_camp = town_wood >= options.lumber_camp_wood_cost;
         options.can_afford_extractor = town_wood >= options.extractor_wood_cost
             && town_money >= options.extractor_money_cost;
+        options.can_afford_mill = town_wood >= options.mill_wood_cost;
+        options.can_afford_mining_camp = town_wood >= options.mining_camp_wood_cost;
+        options.can_afford_barracks = town_wood >= options.barracks_wood_cost;
+        options.can_afford_mage_academy = town_wood >= options.mage_academy_wood_cost
+            && town_money >= options.mage_academy_money_cost
+            && town_mana >= options.mage_academy_mana_cost;
+        options.can_afford_tower = town_wood >= options.tower_wood_cost
+            && town_money >= options.tower_money_cost;
+        options.can_afford_market = town_wood >= options.market_wood_cost;
+        options.can_afford_garden = town_wood >= options.garden_wood_cost
+            && town_money >= options.garden_money_cost
+            && town_mana >= options.garden_mana_cost;
+        options.can_afford_reservoir = town_wood >= options.reservoir_wood_cost
+            && town_money >= options.reservoir_money_cost;
+        options.can_afford_farm = town_wood >= options.farm_wood_cost;
         options.can_afford_worker = town_food >= options.worker_food_cost;
         options.can_afford_militia = town_food >= options.militia_food_cost
             && town_money >= options.militia_money_cost;
+        options.can_afford_mage = town_money >= options.mage_money_cost
+            && town_mana >= options.mage_mana_cost;
+        options.can_afford_age = options.can_advance_age
+            && town_food >= options.age_food_cost
+            && town_money >= options.age_money_cost
+            && town_mana >= options.age_mana_cost;
+        options.can_afford_cartography = !options.has_cartography
+            && town_money >= options.cartography_money_cost;
+        options.can_afford_spy = !options.has_spy && town_money >= options.spy_money_cost;
+        options.can_sell_wood = town_wood >= options.market_trade_amount;
+        options.can_sell_food = town_food >= options.market_trade_amount;
+        options.can_buy_wood = town_money >= options.market_buy_gold;
+        options.can_buy_food = town_money >= options.market_buy_gold;
+        if (world != entt::null && registry.any_of<sim::components::MatchSession>(world)) {
+            options.can_afford_cartography = !options.has_cartography
+                && town_money >= options.cartography_money_cost;
+            options.can_afford_spy = !options.has_spy && town_money >= options.spy_money_cost;
+        }
+        if (selection_.building != entt::null) {
+            for (const render::RenderEntityPose& pose : render_snapshot->buildings) {
+                if (pose.entity == selection_.building) {
+                    options.building_busy = pose.has_process;
+                    break;
+                }
+            }
+        }
         return options;
     }
 
     options.can_afford_town_center = sim::player::can_afford_player_wood(
-        registry,
-        local_player_slot_,
-        options.town_center_wood_cost);
+                                          registry,
+                                          local_player_slot_,
+                                          options.town_center_wood_cost)
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.town_center_money_cost)
+        && sim::player::can_afford_player_mana(
+            registry, local_player_slot_, options.town_center_mana_cost);
     options.can_afford_house = sim::player::can_afford_player_wood(
         registry,
         local_player_slot_,
         options.house_wood_cost);
-    options.can_afford_lumberjack = sim::player::can_afford_player_wood(
+    options.can_afford_lumber_camp = sim::player::can_afford_player_wood(
         registry,
         local_player_slot_,
-        options.lumberjack_wood_cost);
+        options.lumber_camp_wood_cost);
     options.can_afford_extractor = sim::player::can_afford_player_wood(
                                        registry,
                                        local_player_slot_,
@@ -363,6 +599,62 @@ CommandPanelBuildOptions GameInput::current_build_options(
                registry,
                local_player_slot_,
                options.militia_money_cost);
+    options.can_afford_mill = sim::player::can_afford_player_wood(
+        registry, local_player_slot_, options.mill_wood_cost);
+    options.can_afford_mining_camp = sim::player::can_afford_player_wood(
+        registry, local_player_slot_, options.mining_camp_wood_cost);
+    options.can_afford_barracks = sim::player::can_afford_player_wood(
+        registry, local_player_slot_, options.barracks_wood_cost);
+    options.can_afford_mage_academy = sim::player::can_afford_player_wood(
+                                           registry, local_player_slot_, options.mage_academy_wood_cost)
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.mage_academy_money_cost)
+        && sim::player::can_afford_player_mana(
+            registry, local_player_slot_, options.mage_academy_mana_cost);
+    options.can_afford_tower = sim::player::can_afford_player_wood(
+                                    registry, local_player_slot_, options.tower_wood_cost)
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.tower_money_cost);
+    options.can_afford_market = sim::player::can_afford_player_wood(
+        registry, local_player_slot_, options.market_wood_cost);
+    options.can_afford_garden = sim::player::can_afford_player_wood(
+                                     registry, local_player_slot_, options.garden_wood_cost)
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.garden_money_cost)
+        && sim::player::can_afford_player_mana(
+            registry, local_player_slot_, options.garden_mana_cost);
+    options.can_afford_reservoir = sim::player::can_afford_player_wood(
+                                        registry, local_player_slot_, options.reservoir_wood_cost)
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.reservoir_money_cost);
+    options.can_afford_farm = sim::player::can_afford_player_wood(
+        registry, local_player_slot_, options.farm_wood_cost);
+    options.can_afford_mage = sim::player::can_afford_player_money(
+                                   registry, local_player_slot_, options.mage_money_cost)
+        && sim::player::can_afford_player_mana(
+            registry, local_player_slot_, options.mage_mana_cost);
+    options.can_afford_age = options.can_advance_age
+        && sim::player::can_afford_player_food(registry, local_player_slot_, options.age_food_cost)
+        && sim::player::can_afford_player_money(registry, local_player_slot_, options.age_money_cost)
+        && sim::player::can_afford_player_mana(registry, local_player_slot_, options.age_mana_cost);
+    options.can_afford_cartography = !options.has_cartography
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.cartography_money_cost);
+    options.can_afford_spy = !options.has_spy
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.spy_money_cost);
+    options.can_sell_wood = sim::player::can_afford_player_wood(
+        registry, local_player_slot_, options.market_trade_amount);
+    options.can_sell_food = sim::player::can_afford_player_food(
+        registry, local_player_slot_, options.market_trade_amount);
+    options.can_buy_wood = sim::player::can_afford_player_money(
+        registry, local_player_slot_, options.market_buy_gold);
+    options.can_buy_food = sim::player::can_afford_player_money(
+        registry, local_player_slot_, options.market_buy_gold);
+    if (selection_.building != entt::null) {
+        options.building_busy =
+            sim::components::building_has_active_process(registry, selection_.building);
+    }
     return options;
 }
 
@@ -370,11 +662,8 @@ void GameInput::sync_command_panel_mode(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot)
 {
-    if (command_panel_mode_ == CommandPanelMode::BuildMenu
-        || command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse
-        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+    if (is_build_tree_command_mode(command_panel_mode_)
+        || is_placement_command_mode(command_panel_mode_)) {
         if (!selection_has_worker(simulation, render_snapshot)) {
             command_panel_mode_ = CommandPanelMode::Empty;
             placement_ghost_anchor_.reset();
@@ -394,12 +683,26 @@ void GameInput::sync_command_panel_mode(
         return;
     }
 
+    if (selection_has_mage(simulation, render_snapshot)) {
+        command_panel_mode_ = CommandPanelMode::MageActions;
+        return;
+    }
+
     if (selection_.building != entt::null) {
         bool under_construction = false;
         bool is_town_center = false;
         bool is_house = false;
-        bool is_lumberjack = false;
+        bool is_lumber_camp = false;
+        bool is_mill = false;
+        bool is_mining_camp = false;
+        bool is_barracks = false;
+        bool is_mage_academy = false;
+        bool is_tower = false;
+        bool is_market = false;
         bool is_extractor = false;
+        bool is_garden = false;
+        bool is_reservoir = false;
+        bool is_farm = false;
         bool is_mana_lake = false;
         if (render_snapshot != nullptr) {
             for (const render::RenderEntityPose& pose : render_snapshot->buildings) {
@@ -410,8 +713,17 @@ void GameInput::sync_command_panel_mode(
                 under_construction = pose.under_construction;
                 is_town_center = pose.is_town_center;
                 is_house = pose.is_house;
-                is_lumberjack = pose.is_lumberjack;
+                is_lumber_camp = pose.is_lumber_camp;
+                is_mill = pose.is_mill;
+                is_mining_camp = pose.is_mining_camp;
+                is_barracks = pose.is_barracks;
+                is_mage_academy = pose.is_mage_academy;
+                is_tower = pose.is_tower;
+                is_market = pose.is_market;
                 is_extractor = pose.is_extractor;
+                is_garden = pose.is_garden;
+                is_reservoir = pose.is_reservoir;
+                is_farm = pose.is_farm;
                 is_mana_lake = pose.is_mana_lake;
                 break;
             }
@@ -423,8 +735,17 @@ void GameInput::sync_command_panel_mode(
                     registry.any_of<sim::components::UnderConstructionTag>(selection_.building);
                 is_town_center = registry.any_of<sim::components::TownCenterTag>(selection_.building);
                 is_house = registry.any_of<sim::components::HouseTag>(selection_.building);
-                is_lumberjack = registry.any_of<sim::components::LumberjackTag>(selection_.building);
+                is_lumber_camp = registry.any_of<sim::components::LumberCampTag>(selection_.building);
+                is_mill = registry.any_of<sim::components::MillTag>(selection_.building);
+                is_mining_camp = registry.any_of<sim::components::MiningCampTag>(selection_.building);
+                is_barracks = registry.any_of<sim::components::BarracksTag>(selection_.building);
+                is_mage_academy = registry.any_of<sim::components::MageAcademyTag>(selection_.building);
+                is_tower = registry.any_of<sim::components::TowerTag>(selection_.building);
+                is_market = registry.any_of<sim::components::MarketTag>(selection_.building);
                 is_extractor = registry.any_of<sim::components::ExtractorTag>(selection_.building);
+                is_garden = registry.any_of<sim::components::GardenTag>(selection_.building);
+                is_reservoir = registry.any_of<sim::components::ReservoirTag>(selection_.building);
+                is_farm = registry.any_of<sim::components::FarmTag>(selection_.building);
                 is_mana_lake = registry.any_of<sim::components::ManaLakeTag>(selection_.building);
             }
         }
@@ -450,7 +771,10 @@ void GameInput::sync_command_panel_mode(
         }
 
         if (building_slot == local_player_slot_) {
-            if (under_construction && (is_town_center || is_house || is_lumberjack || is_extractor)) {
+            if (under_construction
+                && (is_town_center || is_house || is_lumber_camp || is_mill || is_mining_camp
+                    || is_barracks || is_mage_academy || is_tower || is_market || is_extractor
+                    || is_garden || is_reservoir || is_farm)) {
                 // Same Deselect/Destroy set as finished House.
                 command_panel_mode_ = CommandPanelMode::HouseActions;
                 return;
@@ -466,13 +790,58 @@ void GameInput::sync_command_panel_mode(
                 return;
             }
 
-            if (is_lumberjack && !under_construction) {
-                command_panel_mode_ = CommandPanelMode::LumberjackActions;
+            if (is_lumber_camp && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::LumberCampActions;
                 return;
             }
 
             if (is_extractor && !under_construction) {
                 command_panel_mode_ = CommandPanelMode::ExtractorActions;
+                return;
+            }
+
+            if (is_mill && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::MillActions;
+                return;
+            }
+
+            if (is_mining_camp && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::MiningCampActions;
+                return;
+            }
+
+            if (is_barracks && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::BarracksActions;
+                return;
+            }
+
+            if (is_mage_academy && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::MageAcademyActions;
+                return;
+            }
+
+            if (is_tower && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::TowerActions;
+                return;
+            }
+
+            if (is_market && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::MarketActions;
+                return;
+            }
+
+            if (is_garden && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::GardenActions;
+                return;
+            }
+
+            if (is_reservoir && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::ReservoirActions;
+                return;
+            }
+
+            if (is_farm && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::FarmActions;
                 return;
             }
         }
@@ -489,10 +858,17 @@ bool GameInput::apply_command_panel_action(
     if (action != CommandPanelAction::None && game_audio_ != nullptr) {
         game_audio_->play_wooden_click();
     }
+    if (action != CommandPanelAction::Garrison) {
+        garrison_targeting_mode_ = false;
+    }
 
     switch (action) {
     case CommandPanelAction::Build:
         command_panel_mode_ = CommandPanelMode::BuildMenu;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::OpenMilitaryBuild:
+        command_panel_mode_ = CommandPanelMode::BuildMilitaryMenu;
         attack_targeting_mode_ = false;
         return true;
     case CommandPanelAction::Back:
@@ -517,12 +893,9 @@ bool GameInput::apply_command_panel_action(
         return true;
     }
     case CommandPanelAction::Deselect:
-        if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-            || command_panel_mode_ == CommandPanelMode::PlaceHouse
-            || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-            || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+        if (is_placement_command_mode(command_panel_mode_)) {
             command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
-                ? CommandPanelMode::WorkerActions
+                ? build_tree_for_placement(command_panel_mode_)
                 : CommandPanelMode::Empty;
             return true;
         }
@@ -556,19 +929,138 @@ bool GameInput::apply_command_panel_action(
         command_panel_mode_ = CommandPanelMode::PlaceHouse;
         attack_targeting_mode_ = false;
         return true;
-    case CommandPanelAction::BuildLumberjack:
-        if (!current_build_options(simulation, render_snapshot).can_afford_lumberjack) {
+    case CommandPanelAction::BuildLumberCamp:
+        if (!current_build_options(simulation, render_snapshot).can_afford_lumber_camp) {
             return true;
         }
-        command_panel_mode_ = CommandPanelMode::PlaceLumberjack;
+        command_panel_mode_ = CommandPanelMode::PlaceLumberCamp;
         attack_targeting_mode_ = false;
         return true;
     case CommandPanelAction::BuildExtractor:
-        if (!current_build_options(simulation, render_snapshot).can_afford_extractor) {
+        if (!current_build_options(simulation, render_snapshot).unlocked_elemental_buildings
+            || !current_build_options(simulation, render_snapshot).can_afford_extractor) {
             return true;
         }
         command_panel_mode_ = CommandPanelMode::PlaceExtractor;
         attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildMill:
+        if (!current_build_options(simulation, render_snapshot).can_afford_mill) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceMill;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildMiningCamp:
+        if (!current_build_options(simulation, render_snapshot).can_afford_mining_camp) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceMiningCamp;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildBarracks:
+        if (!current_build_options(simulation, render_snapshot).can_afford_barracks) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceBarracks;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildMageAcademy:
+        if (!current_build_options(simulation, render_snapshot).unlocked_elemental_buildings
+            || !current_build_options(simulation, render_snapshot).can_afford_mage_academy) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceMageAcademy;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildTower:
+        if (!current_build_options(simulation, render_snapshot).unlocked_elemental_buildings
+            || !current_build_options(simulation, render_snapshot).can_afford_tower) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceTower;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildMarket:
+        if (!current_build_options(simulation, render_snapshot).unlocked_elemental_buildings
+            || !current_build_options(simulation, render_snapshot).can_afford_market) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceMarket;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildGarden:
+        if (!current_build_options(simulation, render_snapshot).unlocked_garden
+            || !current_build_options(simulation, render_snapshot).can_afford_garden) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceGarden;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildReservoir:
+        if (!current_build_options(simulation, render_snapshot).unlocked_elemental_buildings
+            || !current_build_options(simulation, render_snapshot).can_afford_reservoir) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceReservoir;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildFarm:
+        if (!current_build_options(simulation, render_snapshot).unlocked_farm
+            || !current_build_options(simulation, render_snapshot).can_afford_farm) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceFarm;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::Garrison:
+        garrison_targeting_mode_ = true;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::AdvanceAge:
+        if (selection_.building != entt::null) {
+            sim::player::PlayerCommand command{};
+            if (render_snapshot != nullptr) {
+                command.execute_tick = render_snapshot->tick_count
+                    + static_cast<std::uint64_t>(net::constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+            }
+            else {
+                command.execute_tick = simulation.next_command_execute_tick();
+            }
+            command.type = sim::player::PlayerCommandType::AdvanceAge;
+            command.target_entity = selection_.building;
+            submit_player_command(simulation, std::move(command));
+        }
+        return true;
+    case CommandPanelAction::UnloadGarrison:
+        if (selection_.building != entt::null) {
+            sim::player::PlayerCommand command{};
+            if (render_snapshot != nullptr) {
+                command.execute_tick = render_snapshot->tick_count
+                    + static_cast<std::uint64_t>(net::constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+            }
+            else {
+                command.execute_tick = simulation.next_command_execute_tick();
+            }
+            command.type = sim::player::PlayerCommandType::UnloadGarrison;
+            command.target_entity = selection_.building;
+            submit_player_command(simulation, std::move(command));
+        }
+        return true;
+    case CommandPanelAction::SpawnMage:
+        if (selection_.building != entt::null) {
+            sim::player::PlayerCommand command{};
+            if (render_snapshot != nullptr) {
+                command.execute_tick = render_snapshot->tick_count
+                    + static_cast<std::uint64_t>(net::constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+            }
+            else {
+                command.execute_tick = simulation.next_command_execute_tick();
+            }
+            command.type = sim::player::PlayerCommandType::SpawnMage;
+            command.target_entity = selection_.building;
+            submit_player_command(simulation, std::move(command));
+        }
         return true;
     case CommandPanelAction::SpawnWorker:
         if (selection_.building != entt::null) {
@@ -616,6 +1108,43 @@ bool GameInput::apply_command_panel_action(
             clear_selection();
         }
         return true;
+    case CommandPanelAction::ResearchCartography:
+    case CommandPanelAction::ResearchSpy:
+    case CommandPanelAction::MarketSellWood:
+    case CommandPanelAction::MarketSellFood:
+    case CommandPanelAction::MarketBuyWood:
+    case CommandPanelAction::MarketBuyFood:
+        if (selection_.building != entt::null) {
+            sim::player::PlayerCommand command{};
+            if (render_snapshot != nullptr) {
+                command.execute_tick = render_snapshot->tick_count
+                    + static_cast<std::uint64_t>(net::constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+            }
+            else {
+                command.execute_tick = simulation.next_command_execute_tick();
+            }
+            if (action == CommandPanelAction::ResearchCartography) {
+                command.type = sim::player::PlayerCommandType::ResearchCartography;
+            }
+            else if (action == CommandPanelAction::ResearchSpy) {
+                command.type = sim::player::PlayerCommandType::ResearchSpy;
+            }
+            else if (action == CommandPanelAction::MarketSellWood) {
+                command.type = sim::player::PlayerCommandType::MarketSellWood;
+            }
+            else if (action == CommandPanelAction::MarketSellFood) {
+                command.type = sim::player::PlayerCommandType::MarketSellFood;
+            }
+            else if (action == CommandPanelAction::MarketBuyWood) {
+                command.type = sim::player::PlayerCommandType::MarketBuyWood;
+            }
+            else {
+                command.type = sim::player::PlayerCommandType::MarketBuyFood;
+            }
+            command.target_entity = selection_.building;
+            submit_player_command(simulation, std::move(command));
+        }
+        return true;
     case CommandPanelAction::None:
         break;
     }
@@ -632,10 +1161,7 @@ bool GameInput::handle_command_panel_click(
 {
     (void)renderer;
     if (hit_test_command_panel_frame(window.getSize(), screen_position.x, screen_position.y)
-        && command_panel_mode_ != CommandPanelMode::PlaceTownCenter
-        && command_panel_mode_ != CommandPanelMode::PlaceHouse
-        && command_panel_mode_ != CommandPanelMode::PlaceLumberjack
-        && command_panel_mode_ != CommandPanelMode::PlaceExtractor) {
+        && !is_placement_command_mode(command_panel_mode_)) {
         const CommandPanelAction action = hit_test_command_panel(
             command_panel_mode_,
             window.getSize(),
@@ -833,7 +1359,8 @@ void apply_hover_stick(
     const core::GridPos anchor,
     const int footprint,
     const std::vector<entt::entity>& ignore_units,
-    const std::uint8_t local_player_slot)
+    const std::uint8_t local_player_slot,
+    const bool units_block_placement = true)
 {
     (void)ignore_units;
     if (!footprint_on_map(map.width, map.height, anchor, footprint)) {
@@ -885,7 +1412,7 @@ void apply_hover_stick(
                 }
             }
 
-            if (sim::systems::is_movement_blocked(registry, cell)) {
+            if (units_block_placement && sim::systems::is_cell_blocked_for_building(registry, cell)) {
                 return false;
             }
         }
@@ -1739,27 +2266,31 @@ void GameInput::update_continuous(
 
     placement_ghost_anchor_.reset();
     placement_ghost_valid_ = false;
-    if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse
-        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+    if (is_placement_command_mode(command_panel_mode_)) {
         const sf::Vector2i mouse_position = sf::Mouse::getPosition(window);
         const auto center_cell = renderer.screen_to_grid(
             static_cast<float>(mouse_position.x),
             static_cast<float>(mouse_position.y));
         if (center_cell.has_value()) {
-            const bool placing_extractor = command_panel_mode_ == CommandPanelMode::PlaceExtractor;
-            const bool placing_2x2 = placing_extractor
-                || command_panel_mode_ == CommandPanelMode::PlaceHouse
-                || command_panel_mode_ == CommandPanelMode::PlaceLumberjack;
-            const core::GridPos anchor = placing_2x2
-                ? house_anchor_from_center_cell(*center_cell)
-                : town_center_anchor_from_center_cell(*center_cell);
-            const int footprint = placing_2x2
-                ? constants::HOUSE_FOOTPRINT_TILES
-                : constants::TOWN_CENTER_FOOTPRINT_TILES;
             auto& registry = simulation.registry();
             const auto world_view = registry.view<sim::components::WorldTag, sim::components::MapGrid>();
+            core::GridPos anchor =
+                placement_anchor_from_center_cell(command_panel_mode_, *center_cell);
+            if (command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+                if (world_view.begin() != world_view.end()) {
+                    if (const auto snapped =
+                            sim::player::extractor_snap_anchor(registry, *center_cell)) {
+                        anchor = *snapped;
+                    }
+                }
+                else if (render_snapshot != nullptr) {
+                    if (const auto snapped =
+                            render::snapshot_extractor_snap_anchor(*render_snapshot, *center_cell)) {
+                        anchor = *snapped;
+                    }
+                }
+            }
+            const int footprint = placement_footprint_tiles(command_panel_mode_);
             int map_width = 0;
             int map_height = 0;
             if (world_view.begin() != world_view.end()) {
@@ -1776,6 +2307,8 @@ void GameInput::update_continuous(
             if (map_width > 0 && map_height > 0
                 && footprint_on_map(map_width, map_height, anchor, footprint)) {
                 placement_ghost_anchor_ = anchor;
+                const bool placing_extractor =
+                    command_panel_mode_ == CommandPanelMode::PlaceExtractor;
                 if (placing_extractor) {
                     placement_ghost_valid_ = world_view.begin() != world_view.end()
                         ? sim::player::can_build_extractor_at(registry, anchor, local_player_slot_)
@@ -1802,10 +2335,13 @@ void GameInput::update_continuous(
                         anchor,
                         footprint,
                         selection_.units,
-                        local_player_slot_);
+                        local_player_slot_,
+                        command_panel_mode_ != CommandPanelMode::PlaceFarm);
                 }
                 else if (render_snapshot != nullptr) {
                     placement_ghost_valid_ = true;
+                    const bool units_block_placement =
+                        command_panel_mode_ != CommandPanelMode::PlaceFarm;
                     for (int y = 0; y < footprint && placement_ghost_valid_; ++y) {
                         for (int x = 0; x < footprint; ++x) {
                             const core::GridPos cell{anchor.x + x, anchor.y + y};
@@ -1813,7 +2349,9 @@ void GameInput::update_continuous(
                                 || render::snapshot_cell_covered_by_mana_lake(
                                     *render_snapshot,
                                     cell)
-                                || render::snapshot_cell_blocked_by_unit(*render_snapshot, cell)) {
+                                || (units_block_placement
+                                    && render::snapshot_cell_blocked_by_unit(
+                                        *render_snapshot, cell))) {
                                 placement_ghost_valid_ = false;
                                 break;
                             }
@@ -1893,10 +2431,7 @@ CursorShape GameInput::resolve_cursor_shape(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot) const
 {
-    if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse
-        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+    if (is_placement_command_mode(command_panel_mode_)) {
         if (!placement_ghost_anchor_.has_value()) {
             return CursorShape::Cross;
         }
@@ -2027,10 +2562,11 @@ void GameInput::finalize_left_release(
         }
     }
 
-    if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse
-        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+    if (garrison_targeting_mode_) {
+        garrison_targeting_mode_ = false;
+    }
+
+    if (is_placement_command_mode(command_panel_mode_)) {
         if (hit_test_hud_blocks_world_pick(
                 window.getSize(),
                 screen_position.x,
@@ -2044,18 +2580,47 @@ void GameInput::finalize_left_release(
         }
 
         sim::player::PlayerCommandType build_type = sim::player::PlayerCommandType::BuildTownCenter;
-        core::GridPos anchor = town_center_anchor_from_center_cell(*center_cell);
-        if (command_panel_mode_ == CommandPanelMode::PlaceHouse) {
+        const core::GridPos anchor =
+            placement_anchor_from_center_cell(command_panel_mode_, *center_cell);
+        switch (command_panel_mode_) {
+        case CommandPanelMode::PlaceHouse:
             build_type = sim::player::PlayerCommandType::BuildHouse;
-            anchor = house_anchor_from_center_cell(*center_cell);
-        }
-        else if (command_panel_mode_ == CommandPanelMode::PlaceLumberjack) {
-            build_type = sim::player::PlayerCommandType::BuildLumberjack;
-            anchor = lumberjack_anchor_from_center_cell(*center_cell);
-        }
-        else if (command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+            break;
+        case CommandPanelMode::PlaceLumberCamp:
+            build_type = sim::player::PlayerCommandType::BuildLumberCamp;
+            break;
+        case CommandPanelMode::PlaceExtractor:
             build_type = sim::player::PlayerCommandType::BuildExtractor;
-            anchor = extractor_anchor_from_center_cell(*center_cell);
+            break;
+        case CommandPanelMode::PlaceMill:
+            build_type = sim::player::PlayerCommandType::BuildMill;
+            break;
+        case CommandPanelMode::PlaceMiningCamp:
+            build_type = sim::player::PlayerCommandType::BuildMiningCamp;
+            break;
+        case CommandPanelMode::PlaceBarracks:
+            build_type = sim::player::PlayerCommandType::BuildBarracks;
+            break;
+        case CommandPanelMode::PlaceMageAcademy:
+            build_type = sim::player::PlayerCommandType::BuildMageAcademy;
+            break;
+        case CommandPanelMode::PlaceTower:
+            build_type = sim::player::PlayerCommandType::BuildTower;
+            break;
+        case CommandPanelMode::PlaceMarket:
+            build_type = sim::player::PlayerCommandType::BuildMarket;
+            break;
+        case CommandPanelMode::PlaceGarden:
+            build_type = sim::player::PlayerCommandType::BuildGarden;
+            break;
+        case CommandPanelMode::PlaceReservoir:
+            build_type = sim::player::PlayerCommandType::BuildReservoir;
+            break;
+        case CommandPanelMode::PlaceFarm:
+            build_type = sim::player::PlayerCommandType::BuildFarm;
+            break;
+        default:
+            break;
         }
 
         sim::player::PlayerCommand command =
@@ -2359,7 +2924,10 @@ void GameInput::finalize_left_release(
     selection_.clear();
 }
 
-void GameInput::submit_chat_message(std::string text)
+void GameInput::submit_chat_message(
+    std::string text,
+    sim::Simulation& simulation,
+    const render::SimRenderSnapshot* render_snapshot)
 {
     if (text.empty()) {
         return;
@@ -2367,6 +2935,27 @@ void GameInput::submit_chat_message(std::string text)
 
     if (text.size() > static_cast<std::size_t>(constants::CHAT_MAX_MESSAGE_LENGTH)) {
         text.resize(static_cast<std::size_t>(constants::CHAT_MAX_MESSAGE_LENGTH));
+    }
+
+    bool cheats_enabled = false;
+    {
+        auto& registry = simulation.registry();
+        const auto world_view =
+            registry.view<sim::components::WorldTag, sim::components::MatchSession>();
+        if (world_view.begin() != world_view.end()) {
+            cheats_enabled =
+                world_view.get<sim::components::MatchSession>(*world_view.begin()).cheats_enabled;
+        }
+    }
+
+    if (cheats_enabled && text == constants::CHEAT_OKNOCRAFT_INFINITY) {
+        sim::player::PlayerCommand command = make_command(
+            simulation,
+            sim::player::PlayerCommandType::CheatGrantResources,
+            {},
+            render_snapshot);
+        command.player_slot = local_player_slot_;
+        submit_player_command(simulation, std::move(command));
     }
 
     if (lockstep_session_ != nullptr) {
@@ -2379,7 +2968,10 @@ void GameInput::submit_chat_message(std::string text)
     }
 }
 
-bool GameInput::handle_chat_event(const sf::Event& event)
+bool GameInput::handle_chat_event(
+    const sf::Event& event,
+    sim::Simulation& simulation,
+    const render::SimRenderSnapshot* render_snapshot)
 {
     if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
         if (!chat_composing_ && key_pressed->code == sf::Keyboard::Key::Enter) {
@@ -2403,7 +2995,7 @@ bool GameInput::handle_chat_event(const sf::Event& event)
             chat_composing_ = false;
             chat_draft_.clear();
             if (!message.empty()) {
-                submit_chat_message(message);
+                submit_chat_message(message, simulation, render_snapshot);
             }
             return true;
         }
@@ -2593,8 +3185,32 @@ render::HudUnitContext GameInput::make_hud_context(
                 context.selected_building_health_current = pose.health_current;
                 context.selected_building_health_max = pose.health_max;
                 context.selected_building_is_house = pose.is_house;
-                context.selected_building_is_lumberjack = pose.is_lumberjack;
+                context.selected_building_is_lumber_camp = pose.is_lumber_camp;
+                context.selected_building_is_mill = pose.is_mill;
+                context.selected_building_is_mining_camp = pose.is_mining_camp;
+                context.selected_building_is_barracks = pose.is_barracks;
+                context.selected_building_is_mage_academy = pose.is_mage_academy;
+                context.selected_building_is_tower = pose.is_tower;
+                context.selected_building_is_market = pose.is_market;
                 context.selected_building_is_extractor = pose.is_extractor;
+                context.selected_building_is_garden = pose.is_garden;
+                context.selected_building_is_reservoir = pose.is_reservoir;
+                context.selected_building_is_farm = pose.is_farm;
+                context.selected_farm_food_remaining = pose.farm_food_remaining;
+                context.selected_farm_food_max = pose.farm_food_max;
+                context.selected_garden_percent =
+                    constants::GARDEN_PROD_INTERVAL_TICKS <= 0
+                    ? 100
+                    : ((constants::GARDEN_PROD_INTERVAL_TICKS
+                           - std::clamp(
+                               pose.mana_gen_ticks_remaining,
+                               0,
+                               constants::GARDEN_PROD_INTERVAL_TICKS))
+                        * 100)
+                        / constants::GARDEN_PROD_INTERVAL_TICKS;
+                context.selected_building_is_town_center = pose.is_town_center;
+                context.selected_garrison_count = pose.garrison_count;
+                context.selected_garrison_capacity = pose.garrison_capacity;
                 context.has_selected_building_owner = true;
                 context.selected_building_player_slot = pose.player_slot;
             }
@@ -2615,10 +3231,54 @@ render::HudUnitContext GameInput::make_hud_context(
                 context.selected_building_health_max = health.max.to_int();
                 context.selected_building_is_house =
                     registry.any_of<sim::components::HouseTag>(selection_.building);
-                context.selected_building_is_lumberjack =
-                    registry.any_of<sim::components::LumberjackTag>(selection_.building);
+                context.selected_building_is_lumber_camp =
+                    registry.any_of<sim::components::LumberCampTag>(selection_.building);
+                context.selected_building_is_mill =
+                    registry.any_of<sim::components::MillTag>(selection_.building);
+                context.selected_building_is_mining_camp =
+                    registry.any_of<sim::components::MiningCampTag>(selection_.building);
+                context.selected_building_is_barracks =
+                    registry.any_of<sim::components::BarracksTag>(selection_.building);
+                context.selected_building_is_mage_academy =
+                    registry.any_of<sim::components::MageAcademyTag>(selection_.building);
+                context.selected_building_is_tower =
+                    registry.any_of<sim::components::TowerTag>(selection_.building);
+                context.selected_building_is_market =
+                    registry.any_of<sim::components::MarketTag>(selection_.building);
                 context.selected_building_is_extractor =
                     registry.any_of<sim::components::ExtractorTag>(selection_.building);
+                context.selected_building_is_garden =
+                    registry.any_of<sim::components::GardenTag>(selection_.building);
+                context.selected_building_is_reservoir =
+                    registry.any_of<sim::components::ReservoirTag>(selection_.building);
+                context.selected_building_is_farm =
+                    registry.any_of<sim::components::FarmTag>(selection_.building);
+                if (registry.any_of<sim::components::FarmFood>(selection_.building)) {
+                    const auto& farm_food =
+                        registry.get<sim::components::FarmFood>(selection_.building);
+                    context.selected_farm_food_remaining = farm_food.remaining;
+                    context.selected_farm_food_max = farm_food.max;
+                }
+                if (registry.any_of<sim::components::ManaGenerationCooldown>(selection_.building)
+                    && context.selected_building_is_garden) {
+                    const int remaining = registry.get<sim::components::ManaGenerationCooldown>(
+                        selection_.building).ticks_remaining;
+                    context.selected_garden_percent =
+                        constants::GARDEN_PROD_INTERVAL_TICKS <= 0
+                        ? 100
+                        : ((constants::GARDEN_PROD_INTERVAL_TICKS
+                               - std::clamp(remaining, 0, constants::GARDEN_PROD_INTERVAL_TICKS))
+                            * 100)
+                            / constants::GARDEN_PROD_INTERVAL_TICKS;
+                }
+                context.selected_building_is_town_center =
+                    registry.any_of<sim::components::TownCenterTag>(selection_.building);
+                if (registry.any_of<sim::components::GarrisonHold>(selection_.building)) {
+                    const auto& hold =
+                        registry.get<sim::components::GarrisonHold>(selection_.building);
+                    context.selected_garrison_count = static_cast<int>(hold.units.size());
+                    context.selected_garrison_capacity = static_cast<int>(hold.capacity);
+                }
                 if (registry.any_of<sim::components::PlayerOwnedTag>(selection_.building)) {
                     context.has_selected_building_owner = true;
                     context.selected_building_player_slot =
@@ -2638,7 +3298,7 @@ bool GameInput::handle_event(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot)
 {
-    if (handle_chat_event(event)) {
+    if (handle_chat_event(event, simulation, render_snapshot)) {
         return true;
     }
 
@@ -2683,16 +3343,20 @@ bool GameInput::handle_event(
 
     if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
         if (key_pressed->code == sf::Keyboard::Key::Escape) {
-            if (attack_targeting_mode_) {
+            if (attack_targeting_mode_ || garrison_targeting_mode_) {
                 attack_targeting_mode_ = false;
+                garrison_targeting_mode_ = false;
                 return true;
             }
 
-            if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-                || command_panel_mode_ == CommandPanelMode::PlaceHouse
-                || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-                || command_panel_mode_ == CommandPanelMode::PlaceExtractor
-                || command_panel_mode_ == CommandPanelMode::BuildMenu) {
+            if (is_placement_command_mode(command_panel_mode_)) {
+                command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
+                    ? build_tree_for_placement(command_panel_mode_)
+                    : CommandPanelMode::Empty;
+                return true;
+            }
+
+            if (is_build_tree_command_mode(command_panel_mode_)) {
                 command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
                     ? CommandPanelMode::WorkerActions
                     : CommandPanelMode::Empty;
@@ -2710,11 +3374,33 @@ bool GameInput::handle_event(
                 command_panel_mode_,
                 *slot,
                 current_build_options(simulation, render_snapshot));
-            if (action != CommandPanelAction::None) {
+            if (action != CommandPanelAction::None
+                && action != CommandPanelAction::Kill
+                && action != CommandPanelAction::Destroy) {
                 command_panel_pressed_slot_ = *slot;
                 command_panel_press_until_ = std::chrono::steady_clock::now()
                     + std::chrono::milliseconds(constants::HUD_COMMAND_PANEL_KEY_PRESS_TTL_MS);
                 return apply_command_panel_action(simulation, render_snapshot, action);
+            }
+        }
+
+        if (key_pressed->code == sf::Keyboard::Key::Delete) {
+            const auto slot_actions = command_panel_slot_actions(command_panel_mode_);
+            const bool has_kill = std::any_of(
+                slot_actions.begin(),
+                slot_actions.end(),
+                [](const auto& pair) { return pair.second == CommandPanelAction::Kill; });
+            const bool has_destroy = std::any_of(
+                slot_actions.begin(),
+                slot_actions.end(),
+                [](const auto& pair) { return pair.second == CommandPanelAction::Destroy; });
+            if (has_kill && !selection_.units.empty()) {
+                return apply_command_panel_action(
+                    simulation, render_snapshot, CommandPanelAction::Kill);
+            }
+            if (has_destroy && selection_.building != entt::null) {
+                return apply_command_panel_action(
+                    simulation, render_snapshot, CommandPanelAction::Destroy);
             }
         }
     }
@@ -2771,11 +3457,14 @@ bool GameInput::handle_event(
             }
         }
         else if (mouse_pressed->button == sf::Mouse::Button::Right) {
-            if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-                || command_panel_mode_ == CommandPanelMode::PlaceHouse
-                || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
-                || command_panel_mode_ == CommandPanelMode::PlaceExtractor
-                || command_panel_mode_ == CommandPanelMode::BuildMenu) {
+            if (is_placement_command_mode(command_panel_mode_)) {
+                command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
+                    ? build_tree_for_placement(command_panel_mode_)
+                    : CommandPanelMode::Empty;
+                return true;
+            }
+
+            if (is_build_tree_command_mode(command_panel_mode_)) {
                 command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
                     ? CommandPanelMode::WorkerActions
                     : CommandPanelMode::Empty;
@@ -2787,7 +3476,8 @@ bool GameInput::handle_event(
             }
 
             if (!selection_has_worker(simulation, render_snapshot)
-                && !selection_has_militia(simulation, render_snapshot)) {
+                && !selection_has_militia(simulation, render_snapshot)
+                && !selection_has_mage(simulation, render_snapshot)) {
                 return true;
             }
 
@@ -2905,9 +3595,21 @@ bool GameInput::handle_event(
                     screen_position,
                     pick_radius_px,
                     local_player_slot_);
+                if (garrison_targeting_mode_) {
+                    if (try_issue_garrison_on_building(
+                            simulation, render_snapshot, player_building)) {
+                        return true;
+                    }
+
+                    garrison_targeting_mode_ = false;
+                }
+
                 if (player_building != entt::null) {
                     bool under_construction = false;
                     bool is_town_center = false;
+                    bool is_farm = false;
+                    int farm_food_remaining = 0;
+                    core::GridPos farm_cell{};
                     for (const render::RenderEntityPose& pose : render_snapshot->buildings) {
                         if (pose.entity != player_building) {
                             continue;
@@ -2915,7 +3617,43 @@ bool GameInput::handle_event(
 
                         under_construction = pose.under_construction;
                         is_town_center = pose.is_town_center;
+                        is_farm = pose.is_farm;
+                        farm_food_remaining = pose.farm_food_remaining;
+                        farm_cell = core::GridPos{pose.grid_x, pose.grid_y};
                         break;
+                    }
+
+                    if (is_farm && selection_has_worker(simulation, render_snapshot)) {
+                        if (under_construction) {
+                            sim::player::PlayerCommand command = make_command(
+                                simulation,
+                                sim::player::PlayerCommandType::ResumeBuild,
+                                selection_.units,
+                                render_snapshot);
+                            command.target_entity = player_building;
+                            submit_player_command(simulation, std::move(command));
+                            return true;
+                        }
+
+                        if (farm_food_remaining > 0) {
+                            sim::player::PlayerCommand command = make_command(
+                                simulation,
+                                sim::player::PlayerCommandType::Gather,
+                                selection_.units,
+                                render_snapshot);
+                            command.cell = farm_cell;
+                            submit_player_command(simulation, std::move(command));
+                            return true;
+                        }
+
+                        sim::player::PlayerCommand command = make_command(
+                            simulation,
+                            sim::player::PlayerCommandType::RenewFarm,
+                            selection_.units,
+                            render_snapshot);
+                        command.target_entity = player_building;
+                        submit_player_command(simulation, std::move(command));
+                        return true;
                     }
 
                     if (under_construction && selection_has_worker(simulation, render_snapshot)) {
@@ -3026,7 +3764,53 @@ bool GameInput::handle_event(
                 screen_position,
                 pick_radius_px,
                 local_player_slot_);
+            if (garrison_targeting_mode_) {
+                if (try_issue_garrison_on_building(simulation, nullptr, player_building)) {
+                    return true;
+                }
+
+                garrison_targeting_mode_ = false;
+            }
+
             if (player_building != entt::null) {
+                if (registry.any_of<sim::components::FarmTag>(player_building)
+                    && selection_has_worker(simulation, nullptr)) {
+                    if (registry.any_of<sim::components::UnderConstructionTag>(player_building)) {
+                        sim::player::PlayerCommand command = make_command(
+                            simulation,
+                            sim::player::PlayerCommandType::ResumeBuild,
+                            selection_.units,
+                            nullptr);
+                        command.target_entity = player_building;
+                        submit_player_command(simulation, std::move(command));
+                        return true;
+                    }
+
+                    const int farm_food =
+                        registry.any_of<sim::components::FarmFood>(player_building)
+                        ? registry.get<sim::components::FarmFood>(player_building).remaining
+                        : 0;
+                    if (farm_food > 0) {
+                        sim::player::PlayerCommand command = make_command(
+                            simulation,
+                            sim::player::PlayerCommandType::Gather,
+                            selection_.units,
+                            nullptr);
+                        command.cell = registry.get<sim::components::GridPosition>(player_building).cell;
+                        submit_player_command(simulation, std::move(command));
+                        return true;
+                    }
+
+                    sim::player::PlayerCommand command = make_command(
+                        simulation,
+                        sim::player::PlayerCommandType::RenewFarm,
+                        selection_.units,
+                        nullptr);
+                    command.target_entity = player_building;
+                    submit_player_command(simulation, std::move(command));
+                    return true;
+                }
+
                 if (registry.any_of<sim::components::UnderConstructionTag>(player_building)
                     && selection_has_worker(simulation, nullptr)) {
                     sim::player::PlayerCommand command = make_command(

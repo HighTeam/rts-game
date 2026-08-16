@@ -5,7 +5,7 @@
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
 
-#include <bit>
+#include <array>
 
 namespace aoa::sim::systems {
 
@@ -217,7 +217,8 @@ void update_match_outcome(entt::registry& registry, const std::uint64_t tick_cou
         return;
     }
 
-    std::uint8_t living_sides_mask = 0U;
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> living_side_values{};
+    std::uint8_t living_side_count = 0U;
     std::uint8_t last_alive_slot = constants::MATCH_WINNER_NONE;
     for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
          ++slot) {
@@ -237,13 +238,21 @@ void update_match_outcome(entt::registry& registry, const std::uint64_t tick_cou
         }
 
         const std::uint8_t side = components::player_side_index(*session, slot);
-        living_sides_mask =
-            static_cast<std::uint8_t>(living_sides_mask | static_cast<std::uint8_t>(1U << side));
+        bool seen = false;
+        for (std::uint8_t index = 0U; index < living_side_count; ++index) {
+            if (living_side_values[index] == side) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            living_side_values[living_side_count] = side;
+            ++living_side_count;
+        }
         last_alive_slot = slot;
     }
 
-    const std::uint8_t remaining_sides =
-        static_cast<std::uint8_t>(std::popcount(living_sides_mask));
+    const std::uint8_t remaining_sides = living_side_count;
     if (remaining_sides > 1U) {
         return;
     }

@@ -51,6 +51,7 @@ struct LobbySlotInfo {
     std::string name{};
     LobbySlotKind kind{LobbySlotKind::Disabled};
     std::uint8_t color{0U};
+    std::uint8_t team{0U};
 };
 
 struct LobbyStateMessage {
@@ -62,6 +63,11 @@ struct LobbyStateMessage {
 
 struct LobbyJoinMessage {
     std::string name{};
+    std::string version{};
+};
+
+struct LobbyRejectMessage {
+    std::string reason{};
 };
 
 struct LobbyReadyMessage {
@@ -74,8 +80,16 @@ struct LobbyColorMessage {
     std::uint8_t color{0U};
 };
 
+struct LobbyTeamMessage {
+    std::uint8_t player_slot{0U};
+    std::uint8_t team{0U};
+};
+
 [[nodiscard]] std::vector<std::byte> encode_lobby_join(const LobbyJoinMessage& message);
 [[nodiscard]] std::optional<LobbyJoinMessage> decode_lobby_join(std::span<const std::byte> bytes);
+
+[[nodiscard]] std::vector<std::byte> encode_lobby_reject(const LobbyRejectMessage& message);
+[[nodiscard]] std::optional<LobbyRejectMessage> decode_lobby_reject(std::span<const std::byte> bytes);
 
 [[nodiscard]] std::vector<std::byte> encode_lobby_state(const LobbyStateMessage& message);
 [[nodiscard]] std::optional<LobbyStateMessage> decode_lobby_state(std::span<const std::byte> bytes);
@@ -85,6 +99,9 @@ struct LobbyColorMessage {
 
 [[nodiscard]] std::vector<std::byte> encode_lobby_color(const LobbyColorMessage& message);
 [[nodiscard]] std::optional<LobbyColorMessage> decode_lobby_color(std::span<const std::byte> bytes);
+
+[[nodiscard]] std::vector<std::byte> encode_lobby_team(const LobbyTeamMessage& message);
+[[nodiscard]] std::optional<LobbyTeamMessage> decode_lobby_team(std::span<const std::byte> bytes);
 
 [[nodiscard]] std::vector<std::byte> encode_lobby_settings(const LobbySettings& settings);
 [[nodiscard]] std::optional<LobbySettings> decode_lobby_settings(std::span<const std::byte> bytes);

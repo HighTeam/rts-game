@@ -35,7 +35,13 @@ ArchetypeDefinition parse_archetype_definition(const nlohmann::json& json)
         "spawn_militia_food_cost",
         json.value("spawn_militia_wood_cost", 0));
     archetype.spawn_militia_money_cost = json.value("spawn_militia_money_cost", 0);
+    archetype.spawn_mage_money_cost = json.value("spawn_mage_money_cost", 0);
+    archetype.spawn_mage_mana_cost = json.value("spawn_mage_mana_cost", 0);
     archetype.build_wood_cost = json.value("build_wood_cost", 0);
+    archetype.build_money_cost = json.value("build_money_cost", 0);
+    archetype.build_mana_cost = json.value("build_mana_cost", 0);
+    archetype.attack_range = json.value("attack_range", 0);
+    archetype.attack_mana_cost = json.value("attack_mana_cost", 0);
     archetype.wood_capacity = json.value("wood_capacity", 0);
     archetype.food_capacity = json.value("food_capacity", 0);
     archetype.money_capacity = json.value("money_capacity", 0);

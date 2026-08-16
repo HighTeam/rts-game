@@ -18,6 +18,7 @@
 #include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
 #include "render/game_renderer.hpp"
+#include "sim/components/match_announcements.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/persistence/save_game.hpp"
@@ -29,6 +30,7 @@
 #include <SFML/Window/VideoMode.hpp>
 #include <SFML/Window/Window.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -59,6 +61,51 @@ void validate_lockstep_player_count(const std::uint8_t player_count)
     if (player_count != 2U && player_count != 4U && player_count != 8U) {
         throw std::invalid_argument(
             "Invalid player count: " + std::to_string(player_count) + " (expected 2, 4, or 8)");
+    }
+}
+
+[[nodiscard]] std::string match_chat_player_name(
+    const std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS>& names,
+    const std::uint8_t player_slot)
+{
+    if (player_slot < names.size() && !names[player_slot].empty()) {
+        return names[player_slot];
+    }
+
+    return "Player " + std::to_string(static_cast<int>(player_slot) + 1);
+}
+
+void drain_match_announcements_to_chat(
+    entt::registry& registry,
+    ChatState& chat_state,
+    const std::uint8_t local_player_slot,
+    const std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS>& names)
+{
+    for (const sim::components::MatchAnnouncement& event :
+         sim::components::drain_match_announcements(registry)) {
+        if (event.kind == sim::components::MatchAnnouncementKind::AgeAdvanced) {
+            const std::string name = match_chat_player_name(names, event.player_slot);
+            const std::string_view age_name = sim::components::player_age_name(
+                static_cast<constants::PlayerAge>(event.age));
+            chat_state.push_system_spans({
+                ChatTextSpan{name, true, event.player_slot},
+                ChatTextSpan{std::string(constants::CHAT_AGE_ADVANCED_MID), false, 0U},
+                ChatTextSpan{std::string(age_name), false, 0U},
+            });
+            continue;
+        }
+
+        if (event.kind != sim::components::MatchAnnouncementKind::AttackedBy
+            || event.player_slot != local_player_slot) {
+            continue;
+        }
+
+        const std::string attacker = match_chat_player_name(names, event.other_slot);
+        chat_state.push_system_spans({
+            ChatTextSpan{std::string(constants::CHAT_ATTACKED_YOU), true, local_player_slot},
+            ChatTextSpan{std::string(constants::CHAT_ATTACKED_MID), false, 0U},
+            ChatTextSpan{attacker, true, event.other_slot},
+        });
     }
 }
 
@@ -337,6 +384,7 @@ AppFlow run_graphical(
     game_audio.set_music_volume(shell_settings.music_volume);
     game_audio.set_sfx_volume(shell_settings.sfx_volume);
     game_input.set_local_player_slot(0U);
+    game_input.set_match_roster(false, setup.player_names);
     game_input.set_chat_state(&chat_state);
     game_input.set_game_cursor(&game_cursor);
     game_input.set_game_audio(&game_audio);
@@ -384,6 +432,11 @@ AppFlow run_graphical(
                 setup.fog_mode != sim::components::FogOfWarMode::Disabled;
             session.cheats_enabled = setup.cheats_enabled;
             session.player_color_indices = setup.slot_colors;
+            sim::components::apply_lobby_teams_to_session(
+                session,
+                setup.slot_teams,
+                setup.player_count,
+                setup.map_seed);
             session.victory_condition = setup.victory_condition;
             if (setup.player_count > 0U
                 && setup.player_count <= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
@@ -460,7 +513,15 @@ AppFlow run_graphical(
                 }
             }
         },
-        [&renderer, &simulation, &window, &game_input, &fps_tracker, &tps_tracker, &game_audio](
+        [&renderer,
+         &simulation,
+         &window,
+         &game_input,
+         &fps_tracker,
+         &tps_tracker,
+         &game_audio,
+         &chat_state,
+         &setup](
             const float interpolation_alpha) {
             fps_tracker.record_frame();
             game_audio.update();
@@ -468,6 +529,11 @@ AppFlow run_graphical(
                 simulation.registry(),
                 renderer,
                 renderer.local_player_slot());
+            drain_match_announcements_to_chat(
+                simulation.registry(),
+                chat_state,
+                0U,
+                setup.player_names);
             game_input.update_continuous(window, renderer, simulation);
             (void)window.setActive(true);
             const app::PlayerSelection& selection = game_input.selection();
@@ -601,7 +667,10 @@ void update_lockstep_window_title(
     else if (session.is_reconnecting()) {
         title += " - Reconnecting to host...";
     }
-    else if (!session.is_session_ready() && session.is_connected()) {
+    else if (session.is_awaiting_reconnect_handshake()) {
+        title += " - Synchronizing match data...";
+    }
+    else if (role == net::LockstepRole::Client && !session.is_session_ready() && session.is_connected()) {
         title += " - Joining match...";
     }
     else if (session.is_ai_fallback() && session.is_waiting_for_opponent_reconnect()) {
@@ -646,9 +715,22 @@ bool lockstep_should_show_waiting_overlay(
     const net::LockstepSession& session,
     const net::LockstepRole role)
 {
-    // Centered LOADING is pre-match only. Mid-game disconnect/AI/reconnect uses chat.
-    if (session.is_match_started() || session.is_awaiting_reconnect_handshake()
-        || session.is_reconnecting() || session.is_host_gone() || session.is_ai_fallback()
+    if (session.is_desynced() || session.is_host_gone()) {
+        return false;
+    }
+
+    if (role == net::LockstepRole::Client
+        && (session.is_awaiting_reconnect_handshake() || !session.is_session_ready())) {
+        return true;
+    }
+
+    if (role == net::LockstepRole::Host && session.is_awaiting_reconnect_handshake()
+        && session.session_player_count() <= 2U) {
+        return true;
+    }
+
+    // Centered LOADING is pre-match only. Mid-game disconnect/AI uses chat.
+    if (session.is_match_started() || session.is_reconnecting() || session.is_ai_fallback()
         || session.has_disconnected_human_slots()) {
         return false;
     }
@@ -679,6 +761,11 @@ std::pair<std::string, std::string> lockstep_waiting_overlay_text(
     const net::LockstepSession& session,
     const net::LockstepRole role)
 {
+    if (session.is_awaiting_reconnect_handshake()
+        || (role == net::LockstepRole::Client && session.is_connected()
+            && !session.is_session_ready())) {
+        return {"LOADING", "SYNCHRONIZING MATCH DATA"};
+    }
     if (role == net::LockstepRole::Host && !session.is_lobby_full()) {
         const int connected_players =
             static_cast<int>(session.lobby_registered_client_count()) + 1;
@@ -729,6 +816,11 @@ AppFlow run_lockstep_match(
                 setup.fog_mode != sim::components::FogOfWarMode::Disabled;
             match_session.cheats_enabled = setup.cheats_enabled;
             match_session.player_color_indices = setup.slot_colors;
+            sim::components::apply_lobby_teams_to_session(
+                match_session,
+                setup.slot_teams,
+                setup.player_count,
+                setup.map_seed);
             match_session.victory_condition = setup.victory_condition;
             if (setup.player_count > 0U
                 && setup.player_count <= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
@@ -752,6 +844,23 @@ AppFlow run_lockstep_match(
     net::LockstepSession session{role, player_slot, simulation, session_player_count};
     session.configure_match_identity(setup.player_names, setup.reconnect_tokens);
     session.configure_ai_slots(setup.slot_is_ai);
+    {
+        net::LobbySettings lobby_settings = setup.lobby_settings;
+        lobby_settings.player_count = setup.player_count;
+        lobby_settings.civil_population_map_cap =
+            static_cast<std::uint8_t>(std::clamp(setup.civil_population_map_cap, 0, 255));
+        lobby_settings.fog_of_war_enabled = setup.fog_of_war_enabled;
+        lobby_settings.fog_mode = static_cast<std::uint8_t>(setup.fog_mode);
+        lobby_settings.cheats_enabled = setup.cheats_enabled;
+        lobby_settings.victory_condition = static_cast<std::uint8_t>(setup.victory_condition);
+        if (lobby_settings.map_seed == 0U) {
+            lobby_settings.map_seed = setup.map_seed;
+        }
+        if (lobby_settings.pattern_payload.empty()) {
+            lobby_settings.pattern_payload = setup.pattern_payload;
+        }
+        session.configure_lobby_settings(lobby_settings, setup.slot_teams, setup.slot_colors);
+    }
 
     if (setup.lockstep_debug) {
         net::LockstepDebugLog::enable(player_slot, role);
@@ -941,6 +1050,11 @@ AppFlow run_lockstep_match(
                 simulation.registry(),
                 renderer,
                 renderer.local_player_slot());
+            drain_match_announcements_to_chat(
+                simulation.registry(),
+                chat_state,
+                player_slot,
+                setup.player_names);
         }
 
         session.service_network_latency();

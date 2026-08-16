@@ -1,0 +1,14 @@
+{
+  "id": "mage_academy",
+  "kind": "structure",
+  "display_name": "Mage academy",
+  "max_hp": 1000,
+  "footprint_width": 3,
+  "footprint_height": 3,
+  "build_wood_cost": 125,
+  "build_money_cost": 35,
+  "build_mana_cost": 5,
+  "spawn_mage_money_cost": 45,
+  "spawn_mage_mana_cost": 5,
+  "vision_range": 5
+}

@@ -4,6 +4,7 @@
 #include "core/constants.hpp"
 #include "core/grid.hpp"
 #include "sim/components/building_footprint.hpp"
+#include "sim/components/building_process.hpp"
 #include "sim/components/combat.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
@@ -11,6 +12,8 @@
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/match_announcements.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/fog_of_war.hpp"
 #include "sim/components/player_slot.hpp"
@@ -18,7 +21,10 @@
 #include "sim/components/sfx_events.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/player/player_commands.hpp"
 #include "sim/player/player_economy.hpp"
+#include "sim/spawn/building_unit_spawn.hpp"
+#include "sim/spawn/unit_spawn.hpp"
 #include "sim/snapshot/entity_snapshot_key.hpp"
 #include "sim/systems/pathfinding.hpp"
 #include "sim/systems/visibility_system.hpp"
@@ -28,7 +34,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace aoa::sim::systems {
@@ -248,7 +258,8 @@ entt::entity find_town_center_for_player_slot(
     return under_construction;
 }
 
-entt::entity find_nearest_wood_drop_off(
+template <typename DropOffTag>
+entt::entity find_nearest_tagged_drop_off(
     entt::registry& registry,
     const std::uint8_t player_slot,
     const core::GridPos worker_pos)
@@ -256,7 +267,7 @@ entt::entity find_nearest_wood_drop_off(
     entt::entity best = entt::null;
     int best_distance = std::numeric_limits<int>::max();
     const auto dropoff_view = registry.view<
-        components::WoodDropOffTag,
+        DropOffTag,
         components::PlayerOwnedTag,
         components::GridPosition,
         components::Health>();
@@ -287,6 +298,14 @@ entt::entity find_nearest_wood_drop_off(
     }
 
     return best;
+}
+
+entt::entity find_nearest_wood_drop_off(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const core::GridPos worker_pos)
+{
+    return find_nearest_tagged_drop_off<components::WoodDropOffTag>(registry, player_slot, worker_pos);
 }
 
 void deplete_forest_tile(components::MapGrid& map, const core::GridPos cell)
@@ -384,6 +403,33 @@ bool resource_tile_has_remaining(const components::MapGrid& map, const core::Gri
     return forest_tile_has_wood(map, cell)
         || bush_tile_has_food(map, cell)
         || gold_mine_has_money(map, cell);
+}
+
+[[nodiscard]] entt::entity gatherable_farm_at_cell(
+    entt::registry& registry,
+    const core::GridPos cell)
+{
+    const entt::entity farm = spawn::find_farm_at_cell(registry, cell);
+    if (farm == entt::null
+        || registry.any_of<components::UnderConstructionTag>(farm)
+        || !registry.any_of<components::FarmFood>(farm)
+        || registry.get<components::FarmFood>(farm).remaining <= 0) {
+        return entt::null;
+    }
+
+    return farm;
+}
+
+[[nodiscard]] bool gather_cell_has_remaining(
+    entt::registry& registry,
+    const components::MapGrid& map,
+    const core::GridPos cell)
+{
+    if (gatherable_farm_at_cell(registry, cell) != entt::null) {
+        return true;
+    }
+
+    return resource_tile_has_remaining(map, cell);
 }
 
 [[nodiscard]] bool resource_tile_matches_type(
@@ -1136,9 +1182,13 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
             carried_wood.amount + carried_food.amount + carried_money.amount;
 
         if (carried_total >= definition->carry_capacity && should_auto_deposit) {
-            const entt::entity depot = (carried_food.amount > 0 || carried_money.amount > 0)
-                ? find_town_center_for_player_slot(registry, player_slot)
-                : find_nearest_wood_drop_off(registry, player_slot, worker_pos);
+            const entt::entity depot = find_deposit_building(
+                registry,
+                player_slot,
+                worker_pos,
+                carried_wood.amount,
+                carried_food.amount,
+                carried_money.amount);
             if (depot == entt::null) {
                 continue;
             }
@@ -1184,7 +1234,7 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
                     preferred_type =
                         map.tiles[static_cast<std::size_t>(core::grid_index(resource, map.width))];
                 }
-                if (!resource_tile_has_remaining(map, resource)) {
+                if (!gather_cell_has_remaining(registry, map, resource)) {
                     if (!reassign_worker_resource_target(
                             registry,
                             worker,
@@ -1205,13 +1255,25 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
                 continue;
             }
 
-            if (unit_can_work_cell(registry, worker, resource)) {
+            bool moving_to_stand = registry.any_of<components::MoveSegment>(worker);
+            if (!moving_to_stand && registry.any_of<components::MovePath>(worker)) {
+                const auto& path = registry.get<components::MovePath>(worker);
+                moving_to_stand = path.next_index < static_cast<int>(path.cells.size());
+            }
+
+            if (unit_can_work_cell(registry, worker, resource) && !moving_to_stand) {
                 brain.state = components::WorkerState::Gathering;
             }
-            else {
+            else if (!unit_can_work_cell(registry, worker, resource)) {
                 brain.state = components::WorkerState::MovingToResource;
-                const core::GridPos stand_tile =
-                    find_adjacent_walkable(map, registry, resource, worker);
+                const entt::entity farm = gatherable_farm_at_cell(registry, resource);
+                const core::GridPos stand_tile = farm != entt::null
+                    ? find_best_farm_stand_tile(map, registry, farm, worker)
+                    : find_adjacent_walkable(map, registry, resource, worker);
+                if (stand_tile.x < 0) {
+                    continue;
+                }
+
                 bool needs_path = !registry.any_of<components::MovePath>(worker);
                 if (!needs_path) {
                     const auto& path = registry.get<components::MovePath>(worker);
@@ -1241,6 +1303,43 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
                     if (gathered || !unit_can_work_cell(registry, worker, cell)) {
                         return;
                     }
+
+                    const entt::entity farm = spawn::find_farm_at_cell(registry, cell);
+                    if (farm != entt::null
+                        && !registry.any_of<components::UnderConstructionTag>(farm)
+                        && registry.any_of<components::FarmFood>(farm)
+                        && registry.get<components::FarmFood>(farm).remaining > 0) {
+                        auto& farm_food = registry.get<components::FarmFood>(farm);
+                        const int free_capacity = definition->carry_capacity
+                            - carried_wood.amount - carried_food.amount - carried_money.amount;
+                        const int gather_amount = std::min(definition->gather_per_tick, free_capacity);
+                        if (gather_amount <= 0) {
+                            gathered = true;
+                            return;
+                        }
+
+                        carried_wood.amount = 0;
+                        carried_money.amount = 0;
+                        const int taken = std::min(gather_amount, farm_food.remaining);
+                        farm_food.remaining -= taken;
+                        carried_food.amount += taken;
+                        gather_cooldown.ticks_remaining = std::max(1, definition->gather_interval_ticks);
+                        gathered = true;
+                        if (farm_food.remaining <= 0 && preferred_cell == cell) {
+                            (void)reassign_worker_resource_target(
+                                registry,
+                                worker,
+                                map,
+                                worker_pos,
+                                components::TileType::Grass);
+                        }
+                        if (carried_wood.amount + carried_food.amount + carried_money.amount
+                            >= definition->carry_capacity) {
+                            registry.remove<components::MovePath>(worker);
+                        }
+                        return;
+                    }
+
                     if (!resource_tile_has_remaining(map, cell)) {
                         return;
                     }
@@ -1327,13 +1426,52 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
                         }
                     }
                 }
+
+                if (gathered
+                    && carried_wood.amount + carried_food.amount + carried_money.amount
+                        < definition->carry_capacity
+                    && !registry.any_of<components::MoveSegment>(worker)) {
+                    bool moving = false;
+                    if (registry.any_of<components::MovePath>(worker)) {
+                        const auto& path = registry.get<components::MovePath>(worker);
+                        moving = path.next_index < static_cast<int>(path.cells.size());
+                    }
+
+                    const core::GridPos occupancy = unit_occupancy_grid_cell(registry, worker);
+                    const entt::entity farm = gatherable_farm_at_cell(registry, occupancy);
+                    if (!moving && farm != entt::null) {
+                        const auto& farm_food = registry.get<components::FarmFood>(farm);
+                        const int taken_total = farm_food.max - farm_food.remaining;
+                        if (taken_total > 0
+                            && taken_total % constants::FARM_GATHER_WANDER_EVERY_FOOD == 0) {
+                            const std::uint32_t seed =
+                                static_cast<std::uint32_t>(farm_food.remaining)
+                                ^ (static_cast<std::uint32_t>(entt::to_integral(worker))
+                                    * 1664525U);
+                            const core::GridPos next = pick_farm_wander_cell(
+                                map, registry, farm, worker, occupancy, seed);
+                            if (next.x >= 0
+                                && (next.x != occupancy.x || next.y != occupancy.y)) {
+                                auto& gather_target =
+                                    registry.get_or_emplace<components::GatherTarget>(worker);
+                                gather_target.cell = next;
+                                brain.state = components::WorkerState::MovingToResource;
+                                assign_gather_stand_path(registry, worker, map, next, next);
+                            }
+                        }
+                    }
+                }
             }
         }
 
         if (brain.state == components::WorkerState::Depositing) {
-            const entt::entity depot = (carried_food.amount > 0 || carried_money.amount > 0)
-                ? find_town_center_for_player_slot(registry, player_slot)
-                : find_nearest_wood_drop_off(registry, player_slot, worker_pos);
+            const entt::entity depot = find_deposit_building(
+                registry,
+                player_slot,
+                worker_pos,
+                carried_wood.amount,
+                carried_food.amount,
+                carried_money.amount);
             if (depot == entt::null) {
                 brain.state = components::WorkerState::Idle;
                 continue;
@@ -1534,6 +1672,10 @@ void run_movement_system(
         snapshot::sort_entities_by_snapshot_key(registry, std::vector<entt::entity>(view.begin(), view.end()));
 
     for (const entt::entity entity : units) {
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
+            continue;
+        }
+
         const auto& definition_ref = registry.get<components::DefinitionRef>(entity);
         const auto* definition = find_unit_archetype_from_ref(content, definition_ref);
         if (definition == nullptr) {
@@ -1591,84 +1733,78 @@ void run_worker_deposit_system(entt::registry& registry)
             continue;
         }
 
+        if (registry.any_of<components::WorkerBrain>(worker)) {
+            const components::WorkerState state =
+                registry.get<components::WorkerBrain>(worker).state;
+            if (state == components::WorkerState::Gathering
+                || state == components::WorkerState::MovingToResource) {
+                continue;
+            }
+        }
+
         const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
         const core::GridPos worker_pos = registry.get<components::GridPosition>(worker).cell;
-
-        // Prefer a completed wood drop-off in range for wood-only loads.
-        entt::entity wood_depot = entt::null;
-        if (carried_wood.amount > 0) {
-            const auto dropoff_view = registry.view<
-                components::WoodDropOffTag,
-                components::PlayerOwnedTag,
-                components::GridPosition,
-                components::Health>();
-            for (const entt::entity candidate : dropoff_view) {
-                if (components::entity_player_slot(registry, candidate) != player_slot) {
-                    continue;
-                }
-
-                if (registry.any_of<components::UnderConstructionTag>(candidate)) {
-                    continue;
-                }
-
-                if (dropoff_view.get<components::Health>(candidate).current.raw() <= 0) {
-                    continue;
-                }
-
-                const auto& depot_anchor = dropoff_view.get<components::GridPosition>(candidate);
-                const components::BuildingFootprint depot_footprint =
-                    registry.any_of<components::BuildingFootprint>(candidate)
-                    ? registry.get<components::BuildingFootprint>(candidate)
-                    : components::BuildingFootprint{};
-                if (unit_can_work_building(
-                        registry, worker, depot_anchor, depot_footprint)) {
-                    wood_depot = candidate;
-                    break;
-                }
-            }
-        }
-
-        if (wood_depot != entt::null && registry.any_of<components::LumberjackTag>(wood_depot)
-            && carried_food.amount <= 0 && carried_money.amount <= 0) {
-            player::add_player_wood(registry, player_slot, carried_wood.amount);
-            carried_wood.amount = 0;
-            registry.remove<components::MovePath>(worker);
-            registry.remove<components::MoveSegment>(worker);
-            if (registry.any_of<components::WorkerBrain>(worker)) {
-                registry.get<components::WorkerBrain>(worker).state = components::WorkerState::Idle;
-            }
-            continue;
-        }
-
-        const entt::entity town_center = find_town_center_for_player_slot(registry, player_slot);
-        if (town_center == entt::null
-            || !registry.any_of<components::Stockpile>(town_center)) {
-            continue;
-        }
-
-        const auto& depot_anchor = registry.get<components::GridPosition>(town_center);
-        const components::BuildingFootprint depot_footprint =
-            registry.any_of<components::BuildingFootprint>(town_center)
-            ? registry.get<components::BuildingFootprint>(town_center)
-            : components::BuildingFootprint{};
-        if (!unit_can_work_building(
-                registry, worker, depot_anchor, depot_footprint)) {
-            continue;
-        }
-
-        auto& stockpile = registry.get<components::Stockpile>(town_center);
-        note_resources_collected(
+        const entt::entity depot = find_deposit_building(
             registry,
             player_slot,
+            worker_pos,
             carried_wood.amount,
             carried_food.amount,
             carried_money.amount);
-        stockpile.wood += carried_wood.amount;
-        stockpile.food += carried_food.amount;
-        stockpile.money += carried_money.amount;
-        carried_wood.amount = 0;
-        carried_food.amount = 0;
-        carried_money.amount = 0;
+        if (depot == entt::null) {
+            continue;
+        }
+
+        const auto& depot_anchor = registry.get<components::GridPosition>(depot);
+        const components::BuildingFootprint depot_footprint =
+            registry.any_of<components::BuildingFootprint>(depot)
+            ? registry.get<components::BuildingFootprint>(depot)
+            : components::BuildingFootprint{};
+        if (!unit_can_work_building(registry, worker, depot_anchor, depot_footprint)) {
+            continue;
+        }
+
+        int deposited_wood = 0;
+        int deposited_food = 0;
+        int deposited_money = 0;
+        if (registry.any_of<components::TownCenterTag>(depot)
+            && registry.any_of<components::Stockpile>(depot)) {
+            auto& stockpile = registry.get<components::Stockpile>(depot);
+            deposited_wood = carried_wood.amount;
+            deposited_food = carried_food.amount;
+            deposited_money = carried_money.amount;
+            stockpile.wood += deposited_wood;
+            stockpile.food += deposited_food;
+            stockpile.money += deposited_money;
+            carried_wood.amount = 0;
+            carried_food.amount = 0;
+            carried_money.amount = 0;
+        }
+        else if (registry.any_of<components::WoodDropOffTag>(depot) && carried_wood.amount > 0) {
+            deposited_wood = carried_wood.amount;
+            player::add_player_wood(registry, player_slot, deposited_wood);
+            carried_wood.amount = 0;
+        }
+        else if (registry.any_of<components::FoodDropOffTag>(depot) && carried_food.amount > 0) {
+            deposited_food = carried_food.amount;
+            player::add_player_food(registry, player_slot, deposited_food);
+            carried_food.amount = 0;
+        }
+        else if (registry.any_of<components::MoneyDropOffTag>(depot) && carried_money.amount > 0) {
+            deposited_money = carried_money.amount;
+            player::add_player_money(registry, player_slot, deposited_money);
+            carried_money.amount = 0;
+        }
+        else {
+            continue;
+        }
+
+        note_resources_collected(
+            registry,
+            player_slot,
+            deposited_wood,
+            deposited_food,
+            deposited_money);
         registry.remove<components::MovePath>(worker);
         registry.remove<components::MoveSegment>(worker);
 
@@ -1696,6 +1832,10 @@ void run_melee_contact_system(entt::registry& registry)
 
     for (const entt::entity unit : units) {
         if (view.get<components::Health>(unit).current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(unit)) {
             continue;
         }
 
@@ -1779,6 +1919,10 @@ void run_combat_system(entt::registry& registry, const components::ContentPack& 
     attackers = snapshot::sort_entities_by_snapshot_key(registry, std::move(attackers));
 
     for (const entt::entity attacker : attackers) {
+        if (registry.any_of<components::GarrisonedTag>(attacker)) {
+            continue;
+        }
+
         auto& cooldown = registry.get<components::AttackCooldown>(attacker);
         if (cooldown.ticks_remaining > 0) {
             --cooldown.ticks_remaining;
@@ -1795,18 +1939,58 @@ void run_combat_system(entt::registry& registry, const components::ContentPack& 
             continue;
         }
 
+        const auto* definition = find_unit_archetype_from_ref(
+            content,
+            registry.get<components::DefinitionRef>(attacker));
+        if (definition == nullptr) {
+            continue;
+        }
+
+        if (definition->pierce_attack > 0 && definition->attack_range > 0) {
+            const auto& attacker_pos = registry.get<components::GridPosition>(attacker);
+            const core::GridPos target_cell = entity_visibility_cell(registry, target);
+            const int range = std::max(
+                std::abs(attacker_pos.cell.x - target_cell.x),
+                std::abs(attacker_pos.cell.y - target_cell.y));
+            if (range > definition->attack_range) {
+                continue;
+            }
+
+            const std::uint8_t owner_slot = components::entity_player_slot(registry, attacker);
+            if (definition->attack_mana_cost > 0
+                && !player::try_deduct_player_mana(
+                    registry, owner_slot, definition->attack_mana_cost)) {
+                continue;
+            }
+
+            const auto& attacker_world = registry.get<components::WorldPosition>(attacker);
+            (void)spawn::spawn_rock_projectile(
+                registry,
+                attacker_world.x,
+                attacker_world.y,
+                target,
+                owner_slot,
+                definition->pierce_attack);
+            cooldown.ticks_remaining = definition->attack_cooldown_ticks;
+            clear_unit_movement(registry, attacker);
+            continue;
+        }
+
         if (!unit_in_melee_range(registry, attacker, target)) {
             continue;
         }
 
-        const auto* definition = find_unit_archetype_from_ref(
-            content,
-            registry.get<components::DefinitionRef>(attacker));
-        if (definition == nullptr || definition->melee_attack <= 0) {
+        if (definition->melee_attack <= 0) {
             continue;
         }
 
         target_health.current = target_health.current - math::Fixed::from_int(definition->melee_attack);
+        if (registry.any_of<components::PlayerOwnedTag>(target)) {
+            components::note_player_attacked(
+                registry,
+                components::entity_player_slot(registry, target),
+                components::entity_player_slot(registry, attacker));
+        }
         cooldown.ticks_remaining = definition->attack_cooldown_ticks;
         clear_unit_movement(registry, attacker);
         if (target_health.current.raw() <= 0) {
@@ -1851,10 +2035,12 @@ void run_death_cleanup(entt::registry& registry)
             continue;
         }
 
-        if (registry.any_of<components::ExtractorTag>(entity)) {
+        if (registry.any_of<components::ExtractorTag>(entity)
+            || registry.any_of<components::ReservoirTag>(entity)) {
             mana_cap_slots.push_back(components::entity_player_slot(registry, entity));
         }
 
+        player::eject_garrisoned_units(registry, entity);
         to_destroy.push_back(entity);
     }
 
@@ -1899,6 +2085,42 @@ void run_extractor_mana_generation(entt::registry& registry)
         const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
         player::add_player_mana(registry, player_slot, constants::EXTRACTOR_MANA_GEN_AMOUNT);
         cooldown.ticks_remaining = constants::EXTRACTOR_MANA_GEN_INTERVAL_TICKS;
+    }
+}
+
+void run_garden_production(entt::registry& registry)
+{
+    const auto view = registry.view<
+        components::GardenTag,
+        components::PlayerOwnedTag,
+        components::ManaGenerationCooldown,
+        components::Health>();
+
+    std::vector<entt::entity> gardens(view.begin(), view.end());
+    gardens = snapshot::sort_entities_by_snapshot_key(registry, std::move(gardens));
+
+    for (const entt::entity entity : gardens) {
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        auto& cooldown = view.get<components::ManaGenerationCooldown>(entity);
+        if (cooldown.ticks_remaining > 0) {
+            --cooldown.ticks_remaining;
+        }
+
+        if (cooldown.ticks_remaining > 0) {
+            continue;
+        }
+
+        const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
+        player::add_player_wood(registry, player_slot, constants::GARDEN_PROD_WOOD);
+        player::add_player_food(registry, player_slot, constants::GARDEN_PROD_FOOD);
+        cooldown.ticks_remaining = constants::GARDEN_PROD_INTERVAL_TICKS;
     }
 }
 
@@ -1987,12 +2209,39 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
         }
 
         registry.remove<components::UnderConstructionTag>(building);
+        if (registry.any_of<components::MillTag>(building)) {
+            const entt::entity world = find_world_entity(registry);
+            if (world != entt::null && registry.any_of<components::MatchSession>(world)) {
+                auto& session = registry.get<components::MatchSession>(world);
+                const std::uint8_t owner_slot = components::entity_player_slot(registry, building);
+                if (owner_slot < session.player_built_mill.size()) {
+                    session.player_built_mill[owner_slot] = 1U;
+                }
+            }
+        }
         if (!registry.any_of<components::ManaGenerationCooldown>(building)
             && registry.any_of<components::ExtractorTag>(building)) {
             registry.emplace<components::ManaGenerationCooldown>(
                 building,
                 components::ManaGenerationCooldown{constants::EXTRACTOR_MANA_GEN_INTERVAL_TICKS});
         }
+        if (!registry.any_of<components::ManaGenerationCooldown>(building)
+            && registry.any_of<components::GardenTag>(building)) {
+            registry.emplace<components::ManaGenerationCooldown>(
+                building,
+                components::ManaGenerationCooldown{constants::GARDEN_PROD_INTERVAL_TICKS});
+        }
+        if (registry.any_of<components::FarmFood>(building)) {
+            auto& farm_food = registry.get<components::FarmFood>(building);
+            farm_food.max = constants::FARM_FOOD_AMOUNT;
+            farm_food.remaining = constants::FARM_FOOD_AMOUNT;
+        }
+
+        const bool completed_farm = registry.any_of<components::FarmTag>(building);
+        const entt::entity farm_gather_worker = completed_farm ? worker : entt::null;
+        const core::GridPos farm_anchor = registry.any_of<components::GridPosition>(building)
+            ? registry.get<components::GridPosition>(building).cell
+            : core::GridPos{-1, -1};
 
         const auto builders_on_site = registry.view<components::BuildOrder>();
         std::vector<entt::entity> to_clear{};
@@ -2007,9 +2256,22 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
                 registry.remove<components::BuildOrder>(other);
             }
 
+            if (other == farm_gather_worker && farm_anchor.x >= 0) {
+                player::issue_gather_order(registry, other, farm_anchor);
+                continue;
+            }
+
+            registry.get_or_emplace<components::ManualControlTag>(other);
+            registry.remove<components::GatherTarget>(other);
+            if (registry.any_of<components::WorkerBrain>(other)) {
+                registry.get<components::WorkerBrain>(other).state = components::WorkerState::Idle;
+            }
+
             entt::entity next_building = entt::null;
             int best_distance = std::numeric_limits<int>::max();
             if (!registry.any_of<components::GridPosition>(other)) {
+                registry.remove<components::MovePath>(other);
+                registry.remove<components::MoveSegment>(other);
                 continue;
             }
 
@@ -2047,6 +2309,8 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
             }
 
             if (next_building == entt::null) {
+                registry.remove<components::MovePath>(other);
+                registry.remove<components::MoveSegment>(other);
                 continue;
             }
 
@@ -2057,6 +2321,8 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
                 other,
                 next_building);
             if (stand_tile.x < 0) {
+                registry.remove<components::MovePath>(other);
+                registry.remove<components::MoveSegment>(other);
                 continue;
             }
 
@@ -2066,7 +2332,475 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
     }
 }
 
+void try_enter_garrison(entt::registry& registry, const entt::entity unit, const entt::entity building)
+{
+    if (!registry.valid(building) || !registry.any_of<components::GarrisonHold>(building)) {
+        registry.remove<components::GarrisonOrder>(unit);
+        return;
+    }
+
+    if (registry.any_of<components::UnderConstructionTag>(building)) {
+        return;
+    }
+
+    auto& hold = registry.get<components::GarrisonHold>(building);
+    if (static_cast<int>(hold.units.size()) >= static_cast<int>(hold.capacity)) {
+        registry.remove<components::GarrisonOrder>(unit);
+        return;
+    }
+
+    hold.units.push_back(unit);
+    registry.emplace_or_replace<components::GarrisonedTag>(
+        unit,
+        components::GarrisonedTag{building});
+    registry.remove<components::GarrisonOrder>(unit);
+    registry.remove<components::AttackOrder>(unit);
+    registry.remove<components::GatherTarget>(unit);
+    registry.remove<components::BuildOrder>(unit);
+    registry.remove<components::MovePath>(unit);
+    registry.remove<components::MoveSegment>(unit);
+    registry.remove<components::ManualControlTag>(unit);
+}
+
+void run_garrison_enter_system(entt::registry& registry)
+{
+    const auto view = registry.view<
+        components::UnitTag,
+        components::GarrisonOrder,
+        components::GridPosition,
+        components::Health>();
+    std::vector<entt::entity> units(view.begin(), view.end());
+    units = snapshot::sort_entities_by_snapshot_key(registry, std::move(units));
+    for (const entt::entity unit : units) {
+        if (view.get<components::Health>(unit).current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(unit)) {
+            continue;
+        }
+
+        const entt::entity building = view.get<components::GarrisonOrder>(unit).building;
+        if (!registry.valid(building) || !registry.any_of<components::GridPosition>(building)) {
+            registry.remove<components::GarrisonOrder>(unit);
+            continue;
+        }
+
+        const auto& depot_anchor = registry.get<components::GridPosition>(building);
+        const components::BuildingFootprint depot_footprint =
+            registry.any_of<components::BuildingFootprint>(building)
+            ? registry.get<components::BuildingFootprint>(building)
+            : components::BuildingFootprint{};
+        if (unit_can_work_building(registry, unit, depot_anchor, depot_footprint)) {
+            try_enter_garrison(registry, unit, building);
+        }
+    }
+}
+
+[[nodiscard]] entt::entity find_nearest_ranged_target(
+    entt::registry& registry,
+    const entt::entity attacker,
+    const core::GridPos origin,
+    const components::BuildingFootprint& footprint,
+    const int attack_range)
+{
+    entt::entity best = entt::null;
+    int best_distance = attack_range + 1;
+    const std::uint8_t owner_slot = components::entity_player_slot(registry, attacker);
+    const auto target_view = registry.view<components::Health, components::GridPosition>();
+    for (const entt::entity candidate : target_view) {
+        if (candidate == attacker) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(candidate)
+            || registry.any_of<components::Projectile>(candidate)) {
+            continue;
+        }
+
+        if (!components::is_opponent_entity(registry, candidate, owner_slot)) {
+            continue;
+        }
+
+        if (target_view.get<components::Health>(candidate).current.raw() <= 0) {
+            continue;
+        }
+
+        const auto& target_pos = target_view.get<components::GridPosition>(candidate);
+        const components::BuildingFootprint target_footprint =
+            registry.any_of<components::BuildingFootprint>(candidate)
+            ? registry.get<components::BuildingFootprint>(candidate)
+            : components::BuildingFootprint{1, 1};
+        const int distance = components::chebyshev_distance_to_footprint(
+            origin,
+            target_pos,
+            target_footprint);
+        (void)footprint;
+        if (distance <= attack_range && distance < best_distance) {
+            best_distance = distance;
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
+void fire_building_rock(
+    entt::registry& registry,
+    const entt::entity building,
+    const data::ArchetypeDefinition& definition)
+{
+    if (definition.pierce_attack <= 0 || definition.attack_range <= 0) {
+        return;
+    }
+
+    if (!registry.any_of<components::AttackCooldown>(building)) {
+        registry.emplace<components::AttackCooldown>(building);
+    }
+
+    auto& cooldown = registry.get<components::AttackCooldown>(building);
+    if (cooldown.ticks_remaining > 0) {
+        --cooldown.ticks_remaining;
+        return;
+    }
+
+    const auto& anchor = registry.get<components::GridPosition>(building);
+    const components::BuildingFootprint footprint =
+        registry.any_of<components::BuildingFootprint>(building)
+        ? registry.get<components::BuildingFootprint>(building)
+        : components::BuildingFootprint{};
+    const entt::entity target = find_nearest_ranged_target(
+        registry,
+        building,
+        anchor.cell,
+        footprint,
+        definition.attack_range);
+    if (target == entt::null) {
+        return;
+    }
+
+    const math::Fixed spawn_x =
+        math::Fixed::from_int(anchor.cell.x) + math::Fixed::from_int(footprint.width) / math::Fixed::from_int(2);
+    const math::Fixed spawn_y =
+        math::Fixed::from_int(anchor.cell.y) + math::Fixed::from_int(footprint.height) / math::Fixed::from_int(2);
+    (void)spawn::spawn_rock_projectile(
+        registry,
+        spawn_x,
+        spawn_y,
+        target,
+        components::entity_player_slot(registry, building),
+        definition.pierce_attack);
+    cooldown.ticks_remaining = definition.attack_cooldown_ticks > 0
+        ? definition.attack_cooldown_ticks
+        : constants::TOWN_CENTER_ATTACK_COOLDOWN_TICKS;
+}
+
+void run_building_autoattack_system(entt::registry& registry, const components::ContentPack& content)
+{
+    const auto view = registry.view<
+        components::BuildingTag,
+        components::PlayerOwnedTag,
+        components::GridPosition,
+        components::DefinitionRef,
+        components::Health>();
+    std::vector<entt::entity> buildings(view.begin(), view.end());
+    buildings = snapshot::sort_entities_by_snapshot_key(registry, std::move(buildings));
+    for (const entt::entity building : buildings) {
+        if (view.get<components::Health>(building).current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(building)) {
+            continue;
+        }
+
+        const bool is_tower = registry.any_of<components::TowerTag>(building);
+        const bool is_town_center = registry.any_of<components::TownCenterTag>(building);
+        if (!is_tower && !is_town_center) {
+            continue;
+        }
+
+        if (is_town_center) {
+            const auto* hold = registry.try_get<components::GarrisonHold>(building);
+            if (hold == nullptr || hold->units.empty()) {
+                if (registry.any_of<components::AttackCooldown>(building)
+                    && registry.get<components::AttackCooldown>(building).ticks_remaining > 0) {
+                    --registry.get<components::AttackCooldown>(building).ticks_remaining;
+                }
+                continue;
+            }
+        }
+
+        const auto* definition = data::find_structure_archetype(
+            content.content,
+            view.get<components::DefinitionRef>(building).id);
+        if (definition == nullptr) {
+            continue;
+        }
+
+        fire_building_rock(registry, building, *definition);
+    }
+}
+
+void run_projectile_system(entt::registry& registry)
+{
+    const auto view = registry.view<
+        components::Projectile,
+        components::WorldPosition,
+        components::GridPosition>();
+    std::vector<entt::entity> projectiles(view.begin(), view.end());
+    projectiles = snapshot::sort_entities_by_snapshot_key(registry, std::move(projectiles));
+    std::vector<entt::entity> to_destroy{};
+    const math::Fixed step = math::Fixed::from_float(constants::ROCK_PROJECTILE_TILES_PER_TICK);
+    const math::Fixed hit_distance = math::Fixed::from_float(constants::ROCK_PROJECTILE_HIT_DISTANCE);
+    for (const entt::entity projectile : projectiles) {
+        auto& shot = view.get<components::Projectile>(projectile);
+        if (shot.target == entt::null || !registry.valid(shot.target)
+            || !registry.any_of<components::Health>(shot.target)
+            || registry.get<components::Health>(shot.target).current.raw() <= 0) {
+            to_destroy.push_back(projectile);
+            continue;
+        }
+
+        math::Fixed target_x{};
+        math::Fixed target_y{};
+        if (registry.any_of<components::WorldPosition>(shot.target)) {
+            const auto& target_world = registry.get<components::WorldPosition>(shot.target);
+            target_x = target_world.x;
+            target_y = target_world.y;
+        }
+        else if (registry.any_of<components::GridPosition>(shot.target)) {
+            const auto& target_grid = registry.get<components::GridPosition>(shot.target);
+            const components::BuildingFootprint target_footprint =
+                registry.any_of<components::BuildingFootprint>(shot.target)
+                ? registry.get<components::BuildingFootprint>(shot.target)
+                : components::BuildingFootprint{1, 1};
+            target_x = math::Fixed::from_int(target_grid.cell.x)
+                + math::Fixed::from_int(target_footprint.width) / math::Fixed::from_int(2);
+            target_y = math::Fixed::from_int(target_grid.cell.y)
+                + math::Fixed::from_int(target_footprint.height) / math::Fixed::from_int(2);
+        }
+        else {
+            to_destroy.push_back(projectile);
+            continue;
+        }
+
+        auto& world = view.get<components::WorldPosition>(projectile);
+        const math::Fixed delta_x = target_x - world.x;
+        const math::Fixed delta_y = target_y - world.y;
+        const float distance = std::sqrt((delta_x * delta_x + delta_y * delta_y).to_float());
+        if (distance <= hit_distance.to_float() || distance <= step.to_float()) {
+            auto& health = registry.get<components::Health>(shot.target);
+            health.current = health.current - math::Fixed::from_int(shot.pierce_damage);
+            if (registry.any_of<components::PlayerOwnedTag>(shot.target)) {
+                components::note_player_attacked(
+                    registry,
+                    components::entity_player_slot(registry, shot.target),
+                    shot.owner_slot);
+            }
+            if (health.current.raw() <= 0) {
+                note_entity_killed(registry, shot.target, projectile);
+            }
+            to_destroy.push_back(projectile);
+            continue;
+        }
+
+        const float nx = delta_x.to_float() / distance;
+        const float ny = delta_y.to_float() / distance;
+        world.x = world.x + math::Fixed::from_float(nx * step.to_float());
+        world.y = world.y + math::Fixed::from_float(ny * step.to_float());
+        view.get<components::GridPosition>(projectile).cell = core::GridPos{
+            world.x.to_int(),
+            world.y.to_int()};
+    }
+
+    for (const entt::entity projectile : to_destroy) {
+        if (registry.valid(projectile)) {
+            registry.destroy(projectile);
+        }
+    }
+}
+
+bool try_complete_trained_unit_spawn(
+    entt::registry& registry,
+    const entt::entity building,
+    const std::string_view unit_id)
+{
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null
+        || !registry.all_of<components::MapGrid, components::ContentPack>(world)
+        || !registry.any_of<components::GridPosition>(building)) {
+        return false;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+    if (!player::player_can_spawn_units(registry, player_slot)) {
+        return false;
+    }
+
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+    const auto* unit_archetype =
+        data::find_unit_archetype(content_pack.content, std::string(unit_id));
+    if (unit_archetype == nullptr) {
+        return false;
+    }
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    const auto& depot_anchor = registry.get<components::GridPosition>(building);
+    const bool is_town_center = registry.any_of<components::TownCenterTag>(building);
+    const components::BuildingFootprint depot_footprint = components::effective_building_footprint(
+        registry.any_of<components::BuildingFootprint>(building)
+            ? registry.get<components::BuildingFootprint>(building)
+            : components::BuildingFootprint{},
+        is_town_center);
+    const std::optional<core::GridPos> spawn_cell =
+        spawn::find_building_unit_spawn_cell(map, registry, depot_anchor, depot_footprint);
+    if (!spawn_cell.has_value()) {
+        return false;
+    }
+
+    if (unit_id == constants::WORKER_UNIT_ID) {
+        return spawn::spawn_player_worker(registry, *unit_archetype, *spawn_cell, player_slot)
+            != entt::null;
+    }
+    if (unit_id == constants::MILITIA_UNIT_ID) {
+        return spawn::spawn_player_militia(registry, *unit_archetype, *spawn_cell, player_slot)
+            != entt::null;
+    }
+    if (unit_id == constants::MAGE_UNIT_ID) {
+        return spawn::spawn_player_mage(registry, *unit_archetype, *spawn_cell, player_slot)
+            != entt::null;
+    }
+
+    return false;
+}
+
+void run_building_process_system(entt::registry& registry)
+{
+    std::vector<entt::entity> buildings{};
+    const auto view = registry.view<components::BuildingProcess, components::PlayerOwnedTag>();
+    for (const entt::entity building : view) {
+        buildings.push_back(building);
+    }
+
+    for (const entt::entity building : buildings) {
+        if (!registry.valid(building) || !registry.any_of<components::BuildingProcess>(building)) {
+            continue;
+        }
+
+        auto& process = registry.get<components::BuildingProcess>(building);
+        if (process.kind == components::BuildingProcessKind::None || process.ticks_total <= 0) {
+            continue;
+        }
+
+        if (process.ticks_remaining > 0) {
+            --process.ticks_remaining;
+        }
+
+        if (process.ticks_remaining > 0) {
+            continue;
+        }
+
+        bool completed = false;
+        switch (process.kind) {
+        case components::BuildingProcessKind::TrainWorker:
+            completed = try_complete_trained_unit_spawn(
+                registry, building, constants::WORKER_UNIT_ID);
+            break;
+        case components::BuildingProcessKind::TrainMilitia:
+            completed = try_complete_trained_unit_spawn(
+                registry, building, constants::MILITIA_UNIT_ID);
+            break;
+        case components::BuildingProcessKind::TrainMage:
+            completed = try_complete_trained_unit_spawn(
+                registry, building, constants::MAGE_UNIT_ID);
+            break;
+        case components::BuildingProcessKind::AdvanceAge: {
+            const entt::entity world = find_world_entity(registry);
+            if (world != entt::null && registry.any_of<components::MatchSession>(world)) {
+                auto& session = registry.get<components::MatchSession>(world);
+                const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+                const components::AgeAdvanceCost cost = components::age_advance_cost(
+                    components::player_age(session, player_slot));
+                if (cost.can_advance && player_slot < session.player_ages.size()) {
+                    session.player_ages[player_slot] = static_cast<std::uint8_t>(
+                        session.player_ages[player_slot] + 1U);
+                    components::push_age_advanced_announcement(
+                        registry,
+                        player_slot,
+                        session.player_ages[player_slot]);
+                }
+                completed = true;
+            }
+            break;
+        }
+        case components::BuildingProcessKind::ResearchCartography: {
+            const entt::entity world = find_world_entity(registry);
+            if (world != entt::null && registry.any_of<components::MatchSession>(world)) {
+                auto& session = registry.get<components::MatchSession>(world);
+                const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+                if (player_slot < session.player_cartography.size()) {
+                    session.player_cartography[player_slot] = 1U;
+                }
+                rebuild_fog_visibility(registry);
+                completed = true;
+            }
+            break;
+        }
+        case components::BuildingProcessKind::ResearchSpy: {
+            const entt::entity world = find_world_entity(registry);
+            if (world != entt::null && registry.any_of<components::MatchSession>(world)) {
+                auto& session = registry.get<components::MatchSession>(world);
+                const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+                if (player_slot < session.player_spy.size()) {
+                    session.player_spy[player_slot] = 1U;
+                }
+                rebuild_fog_visibility(registry);
+                completed = true;
+            }
+            break;
+        }
+        case components::BuildingProcessKind::None:
+            completed = true;
+            break;
+        }
+
+        if (completed) {
+            components::clear_building_process(process);
+        }
+    }
+}
+
 } // namespace
+
+entt::entity find_deposit_building(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const core::GridPos worker_pos,
+    const int carried_wood,
+    const int carried_food,
+    const int carried_money)
+{
+    const bool wood_only = carried_wood > 0 && carried_food <= 0 && carried_money <= 0;
+    const bool food_only = carried_food > 0 && carried_wood <= 0 && carried_money <= 0;
+    const bool money_only = carried_money > 0 && carried_wood <= 0 && carried_food <= 0;
+    if (wood_only) {
+        return find_nearest_tagged_drop_off<components::WoodDropOffTag>(
+            registry, player_slot, worker_pos);
+    }
+
+    if (food_only) {
+        return find_nearest_tagged_drop_off<components::FoodDropOffTag>(
+            registry, player_slot, worker_pos);
+    }
+
+    if (money_only) {
+        return find_nearest_tagged_drop_off<components::MoneyDropOffTag>(
+            registry, player_slot, worker_pos);
+    }
+
+    return find_town_center_for_player_slot(registry, player_slot);
+}
 
 void run_gameplay_systems(entt::registry& registry)
 {
@@ -2075,20 +2809,27 @@ void run_gameplay_systems(entt::registry& registry)
         return;
     }
 
+    components::tick_match_announcement_cooldowns(registry);
+
     auto& map = registry.get<components::MapGrid>(world);
     const auto& content = registry.get<components::ContentPack>(world);
 
     begin_movement_query_cache(registry, map);
+    run_building_process_system(registry);
     run_visibility_system(registry);
     run_worker_system(registry, map, content);
     run_worker_deposit_system(registry);
     run_builder_system(registry, map);
     run_extractor_mana_generation(registry);
+    run_garden_production(registry);
+    run_garrison_enter_system(registry);
     run_enemy_militia_ai(registry);
     run_attack_chase_system(registry, map);
     run_movement_system(registry, map, content);
     run_melee_contact_system(registry);
     run_combat_system(registry, content);
+    run_building_autoattack_system(registry, content);
+    run_projectile_system(registry);
     run_death_cleanup(registry);
     end_movement_query_cache();
 }
@@ -2168,6 +2909,25 @@ void compute_state_hash(entt::registry& registry)
         }
     }
 
+    if (registry.any_of<components::MatchSession>(world)) {
+        const auto& session = registry.get<components::MatchSession>(world);
+        for (const std::uint8_t age : session.player_ages) {
+            mix(static_cast<std::uint64_t>(age));
+        }
+        for (const std::uint8_t side : session.player_side_indices) {
+            mix(static_cast<std::uint64_t>(side));
+        }
+        for (const std::uint8_t cartography : session.player_cartography) {
+            mix(static_cast<std::uint64_t>(cartography));
+        }
+        for (const std::uint8_t spy : session.player_spy) {
+            mix(static_cast<std::uint64_t>(spy));
+        }
+        for (const std::uint8_t built_mill : session.player_built_mill) {
+            mix(static_cast<std::uint64_t>(built_mill));
+        }
+    }
+
     struct HashableEntity {
         entt::entity entity{entt::null};
         snapshot::EntitySnapshotKey key{};
@@ -2224,6 +2984,19 @@ void compute_state_hash(entt::registry& registry)
 
         if (registry.any_of<components::CarriedFood>(entity)) {
             mix(static_cast<std::uint64_t>(registry.get<components::CarriedFood>(entity).amount));
+        }
+
+        if (registry.any_of<components::FarmFood>(entity)) {
+            const auto& farm_food = registry.get<components::FarmFood>(entity);
+            mix(static_cast<std::uint64_t>(farm_food.remaining));
+            mix(static_cast<std::uint64_t>(farm_food.max));
+        }
+
+        if (registry.any_of<components::BuildingProcess>(entity)) {
+            const auto& process = registry.get<components::BuildingProcess>(entity);
+            mix(static_cast<std::uint64_t>(process.kind));
+            mix(static_cast<std::uint64_t>(process.ticks_remaining));
+            mix(static_cast<std::uint64_t>(process.ticks_total));
         }
 
         if (registry.any_of<components::CarriedMoney>(entity)) {

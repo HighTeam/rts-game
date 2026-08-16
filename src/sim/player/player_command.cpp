@@ -86,13 +86,33 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
     case PlayerCommandType::Attack:
     case PlayerCommandType::SpawnWorker:
     case PlayerCommandType::SpawnMilitia:
+    case PlayerCommandType::SpawnMage:
     case PlayerCommandType::ResumeBuild:
+    case PlayerCommandType::Garrison:
+    case PlayerCommandType::UnloadGarrison:
+    case PlayerCommandType::AdvanceAge:
+    case PlayerCommandType::RenewFarm:
+    case PlayerCommandType::ResearchCartography:
+    case PlayerCommandType::ResearchSpy:
+    case PlayerCommandType::MarketSellWood:
+    case PlayerCommandType::MarketSellFood:
+    case PlayerCommandType::MarketBuyWood:
+    case PlayerCommandType::MarketBuyFood:
         append_pod(out, entity_to_wire(command.target_entity));
         break;
     case PlayerCommandType::BuildTownCenter:
     case PlayerCommandType::BuildHouse:
-    case PlayerCommandType::BuildLumberjack:
+    case PlayerCommandType::BuildLumberCamp:
     case PlayerCommandType::BuildExtractor:
+    case PlayerCommandType::BuildMill:
+    case PlayerCommandType::BuildMiningCamp:
+    case PlayerCommandType::BuildBarracks:
+    case PlayerCommandType::BuildMageAcademy:
+    case PlayerCommandType::BuildTower:
+    case PlayerCommandType::BuildMarket:
+    case PlayerCommandType::BuildGarden:
+    case PlayerCommandType::BuildReservoir:
+    case PlayerCommandType::BuildFarm:
         append_pod(out, static_cast<std::int16_t>(command.cell.x));
         append_pod(out, static_cast<std::int16_t>(command.cell.y));
         break;
@@ -102,6 +122,7 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
     case PlayerCommandType::Deposit:
     case PlayerCommandType::KillUnits:
     case PlayerCommandType::Stop:
+    case PlayerCommandType::CheatGrantResources:
         break;
     }
 
@@ -129,7 +150,7 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         return std::nullopt;
     }
 
-    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::BuildExtractor)) {
+    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::ResearchSpy)) {
         return std::nullopt;
     }
 
@@ -185,7 +206,18 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
     case PlayerCommandType::Attack:
     case PlayerCommandType::SpawnWorker:
     case PlayerCommandType::SpawnMilitia:
-    case PlayerCommandType::ResumeBuild: {
+    case PlayerCommandType::SpawnMage:
+    case PlayerCommandType::ResumeBuild:
+    case PlayerCommandType::Garrison:
+    case PlayerCommandType::UnloadGarrison:
+    case PlayerCommandType::AdvanceAge:
+    case PlayerCommandType::RenewFarm:
+    case PlayerCommandType::ResearchCartography:
+    case PlayerCommandType::ResearchSpy:
+    case PlayerCommandType::MarketSellWood:
+    case PlayerCommandType::MarketSellFood:
+    case PlayerCommandType::MarketBuyWood:
+    case PlayerCommandType::MarketBuyFood: {
         std::uint32_t wire_id = 0U;
         if (!read_pod(cursor, wire_id)) {
             return std::nullopt;
@@ -196,8 +228,17 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
     }
     case PlayerCommandType::BuildTownCenter:
     case PlayerCommandType::BuildHouse:
-    case PlayerCommandType::BuildLumberjack:
-    case PlayerCommandType::BuildExtractor: {
+    case PlayerCommandType::BuildLumberCamp:
+    case PlayerCommandType::BuildExtractor:
+    case PlayerCommandType::BuildMill:
+    case PlayerCommandType::BuildMiningCamp:
+    case PlayerCommandType::BuildBarracks:
+    case PlayerCommandType::BuildMageAcademy:
+    case PlayerCommandType::BuildTower:
+    case PlayerCommandType::BuildMarket:
+    case PlayerCommandType::BuildGarden:
+    case PlayerCommandType::BuildReservoir:
+    case PlayerCommandType::BuildFarm: {
         std::int16_t cell_x = 0;
         std::int16_t cell_y = 0;
         if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y)) {
@@ -219,6 +260,7 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
     case PlayerCommandType::Deposit:
     case PlayerCommandType::KillUnits:
     case PlayerCommandType::Stop:
+    case PlayerCommandType::CheatGrantResources:
         break;
     }
 
@@ -244,7 +286,7 @@ void append_entity_snapshot_key(std::vector<std::byte>& out, const snapshot::Ent
         return false;
     }
 
-    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::House)) {
+    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::Farm)) {
         return false;
     }
 

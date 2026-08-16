@@ -1,0 +1,12 @@
+{
+  "id": "barracks",
+  "kind": "structure",
+  "display_name": "Barracks",
+  "max_hp": 800,
+  "footprint_width": 3,
+  "footprint_height": 3,
+  "build_wood_cost": 100,
+  "spawn_militia_food_cost": 65,
+  "spawn_militia_money_cost": 35,
+  "vision_range": 5
+}

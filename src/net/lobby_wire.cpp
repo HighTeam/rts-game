@@ -238,6 +238,7 @@ std::vector<std::byte> encode_lobby_join(const LobbyJoinMessage& message)
 {
     std::vector<std::byte> out{};
     append_text(out, message.name);
+    append_text(out, message.version);
     return out;
 }
 
@@ -245,7 +246,25 @@ std::optional<LobbyJoinMessage> decode_lobby_join(const std::span<const std::byt
 {
     std::span<const std::byte> cursor = bytes;
     LobbyJoinMessage message{};
-    if (!read_text(cursor, message.name)) {
+    if (!read_text(cursor, message.name) || !read_text(cursor, message.version)) {
+        return std::nullopt;
+    }
+
+    return message;
+}
+
+std::vector<std::byte> encode_lobby_reject(const LobbyRejectMessage& message)
+{
+    std::vector<std::byte> out{};
+    append_text(out, message.reason);
+    return out;
+}
+
+std::optional<LobbyRejectMessage> decode_lobby_reject(const std::span<const std::byte> bytes)
+{
+    std::span<const std::byte> cursor = bytes;
+    LobbyRejectMessage message{};
+    if (!read_text(cursor, message.reason)) {
         return std::nullopt;
     }
 
@@ -268,6 +287,7 @@ std::vector<std::byte> encode_lobby_state(const LobbyStateMessage& message)
         append_text(out, slot.name);
         append_pod(out, static_cast<std::uint8_t>(slot.kind));
         append_pod(out, slot.color);
+        append_pod(out, slot.team);
     }
 
     return out;
@@ -294,7 +314,8 @@ std::optional<LobbyStateMessage> decode_lobby_state(const std::span<const std::b
         LobbySlotInfo& slot = message.slots[index];
         if (!read_pod(cursor, occupied_raw) || !read_pod(cursor, ready_raw)
             || !read_pod(cursor, slot.ping_ms) || !read_text(cursor, slot.name)
-            || !read_pod(cursor, kind_raw) || !read_pod(cursor, slot.color)) {
+            || !read_pod(cursor, kind_raw) || !read_pod(cursor, slot.color)
+            || !read_pod(cursor, slot.team)) {
             return std::nullopt;
         }
 
@@ -340,6 +361,25 @@ std::optional<LobbyColorMessage> decode_lobby_color(const std::span<const std::b
     std::span<const std::byte> cursor = bytes;
     LobbyColorMessage message{};
     if (!read_pod(cursor, message.player_slot) || !read_pod(cursor, message.color)) {
+        return std::nullopt;
+    }
+
+    return message;
+}
+
+std::vector<std::byte> encode_lobby_team(const LobbyTeamMessage& message)
+{
+    std::vector<std::byte> out{};
+    append_pod(out, message.player_slot);
+    append_pod(out, message.team);
+    return out;
+}
+
+std::optional<LobbyTeamMessage> decode_lobby_team(const std::span<const std::byte> bytes)
+{
+    std::span<const std::byte> cursor = bytes;
+    LobbyTeamMessage message{};
+    if (!read_pod(cursor, message.player_slot) || !read_pod(cursor, message.team)) {
         return std::nullopt;
     }
 

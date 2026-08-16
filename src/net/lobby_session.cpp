@@ -1,6 +1,7 @@
 #include "net/lobby_session.hpp"
 
 #include "core/constants.hpp"
+#include "sim/components/match_session.hpp"
 
 #include <algorithm>
 
@@ -274,6 +275,45 @@ void LobbySession::request_local_color_cycle()
     send_to_host(NetMessageKind::LobbyColor, encode_lobby_color(message));
 }
 
+void LobbySession::cycle_slot_team(const std::uint8_t slot)
+{
+    if (!is_host() || slot >= view_.slots.size()) {
+        return;
+    }
+
+    if (view_.slots[slot].kind == LobbySlotKind::Disabled) {
+        return;
+    }
+
+    if (slot != local_slot_ && view_.slots[slot].kind == LobbySlotKind::Enabled
+        && view_.slots[slot].occupied) {
+        return;
+    }
+
+    view_.slots[slot].team = sim::components::next_lobby_team(view_.slots[slot].team);
+    send_lobby_state_to_clients();
+}
+
+void LobbySession::request_local_team_cycle()
+{
+    if (local_slot_ >= view_.slots.size()
+        || view_.slots[local_slot_].kind == LobbySlotKind::Disabled) {
+        return;
+    }
+
+    const std::uint8_t next = sim::components::next_lobby_team(view_.slots[local_slot_].team);
+    if (is_host()) {
+        view_.slots[local_slot_].team = next;
+        send_lobby_state_to_clients();
+        return;
+    }
+
+    LobbyTeamMessage message{};
+    message.player_slot = local_slot_;
+    message.team = next;
+    send_to_host(NetMessageKind::LobbyTeam, encode_lobby_team(message));
+}
+
 bool LobbySession::try_apply_scenario(
     const std::uint8_t required_player_count,
     const std::string& name)
@@ -454,6 +494,17 @@ void LobbySession::send_to_host(const NetMessageKind kind, const std::vector<std
     (void)transport_.send_reliable(wire_message, constants::CHANNEL_RELIABLE);
 }
 
+void LobbySession::send_join_reject(const std::uint8_t player_slot, const std::string& reason)
+{
+    LobbyRejectMessage message{};
+    message.reason = reason;
+    const std::vector<std::byte> wire_message =
+        encode_net_message(NetMessageKind::LobbyReject, encode_lobby_reject(message));
+    (void)transport_.send_reliable_to_client(player_slot, wire_message, constants::CHANNEL_RELIABLE);
+    release_slot(player_slot);
+    transport_.disconnect_peer_slot(player_slot);
+}
+
 void LobbySession::leave()
 {
     if (status_ == LobbyStatus::Idle) {
@@ -547,7 +598,10 @@ void LobbySession::handle_host_packet(
 
     if (kind == NetMessageKind::LobbyJoin) {
         const std::optional<LobbyJoinMessage> message = decode_lobby_join(payload);
-        if (!message.has_value()) {
+        if (!message.has_value() || message->version != aoa::constants::GAME_VERSION) {
+            send_join_reject(
+                sender_slot,
+                std::string(aoa::constants::LOBBY_VERSION_MISMATCH_MESSAGE));
             return;
         }
 
@@ -578,6 +632,20 @@ void LobbySession::handle_host_packet(
         }
 
         apply_color(sender_slot, message->color);
+        send_lobby_state_to_clients();
+        return;
+    }
+
+    if (kind == NetMessageKind::LobbyTeam) {
+        const std::optional<LobbyTeamMessage> message = decode_lobby_team(payload);
+        if (!message.has_value() || message->player_slot != sender_slot) {
+            return;
+        }
+
+        if (sender_slot < view_.slots.size()
+            && message->team < aoa::constants::LOBBY_TEAM_OPTION_COUNT) {
+            view_.slots[sender_slot].team = message->team;
+        }
         send_lobby_state_to_clients();
         return;
     }
@@ -619,6 +687,15 @@ void LobbySession::handle_client_packet(
     if (kind == NetMessageKind::LobbyLeave) {
         status_ = LobbyStatus::Closed;
     }
+
+    if (kind == NetMessageKind::LobbyReject) {
+        const std::optional<LobbyRejectMessage> message = decode_lobby_reject(payload);
+        reject_reason_ = message.has_value() && !message->reason.empty()
+            ? message->reason
+            : std::string(aoa::constants::LOBBY_VERSION_MISMATCH_MESSAGE);
+        status_ = LobbyStatus::Rejected;
+        transport_.disconnect();
+    }
 }
 
 void LobbySession::handle_packet(const ReceivedPacket& packet)
@@ -639,7 +716,7 @@ void LobbySession::handle_packet(const ReceivedPacket& packet)
 void LobbySession::poll()
 {
     if (status_ == LobbyStatus::Idle || status_ == LobbyStatus::ConnectFailed
-        || status_ == LobbyStatus::Closed) {
+        || status_ == LobbyStatus::Closed || status_ == LobbyStatus::Rejected) {
         return;
     }
 
@@ -688,6 +765,7 @@ void LobbySession::poll()
         if (transport_.is_connected() && !join_sent_) {
             LobbyJoinMessage message{};
             message.name = local_name_;
+            message.version = std::string(aoa::constants::GAME_VERSION);
             send_to_host(NetMessageKind::LobbyJoin, encode_lobby_join(message));
             join_sent_ = true;
         }
@@ -702,14 +780,17 @@ void LobbySession::poll()
         }
     }
 
-    if (transport_.consume_peer_lost()) {
-        status_ = LobbyStatus::Closed;
-        transport_.disconnect();
+    for (const ReceivedPacket& packet : transport_.drain_received()) {
+        handle_packet(packet);
+    }
+
+    if (status_ == LobbyStatus::Rejected) {
         return;
     }
 
-    for (const ReceivedPacket& packet : transport_.drain_received()) {
-        handle_packet(packet);
+    if (transport_.consume_peer_lost()) {
+        status_ = LobbyStatus::Closed;
+        transport_.disconnect();
     }
 }
 

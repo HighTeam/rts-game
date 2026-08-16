@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <entt/entt.hpp>
 
+#include <optional>
 #include <vector>
 
 namespace aoa::sim::player {
@@ -83,7 +84,9 @@ void issue_deposit_orders(entt::registry& registry, const std::vector<entt::enti
 
 bool issue_spawn_worker_order(entt::registry& registry, entt::entity town_center);
 
-bool issue_spawn_militia_order(entt::registry& registry, entt::entity town_center);
+bool issue_spawn_militia_order(entt::registry& registry, entt::entity barracks);
+
+bool issue_spawn_mage_order(entt::registry& registry, entt::entity mage_academy);
 
 void issue_kill_orders(entt::registry& registry, const std::vector<entt::entity>& entities);
 
@@ -99,7 +102,7 @@ bool issue_build_house_order(
     const std::vector<entt::entity>& workers,
     core::GridPos anchor_cell);
 
-bool issue_build_lumberjack_order(
+bool issue_build_lumber_camp_order(
     entt::registry& registry,
     const std::vector<entt::entity>& workers,
     core::GridPos anchor_cell);
@@ -109,11 +112,91 @@ bool issue_build_extractor_order(
     const std::vector<entt::entity>& workers,
     core::GridPos anchor_cell);
 
+bool issue_build_mill_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_mining_camp_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_barracks_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_mage_academy_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_tower_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_market_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_garden_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_reservoir_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_farm_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_renew_farm_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    entt::entity farm);
+
+void issue_garrison_orders(
+    entt::registry& registry,
+    const std::vector<entt::entity>& entities,
+    entt::entity building);
+
+bool issue_unload_garrison_order(entt::registry& registry, entt::entity town_center);
+
+bool issue_advance_age_order(entt::registry& registry, entt::entity town_center);
+
+bool issue_research_cartography_order(entt::registry& registry, entt::entity market);
+
+bool issue_research_spy_order(entt::registry& registry, entt::entity town_center);
+
+bool issue_market_sell_wood_order(entt::registry& registry, entt::entity market);
+
+bool issue_market_sell_food_order(entt::registry& registry, entt::entity market);
+
+bool issue_market_buy_wood_order(entt::registry& registry, entt::entity market);
+
+bool issue_market_buy_food_order(entt::registry& registry, entt::entity market);
+
+void eject_garrisoned_units(entt::registry& registry, entt::entity building);
+
+void issue_cheat_oknocraft_infinity(entt::registry& registry);
+
 // Extractors may only be raised on a free mana lake with an exact footprint match.
 [[nodiscard]] bool can_build_extractor_at(
     entt::registry& registry,
     core::GridPos anchor_cell,
     std::uint8_t player_slot);
+
+// If hover_cell is on a free matching lake, returns that lake's anchor.
+[[nodiscard]] std::optional<core::GridPos> extractor_snap_anchor(
+    entt::registry& registry,
+    core::GridPos hover_cell);
 
 [[nodiscard]] entt::entity pick_mana_lake_at_screen(
     entt::registry& registry,

@@ -8,6 +8,14 @@
 namespace aoa::constants {
 
 inline constexpr std::string_view WINDOW_TITLE = "Age of Affinities";
+// Owner-controlled. Do not change unless the owner asks.
+inline constexpr std::string_view GAME_VERSION = "alpha_v0.1";
+inline constexpr std::string_view GAME_WEBSITE_URL = "https://aoa-web.4ort.workers.dev/";
+inline constexpr std::string_view GAME_DESCRIPTION =
+    "Age of Empires II-style RTS. Civilizations rise through Water, Earth, Fire, and Air. "
+    "Gather resources, raise armies, and take the map - alone or online with up to 8 players.";
+inline constexpr std::string_view LOBBY_VERSION_MISMATCH_MESSAGE = "Version mismatch";
+inline constexpr std::string_view ABOUT_WEBSITE_BUTTON_LABEL = "Website";
 inline constexpr std::uint32_t DEFAULT_WINDOW_WIDTH = 1280U;
 inline constexpr std::uint32_t DEFAULT_WINDOW_HEIGHT = 720U;
 
@@ -129,6 +137,7 @@ inline constexpr int RENDER_GROUND_CULL_PAD_TILES = 2;
 inline constexpr int RENDER_OBJECT_CULL_PAD_TILES = 4;
 
 inline constexpr int HUD_ICON_TILE_SIZE_PX = 32;
+inline constexpr std::uint8_t COLOR_CHANNEL_MAX = 255;
 inline constexpr int HUD_ICON_DRAW_SIZE_PX = 48;
 inline constexpr int HUD_ICON_OPTION_INSET_PX = 4;
 inline constexpr int HUD_ICON_TEXT_GAP_PX = 4;
@@ -305,8 +314,17 @@ inline constexpr std::string_view PATTERN_WRONG_KIND_GAME_LABEL =
     "This file is not a game .pattern export.";
 inline constexpr int PATTERN_DOUBLE_CLICK_MS = 400;
 inline constexpr int SINGLEPLAYER_OPTION_ROW_COUNT = 7;
-inline constexpr int SINGLEPLAYER_COLOR_BUTTON_WIDTH_PX = 110;
-inline constexpr int SINGLEPLAYER_KIND_BUTTON_WIDTH_PX = 110;
+inline constexpr int SINGLEPLAYER_COLOR_BUTTON_WIDTH_PX = 90;
+inline constexpr int SINGLEPLAYER_KIND_BUTTON_WIDTH_PX = 90;
+inline constexpr int SINGLEPLAYER_TEAM_BUTTON_WIDTH_PX = 40;
+inline constexpr std::uint8_t LOBBY_TEAM_NONE = 0U;
+inline constexpr std::uint8_t LOBBY_TEAM_ONE = 1U;
+inline constexpr std::uint8_t LOBBY_TEAM_FOUR = 4U;
+inline constexpr std::uint8_t LOBBY_TEAM_RANDOM = 5U;
+inline constexpr std::uint8_t LOBBY_TEAM_OPTION_COUNT = 6U;
+inline constexpr std::uint8_t MATCH_FFA_SIDE_BASE = 16U;
+inline constexpr std::string_view LOBBY_TEAM_NONE_LABEL = "-";
+inline constexpr std::string_view LOBBY_TEAM_RANDOM_LABEL = "?";
 
 inline constexpr float SELECTION_PICK_RADIUS_TILES = 0.36F;
 inline constexpr float SELECTION_PICK_MIN_RADIUS_PX = 40.0F;
@@ -337,6 +355,46 @@ inline constexpr int HUD_FLOATING_LABEL_PAD_PX = 4;
 inline constexpr float HUD_TEXT_R = 0.95F;
 inline constexpr float HUD_TEXT_G = 0.88F;
 inline constexpr float HUD_TEXT_B = 0.55F;
+inline constexpr float HUD_FRIEND_R = 0.35F;
+inline constexpr float HUD_FRIEND_G = 0.82F;
+inline constexpr float HUD_FRIEND_B = 0.38F;
+inline constexpr float HUD_ENEMY_R = 0.90F;
+inline constexpr float HUD_ENEMY_G = 0.22F;
+inline constexpr float HUD_ENEMY_B = 0.20F;
+inline constexpr std::string_view HUD_FRIEND_LABEL = "Friend";
+inline constexpr std::string_view HUD_ENEMY_LABEL = "Enemy";
+inline constexpr std::string_view HUD_TRAINING_PROGRESS_PREFIX = "Training ";
+inline constexpr std::string_view HUD_RESEARCH_PROGRESS_PREFIX = "Research ";
+inline constexpr std::string_view HUD_HOVER_CARTOGRAPHY = "Cartography";
+inline constexpr std::string_view HUD_HOVER_SPY = "Spy";
+inline constexpr std::string_view HUD_HOVER_ECONOMY_BUILDINGS = "Economy buildings";
+inline constexpr std::string_view HUD_HOVER_REQUIRES_ELEMENTAL_AGE = "Requires Elemental Age";
+inline constexpr std::string_view HUD_HOVER_REQUIRES_MODERN_AGE = "Requires Modern Age";
+inline constexpr std::string_view HUD_HOVER_REQUIRES_ETERNITY_AGE = "Requires Eternity Age";
+inline constexpr std::string_view HUD_HOVER_REQUIRES_MILL = "Requires a Mill";
+inline constexpr float HUD_LOCKED_OPTION_BUTTON_R = 1.0F;
+inline constexpr float HUD_LOCKED_OPTION_BUTTON_G = 1.0F;
+inline constexpr float HUD_LOCKED_OPTION_BUTTON_B = 1.0F;
+inline constexpr float HUD_LOCKED_OPTION_BUTTON_A = 0.18F;
+inline constexpr float HUD_LOCKED_OPTION_BORDER_A = 0.32F;
+inline constexpr float HUD_LOCKED_OPTION_ICON_A = 0.45F;
+inline constexpr float HUD_LOCKED_OPTION_BORDER_PX = 1.0F;
+inline constexpr int ATTACKED_ANNOUNCE_COOLDOWN_SECONDS = 8;
+inline constexpr int ATTACKED_ANNOUNCE_COOLDOWN_TICKS =
+    SIM_TICKS_PER_SECOND * ATTACKED_ANNOUNCE_COOLDOWN_SECONDS;
+inline constexpr std::string_view CHAT_AGE_ADVANCED_MID = " has advanced to ";
+inline constexpr std::string_view CHAT_ATTACKED_YOU = "You've";
+inline constexpr std::string_view CHAT_ATTACKED_MID = " have been attacked by ";
+inline constexpr std::string_view HUD_HOVER_SELL_WOOD = "Sell wood";
+inline constexpr std::string_view HUD_HOVER_SELL_FOOD = "Sell food";
+inline constexpr std::string_view HUD_HOVER_BUY_WOOD = "Buy wood";
+inline constexpr std::string_view HUD_HOVER_BUY_FOOD = "Buy food";
+inline constexpr std::string_view HUD_HOVER_KILL = "Kill selected";
+inline constexpr std::string_view HUD_HOVER_DESTROY = "Destroy building";
+inline constexpr std::string_view HUD_HOVER_DESELECT = "Deselect";
+inline constexpr std::string_view HUD_HOVER_BACK = "Back";
+inline constexpr std::string_view HUD_HOVER_STOP = "Stop";
+inline constexpr std::string_view HUD_HOVER_ATTACK = "Attack";
 inline constexpr float HUD_PERF_SAMPLE_WINDOW_SECONDS = 0.5F;
 inline constexpr float HUD_TPS_SAMPLE_WINDOW_SECONDS = 1.0F;
 inline constexpr float HUD_TPS_DISPLAY_SMOOTHING_ALPHA = 0.35F;
@@ -413,6 +471,8 @@ inline constexpr float RENDER_TREE_MEDIUM_SPRITE_WIDTH_SCALE = 0.95F;
 inline constexpr float RENDER_TREE_LARGE_SPRITE_WIDTH_SCALE = 1.28F;
 inline constexpr int TREE_SIZE_VARIANT_COUNT = 3;
 inline constexpr float RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE = 1.18F;
+// Tight-cropped Earth building sheets: one tile-width per footprint cell.
+inline constexpr float RENDER_BUILDING_SPRITE_FOOTPRINT_SCALE = 1.0F;
 inline constexpr float RENDER_GOLD_MINE_SPRITE_WIDTH_SCALE = 0.72F;
 // Sprite draw offsets in grid tiles (+X = SE, +Y = SW on the iso diamond compass).
 inline constexpr float RENDER_GOLD_MINE_SPRITE_OFFSET_X = 0.5F;
@@ -421,17 +481,14 @@ inline constexpr float RENDER_TOWN_CENTER_SPRITE_OFFSET_X = 3.0F;
 inline constexpr float RENDER_TOWN_CENTER_SPRITE_OFFSET_Y = 3.0F;
 inline constexpr float RENDER_HOUSE_SPRITE_OFFSET_X = 0.8F;
 inline constexpr float RENDER_HOUSE_SPRITE_OFFSET_Y = 0.8F;
-// Lumberjack: pull SE/SW from house offsets to correct NE/NW drift.
-inline constexpr float RENDER_LUMBERJACK_SPRITE_OFFSET_X = 1.25F;
-inline constexpr float RENDER_LUMBERJACK_SPRITE_OFFSET_Y = 1.1F;
+// Lumber camp: pull SE/SW from house offsets to correct NE/NW drift.
+inline constexpr float RENDER_LUMBER_CAMP_SPRITE_OFFSET_X = 1.25F;
+inline constexpr float RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y = 1.1F;
 // Extractor: correct 0.4 S + 0.1 W drift (lower SE+SW, slight SE bias = east).
 inline constexpr float RENDER_EXTRACTOR_SPRITE_OFFSET_X = 0.25F;
 inline constexpr float RENDER_EXTRACTOR_SPRITE_OFFSET_Y = 0.15F;
 inline constexpr float RENDER_EXTRACTOR_SPRITE_WIDTH_SCALE = 0.62F;
-// Mana lake: correct 0.2 N drift (raise SE+SW offsets).
-inline constexpr float RENDER_MANA_LAKE_SPRITE_OFFSET_X = 1.05F;
-inline constexpr float RENDER_MANA_LAKE_SPRITE_OFFSET_Y = 1.05F;
-inline constexpr float RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE = 1.6F;
+inline constexpr float RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE = 0.8F;
 // Lakes sit on the ground: sort with terrain props so buildings/units draw above them.
 inline constexpr float RENDER_MANA_LAKE_SORT_BIAS = 0.02F;
 inline constexpr int MANA_LAKE_ANIMATION_FRAME_COUNT = 8;
@@ -456,6 +513,11 @@ inline constexpr float RENDER_BERRY_SPRITE_OFFSET_Y = 0.5F;
 inline constexpr int BUILDING_UNIT_SPAWN_MAX_RING = 8;
 inline constexpr float RENDER_TREE_SORT_BIAS = 0.10F;
 inline constexpr float RENDER_BUILDING_SORT_BIAS = 0.05F;
+inline constexpr float RENDER_FARM_SORT_BIAS = -0.5F;
+// Same iso diagonal (max_x + max_y) must still order by the lowest tile's +x
+// so a 1x1 tower in front of a 2x2 house wins the overlapping pixels.
+inline constexpr float RENDER_BUILDING_SORT_AXIS_TIE = 0.001F;
+inline constexpr float RENDER_BUILDING_MASK_SORT_BIAS = 0.00001F;
 inline constexpr float RENDER_UNIT_SORT_BIAS = 0.08F;
 inline constexpr float RENDER_TREE_OCCLUSION_SCISSOR_SCALE = 1.05F;
 inline constexpr float RENDER_BUILDING_OCCLUSION_SCISSOR_SCALE = 1.15F;
@@ -478,16 +540,156 @@ inline constexpr float RENDER_GRID_LINE_LIFT = 0.03F;
 inline constexpr std::string_view EARTH_CIV_ID = "earth";
 inline constexpr std::string_view WORKER_UNIT_ID = "worker";
 inline constexpr std::string_view MILITIA_UNIT_ID = "militia";
+inline constexpr std::string_view MAGE_UNIT_ID = "mage";
 inline constexpr std::string_view TOWN_CENTER_BUILDING_ID = "town_center";
 inline constexpr std::string_view HOUSE_BUILDING_ID = "house";
-inline constexpr std::string_view LUMBERJACK_BUILDING_ID = "lumberjack";
-inline constexpr int LUMBERJACK_FOOTPRINT_TILES = 2;
-inline constexpr int LUMBERJACK_BUILD_WOOD_COST = 65;
+inline constexpr std::string_view LUMBER_CAMP_BUILDING_ID = "lumber_camp";
+inline constexpr int LUMBER_CAMP_FOOTPRINT_TILES = 2;
+inline constexpr int LUMBER_CAMP_BUILD_WOOD_COST = 65;
+inline constexpr int LUMBER_CAMP_MAX_HP = 150;
+inline constexpr int LUMBER_CAMP_VISION_RANGE = 4;
+inline constexpr std::string_view MILL_BUILDING_ID = "mill";
+inline constexpr int MILL_FOOTPRINT_TILES = 2;
+inline constexpr int MILL_BUILD_WOOD_COST = LUMBER_CAMP_BUILD_WOOD_COST;
+inline constexpr int MILL_MAX_HP = LUMBER_CAMP_MAX_HP;
+inline constexpr int MILL_VISION_RANGE = LUMBER_CAMP_VISION_RANGE;
+inline constexpr std::string_view MINING_CAMP_BUILDING_ID = "mining_camp";
+inline constexpr int MINING_CAMP_FOOTPRINT_TILES = 2;
+inline constexpr int MINING_CAMP_BUILD_WOOD_COST = LUMBER_CAMP_BUILD_WOOD_COST;
+inline constexpr int MINING_CAMP_MAX_HP = LUMBER_CAMP_MAX_HP;
+inline constexpr int MINING_CAMP_VISION_RANGE = LUMBER_CAMP_VISION_RANGE;
+inline constexpr std::string_view BARRACKS_BUILDING_ID = "barracks";
+inline constexpr int BARRACKS_FOOTPRINT_TILES = 3;
+inline constexpr int BARRACKS_BUILD_WOOD_COST = 100;
+inline constexpr int BARRACKS_MAX_HP = 800;
+inline constexpr int BARRACKS_VISION_RANGE = 5;
+inline constexpr std::string_view MAGE_ACADEMY_BUILDING_ID = "mage_academy";
+inline constexpr int MAGE_ACADEMY_FOOTPRINT_TILES = 3;
+inline constexpr int MAGE_ACADEMY_BUILD_WOOD_COST = 125;
+inline constexpr int MAGE_ACADEMY_BUILD_MONEY_COST = 35;
+inline constexpr int MAGE_ACADEMY_BUILD_MANA_COST = 5;
+inline constexpr int MAGE_ACADEMY_MAX_HP = 1000;
+inline constexpr int MAGE_ACADEMY_VISION_RANGE = 5;
+inline constexpr std::string_view TOWER_BUILDING_ID = "tower";
+inline constexpr int TOWER_FOOTPRINT_TILES = 1;
+inline constexpr int TOWER_BUILD_WOOD_COST = 90;
+inline constexpr int TOWER_BUILD_MONEY_COST = 45;
+inline constexpr int TOWER_MAX_HP = 600;
+inline constexpr int TOWER_VISION_RANGE = 7;
+inline constexpr int TOWER_ATTACK_RANGE_TILES = 5;
+inline constexpr std::string_view MARKET_BUILDING_ID = "market";
+inline constexpr int MARKET_FOOTPRINT_TILES = 3;
+inline constexpr int MARKET_BUILD_WOOD_COST = 135;
+inline constexpr int MARKET_MAX_HP = 500;
+inline constexpr int MARKET_VISION_RANGE = 5;
+inline constexpr int MARKET_TRADE_RESOURCE_AMOUNT = 100;
+inline constexpr int MARKET_SELL_GOLD_AMOUNT = 70;
+inline constexpr int MARKET_BUY_GOLD_AMOUNT = 130;
+inline constexpr int CARTOGRAPHY_GOLD_COST = 125;
+inline constexpr int SPY_GOLD_PER_ENEMY_UNIT = 125;
+inline constexpr int WORKER_TRAIN_SECONDS = 10;
+inline constexpr int MILITIA_TRAIN_SECONDS = 13;
+inline constexpr int MAGE_TRAIN_SECONDS = 15;
+inline constexpr int TECH_ADVANCE_SECONDS = 20;
+inline constexpr int WORKER_TRAIN_TICKS = SIM_TICKS_PER_SECOND * WORKER_TRAIN_SECONDS;
+inline constexpr int MILITIA_TRAIN_TICKS = SIM_TICKS_PER_SECOND * MILITIA_TRAIN_SECONDS;
+inline constexpr int MAGE_TRAIN_TICKS = SIM_TICKS_PER_SECOND * MAGE_TRAIN_SECONDS;
+inline constexpr int TECH_ADVANCE_TICKS = SIM_TICKS_PER_SECOND * TECH_ADVANCE_SECONDS;
 inline constexpr std::string_view EXTRACTOR_BUILDING_ID = "extractor";
 inline constexpr int EXTRACTOR_FOOTPRINT_TILES = 2;
 inline constexpr int EXTRACTOR_BUILD_WOOD_COST = 75;
 inline constexpr int EXTRACTOR_BUILD_MONEY_COST = 25;
 inline constexpr int EXTRACTOR_MAX_HP = 200;
+inline constexpr std::string_view GARDEN_BUILDING_ID = "garden";
+inline constexpr int GARDEN_FOOTPRINT_TILES = 2;
+inline constexpr int GARDEN_BUILD_WOOD_COST = 200;
+inline constexpr int GARDEN_BUILD_MONEY_COST = 100;
+inline constexpr int GARDEN_BUILD_MANA_COST = 50;
+inline constexpr int GARDEN_MAX_HP = 500;
+inline constexpr int GARDEN_VISION_RANGE = 4;
+inline constexpr int GARDEN_PROD_WOOD = 1;
+inline constexpr int GARDEN_PROD_FOOD = 1;
+inline constexpr int GARDEN_PROD_INTERVAL_SECONDS = 10;
+inline constexpr std::string_view RESERVOIR_BUILDING_ID = "reservoir";
+inline constexpr int RESERVOIR_FOOTPRINT_TILES = 2;
+inline constexpr int RESERVOIR_BUILD_WOOD_COST = 100;
+inline constexpr int RESERVOIR_BUILD_MONEY_COST = 50;
+inline constexpr int RESERVOIR_MAX_HP = 300;
+inline constexpr int RESERVOIR_VISION_RANGE = 4;
+inline constexpr std::string_view FARM_BUILDING_ID = "farm";
+inline constexpr int FARM_FOOTPRINT_TILES = 2;
+inline constexpr int FARM_BUILD_WOOD_COST = 50;
+inline constexpr int FARM_MAX_HP = 75;
+inline constexpr int FARM_VISION_RANGE = 4;
+inline constexpr int FARM_FOOD_AMOUNT = 125;
+inline constexpr int FARM_GATHER_WANDER_EVERY_FOOD = 8;
+inline constexpr int HOUSE_VISUAL_VARIANT_COUNT = 3;
+inline constexpr int TOWN_CENTER_BUILD_MONEY_COST = 45;
+inline constexpr int TOWN_CENTER_BUILD_MANA_COST = 10;
+inline constexpr int TOWN_CENTER_ATTACK_RANGE_TILES = DEFAULT_TOWN_CENTER_VISION_RANGE - 2;
+inline constexpr int TOWN_CENTER_PIERCE_ATTACK = 8;
+inline constexpr int TOWN_CENTER_PIERCE_ARMOR = 4;
+inline constexpr int TOWN_CENTER_ATTACK_COOLDOWN_TICKS = 24;
+inline constexpr int TOWER_PIERCE_ATTACK = 12;
+inline constexpr int TOWER_PIERCE_ARMOR = 6;
+inline constexpr int TOWER_ATTACK_COOLDOWN_TICKS = 20;
+inline constexpr int MAGE_PIERCE_ATTACK = 12;
+inline constexpr int MAGE_PIERCE_ARMOR = 2;
+inline constexpr int MAGE_MOVE_TICKS_PER_TILE = 14;
+inline constexpr int MAGE_ATTACK_COOLDOWN_TICKS = 30;
+inline constexpr int MAGE_ATTACK_MANA_COST = 1;
+inline constexpr int MAGE_MONEY_COST = 45;
+inline constexpr int MAGE_MANA_COST = 5;
+inline constexpr int MAGE_MAX_HP = 40;
+inline constexpr int MAGE_VISION_RANGE = 5;
+inline constexpr int TC_GARRISON_CAPACITY = 5;
+enum class PlayerAge : std::uint8_t {
+    Human = 0,
+    Magic = 1,
+    Technology = 2,
+    Spirit = 3,
+};
+inline constexpr int PLAYER_AGE_COUNT = 4;
+inline constexpr std::array<std::string_view, PLAYER_AGE_COUNT> PLAYER_AGE_NAMES{{
+    "Mortal Age",
+    "Elemental Age",
+    "Modern Age",
+    "Eternity Age",
+}};
+inline constexpr int AGE_MAGIC_FOOD_COST = 450;
+inline constexpr int AGE_MAGIC_MONEY_COST = 50;
+inline constexpr int AGE_MAGIC_MANA_COST = 0;
+inline constexpr int AGE_TECHNOLOGY_FOOD_COST = 650;
+inline constexpr int AGE_TECHNOLOGY_MONEY_COST = 300;
+inline constexpr int AGE_TECHNOLOGY_MANA_COST = 25;
+inline constexpr int AGE_SPIRIT_FOOD_COST = 950;
+inline constexpr int AGE_SPIRIT_MONEY_COST = 650;
+inline constexpr int AGE_SPIRIT_MANA_COST = 75;
+inline constexpr int MAGE_ATTACK_RANGE_TILES = 4;
+inline constexpr float ROCK_PROJECTILE_TILES_PER_SECOND = 10.0F;
+inline constexpr float ROCK_PROJECTILE_TILES_PER_TICK =
+    ROCK_PROJECTILE_TILES_PER_SECOND / static_cast<float>(SIM_TICKS_PER_SECOND);
+inline constexpr float ROCK_PROJECTILE_RADIUS = 0.22F;
+inline constexpr float ROCK_PROJECTILE_HIT_DISTANCE = 0.35F;
+inline constexpr float RENDER_TOWER_SPRITE_OFFSET_X = 0.15F;
+inline constexpr float RENDER_TOWER_SPRITE_OFFSET_Y = 0.15F;
+inline constexpr float RENDER_TOWER_SPRITE_WIDTH_SCALE = 0.88F;
+inline constexpr float RENDER_MAGE_BODY_R = 0.42F;
+inline constexpr float RENDER_MAGE_BODY_G = 0.18F;
+inline constexpr float RENDER_MAGE_BODY_B = 0.62F;
+inline constexpr float RENDER_WORKER_BODY_R = 0.85F;
+inline constexpr float RENDER_WORKER_BODY_G = 0.75F;
+inline constexpr float RENDER_WORKER_BODY_B = 0.20F;
+inline constexpr float RENDER_MILITIA_BODY_R = 0.25F;
+inline constexpr float RENDER_MILITIA_BODY_G = 0.55F;
+inline constexpr float RENDER_MILITIA_BODY_B = 0.85F;
+inline constexpr float RENDER_MAGE_HAT_SCALE = 0.55F;
+inline constexpr float RENDER_MAGE_HAT_HEIGHT_SCALE = 0.35F;
+inline constexpr int EARTH_HUD_BUILD_ICON_COUNT = 10;
+inline constexpr int EARTH_HUD_BUILD_ICON_TILE_SIZE_PX = 48;
+inline constexpr float RENDER_ROCK_PROJECTILE_R = 0.45F;
+inline constexpr float RENDER_ROCK_PROJECTILE_G = 0.40F;
+inline constexpr float RENDER_ROCK_PROJECTILE_B = 0.34F;
 inline constexpr std::string_view MANA_LAKE_BUILDING_ID = "mana_lake";
 inline constexpr int MANA_LAKE_FOOTPRINT_TILES = 2;
 inline constexpr int MANA_LAKE_PER_PLAYER_COUNT = 1;
@@ -500,7 +702,7 @@ inline constexpr std::string_view BERRY_BUSH_RESOURCE_ID = "berry_bush";
 inline constexpr std::string_view BLUEBERRY_BUSH_RESOURCE_ID = "blueberry_bush";
 inline constexpr std::string_view GOLD_MINE_RESOURCE_ID = "gold_mine";
 
-inline constexpr int PLAYER_MANA_MAX = 50;
+inline constexpr int PLAYER_MANA_MAX = 200;
 inline constexpr int CIVIL_POPULATION_CAP_BASE = 0;
 inline constexpr int CIVIL_POPULATION_CAP_PER_TOWN_CENTER = 5;
 inline constexpr int CIVIL_POPULATION_CAP_PER_HOUSE = 3;
@@ -513,8 +715,11 @@ inline constexpr int EXTRACTOR_MANA_GEN_AMOUNT = 1;
 inline constexpr int EXTRACTOR_MANA_GEN_INTERVAL_SECONDS = 5;
 inline constexpr int EXTRACTOR_MANA_GEN_INTERVAL_TICKS =
     SIM_TICKS_PER_SECOND * EXTRACTOR_MANA_GEN_INTERVAL_SECONDS;
-// Every completed extractor raises the player's mana ceiling by this much.
+inline constexpr int GARDEN_PROD_INTERVAL_TICKS =
+    SIM_TICKS_PER_SECOND * GARDEN_PROD_INTERVAL_SECONDS;
+// Every completed extractor or reservoir raises the player's mana ceiling by this much.
 inline constexpr int MANA_CAP_PER_EXTRACTOR = 10;
+inline constexpr int MANA_CAP_PER_RESERVOIR = 10;
 inline constexpr int TOWN_CENTER_BUILD_WOOD_COST = 250;
 inline constexpr int HOUSE_BUILD_WOOD_COST = 30;
 inline constexpr int BERRY_BUSH_FOOD_CAPACITY = 75;
@@ -581,6 +786,7 @@ inline constexpr int GOLD_MINE_MONEY_CAPACITY = 450;
 inline constexpr int GOLD_MINE_NEAR_BASE_COUNT = 3;
 inline constexpr int GOLD_MINE_VARIANT_COUNT = 4;
 inline constexpr int WORKER_FOOD_COST = 45;
+inline constexpr int HUD_PROCESS_FULL_PERCENT = 100;
 inline constexpr int MILITIA_FOOD_COST = 65;
 inline constexpr int MILITIA_MONEY_COST = 35;
 inline constexpr int AI_THINK_INTERVAL_TICKS = 4;
@@ -635,6 +841,11 @@ inline constexpr int CONSTRUCTION_VISION_ACTIVE_MIN_HP = 1;
 inline constexpr int CONSTRUCTION_VISION_FOOTPRINT_PADDING_TILES = 0;
 // Radius from a footprint tile center that covers that tile only (half-diagonal).
 inline constexpr float CONSTRUCTION_VISION_PER_TILE_RADIUS = 0.70710678F;
+inline constexpr std::string_view CHEAT_OKNOCRAFT_INFINITY = "Oknocraft Infinity";
+inline constexpr int CHEAT_OKNOCRAFT_INFINITY_WOOD = 1500;
+inline constexpr int CHEAT_OKNOCRAFT_INFINITY_FOOD = 1500;
+inline constexpr int CHEAT_OKNOCRAFT_INFINITY_MONEY = 1500;
+inline constexpr int CHEAT_OKNOCRAFT_INFINITY_MANA = 1500;
 inline constexpr int CHAT_MAX_MESSAGE_LENGTH = 80;
 inline constexpr int CHAT_INPUT_VISIBLE_CHARS = 80;
 inline constexpr int CHAT_MAX_VISIBLE_LINES = 8;
@@ -857,6 +1068,9 @@ inline constexpr int MAIN_MENU_SPLIT_GAP_PX = 10;
 inline constexpr int MAIN_MENU_SPLIT_THICKNESS_PX = 2;
 inline constexpr int MAIN_MENU_ROW_HEIGHT_PX = 30;
 inline constexpr int MAIN_MENU_LABEL_GAP_PX = 20;
+inline constexpr int ABOUT_DESCRIPTION_LINE_GAP_PX = 4;
+inline constexpr int ABOUT_DESCRIPTION_WRAP_MAX_CHARS = 256;
+inline constexpr std::string_view GAME_VERSION_HUD_PREFIX = "Ver. ";
 inline constexpr int MAIN_MENU_DIALOG_WIDTH_PX = 470;
 inline constexpr int MAIN_MENU_LOBBY_WIDTH_PX = 740;
 inline constexpr int MAIN_MENU_LOBBY_ROW_HEIGHT_PX = 26;

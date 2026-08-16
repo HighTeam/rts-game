@@ -3,6 +3,7 @@
 #include "app/chat_state.hpp"
 #include "core/constants.hpp"
 #include "net/enet_transport.hpp"
+#include "net/lobby_wire.hpp"
 #include "net/lockstep_network_hud.hpp"
 #include "net/lockstep_wire.hpp"
 #include "render/building_sight_memory.hpp"
@@ -60,6 +61,10 @@ public:
         const std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS>& reconnect_tokens);
     void configure_ai_slots(
         const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_ai);
+    void configure_lobby_settings(
+        const LobbySettings& settings,
+        const std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS>& slot_teams,
+        const std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS>& slot_colors);
     [[nodiscard]] std::uint8_t expected_human_player_count() const;
     [[nodiscard]] std::string player_display_name(std::uint8_t player_slot) const;
     void send_chat_message(std::string_view text);
@@ -185,6 +190,8 @@ private:
     void flush_pending_local_commands_to_input_log();
     void sync_command_sequences_from_input_log();
     [[nodiscard]] bool apply_reconnect_snapshot_locally(const std::span<const std::byte> snapshot_bytes);
+    void restore_match_identity_after_snapshot();
+    [[nodiscard]] bool commands_blocked_during_resync() const;
     void process_received_packet(const std::vector<std::byte>& packet, std::uint8_t sender_slot);
     void handle_chat_message(const std::vector<std::byte>& payload, std::uint8_t sender_slot);
     void verify_state_hash(std::uint64_t execute_tick, std::uint64_t remote_hash);
@@ -264,6 +271,18 @@ private:
     std::array<std::string, constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names_{};
     std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> reconnect_tokens_{};
     std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_ai_{};
+    LobbySettings lobby_settings_{};
+    std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> lobby_slot_teams_{};
+    std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> lobby_slot_colors_{
+        0U,
+        1U,
+        2U,
+        3U,
+        4U,
+        5U,
+        6U,
+        7U};
+    bool lobby_settings_configured_{false};
     std::chrono::steady_clock::time_point resync_handshake_started_{};
     std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> ai_command_sequence_by_slot_{};
     int reconnect_attempts_{0};

@@ -1,0 +1,17 @@
+{
+  "id": "mage",
+  "kind": "unit",
+  "display_name": "Mage",
+  "max_hp": 40,
+  "move_ticks_per_tile": 14,
+  "gather_per_tick": 0,
+  "carry_capacity": 0,
+  "melee_attack": 0,
+  "melee_armor": 0,
+  "pierce_attack": 12,
+  "pierce_armor": 2,
+  "attack_cooldown_ticks": 30,
+  "attack_mana_cost": 1,
+  "attack_range": 4,
+  "vision_range": 5
+}

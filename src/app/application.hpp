@@ -2,6 +2,7 @@
 
 #include "app/window_display.hpp"
 #include "core/constants.hpp"
+#include "net/lobby_wire.hpp"
 #include "net/net_constants.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/simulation.hpp"
@@ -37,6 +38,7 @@ struct SingleplayerSetup {
     std::uint8_t player_count{constants::SINGLEPLAYER_PLAYER_COUNT};
     std::array<bool, constants::MAX_PLAYER_SLOTS> slot_is_ai{false, true};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_colors{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_teams{};
     sim::components::FogOfWarMode fog_mode{sim::components::FogOfWarMode::Enabled};
     int civil_population_map_cap{constants::CIVIL_POPULATION_MAP_CAP_DEFAULT};
     bool cheats_enabled{false};
@@ -45,6 +47,7 @@ struct SingleplayerSetup {
     std::string pattern_payload{};
     sim::components::VictoryCondition victory_condition{
         sim::components::VictoryCondition::Normal};
+    std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names{};
 };
 
 // Everything a graphical lockstep match needs, independent of the CLI options.
@@ -60,6 +63,7 @@ struct LockstepMatchSetup {
     bool cheats_enabled{false};
     std::array<bool, constants::MAX_PLAYER_SLOTS> slot_is_ai{};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_colors{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_teams{};
     bool lockstep_debug{false};
     bool auto_input{false};
     std::uint64_t tick_limit{0U};
@@ -71,6 +75,7 @@ struct LockstepMatchSetup {
         sim::components::VictoryCondition::Normal};
     std::uint64_t map_seed{0U};
     std::string pattern_payload{};
+    net::LobbySettings lobby_settings{};
 };
 
 struct LaunchOptions {

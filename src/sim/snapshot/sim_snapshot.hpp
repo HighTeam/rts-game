@@ -20,6 +20,19 @@ struct SimSnapshot {
     std::uint64_t ai_controlled_since_tick{0U};
     std::int32_t civil_population_map_cap{15};
     std::uint8_t fog_of_war_enabled{1U};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_ages{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_side_indices{
+        0U,
+        1U,
+        2U,
+        3U,
+        4U,
+        5U,
+        6U,
+        7U};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_cartography{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_spy{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_built_mill{};
     std::vector<components::AiControlTransition> ai_control_transitions{};
     std::vector<player::PlayerCommand> input_log{};
 };

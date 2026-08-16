@@ -249,7 +249,10 @@ private:
         float offset_x_tiles = 0.0F,
         float offset_y_tiles = 0.0F,
         int frame_index = 0,
-        int frame_count = 1) const;
+        int frame_count = 1,
+        float tint_r = 1.0F,
+        float tint_g = 1.0F,
+        float tint_b = 1.0F) const;
     struct PendingIsoSpriteDraw {
         float sort_key{0.0F};
         int grid_x{0};
@@ -257,6 +260,9 @@ private:
         SceneTextureKind texture_kind{SceneTextureKind::Grass};
         float width_scale{1.0F};
         float brightness{1.0F};
+        float tint_r{1.0F};
+        float tint_g{1.0F};
+        float tint_b{1.0F};
         float offset_x_tiles{0.0F};
         float offset_y_tiles{0.0F};
         // Horizontal strip animation: frame_count > 1 selects a column of the atlas.
@@ -274,6 +280,9 @@ private:
         float silhouette_r{0.0F};
         float silhouette_g{0.0F};
         float silhouette_b{0.0F};
+        float radius{constants::RENDER_UNIT_RADIUS};
+        float height{constants::RENDER_UNIT_HEIGHT};
+        bool draw_hat{false};
     };
 
     void queue_iso_object_sprite(
@@ -286,7 +295,10 @@ private:
         float offset_x_tiles = 0.0F,
         float offset_y_tiles = 0.0F,
         int frame_index = 0,
-        int frame_count = 1) const;
+        int frame_count = 1,
+        float tint_r = 1.0F,
+        float tint_g = 1.0F,
+        float tint_b = 1.0F) const;
     void queue_unit_draw(const PendingUnitDraw& draw) const;
     void flush_pending_depth_sorted_draws(unsigned int& active_textured_batch) const;
     [[nodiscard]] std::vector<core::GridPos> collect_unit_front_occluder_tiles(

@@ -22,6 +22,7 @@ enum class LobbyStatus : std::uint8_t {
     Joined,
     ConnectFailed,
     Closed,
+    Rejected,
 };
 
 // Pre-match lobby over its own ENet transport. The lockstep match transport is
@@ -54,6 +55,8 @@ public:
     void cycle_slot_kind(std::uint8_t slot);
     void cycle_slot_color(std::uint8_t slot);
     void request_local_color_cycle();
+    void cycle_slot_team(std::uint8_t slot);
+    void request_local_team_cycle();
     [[nodiscard]] bool try_apply_scenario(std::uint8_t required_player_count, const std::string& name);
     [[nodiscard]] bool try_lock_player_count(std::uint8_t required_player_count);
     void clear_player_count_lock();
@@ -67,6 +70,7 @@ public:
     [[nodiscard]] LobbyRole role() const { return role_; }
     [[nodiscard]] bool is_host() const { return role_ == LobbyRole::Host; }
     [[nodiscard]] LobbyStatus status() const { return status_; }
+    [[nodiscard]] const std::string& reject_reason() const { return reject_reason_; }
     [[nodiscard]] std::uint8_t local_slot() const { return local_slot_; }
     [[nodiscard]] const LobbyStateMessage& view() const { return view_; }
     [[nodiscard]] std::uint8_t occupied_slot_count() const;
@@ -82,6 +86,7 @@ private:
     void send_lobby_state_to_clients();
     void release_slot(std::uint8_t player_slot);
     void send_to_host(NetMessageKind kind, const std::vector<std::byte>& payload);
+    void send_join_reject(std::uint8_t player_slot, const std::string& reason);
     void apply_color(std::uint8_t slot, std::uint8_t preferred);
     void refresh_playing_player_count();
     void init_default_slots(const std::string& host_name);
@@ -91,6 +96,7 @@ private:
     EnetTransport transport_{};
     LobbyStateMessage view_{};
     std::string local_name_{};
+    std::string reject_reason_{};
     std::uint8_t local_slot_{0U};
     bool join_sent_{false};
     bool match_start_pending_{false};

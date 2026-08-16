@@ -34,9 +34,24 @@ struct HudUnitContext {
     int selected_building_health_current{0};
     int selected_building_health_max{0};
     bool selected_building_is_house{false};
-    bool selected_building_is_lumberjack{false};
+    bool selected_building_is_lumber_camp{false};
+    bool selected_building_is_mill{false};
+    bool selected_building_is_mining_camp{false};
+    bool selected_building_is_barracks{false};
+    bool selected_building_is_mage_academy{false};
+    bool selected_building_is_tower{false};
+    bool selected_building_is_market{false};
     bool selected_building_is_extractor{false};
+    bool selected_building_is_garden{false};
+    bool selected_building_is_reservoir{false};
+    bool selected_building_is_farm{false};
+    int selected_farm_food_remaining{0};
+    int selected_farm_food_max{0};
+    int selected_garden_percent{0};
     bool selected_building_is_mana_lake{false};
+    bool selected_building_is_town_center{false};
+    int selected_garrison_count{0};
+    int selected_garrison_capacity{0};
     bool has_selected_building_owner{false};
     std::uint8_t selected_building_player_slot{0U};
     int command_panel_pressed_slot{-1};
@@ -77,6 +92,13 @@ struct HudInfoPanel {
     int mana_rate{0};
     bool has_extraction_progress{false};
     int extraction_percent{0};
+    bool has_garden_production{false};
+    int garden_percent{0};
+    bool has_relation{false};
+    bool is_friend{false};
+    bool has_process{false};
+    int process_percent{0};
+    bool process_is_research{false};
     std::vector<std::string> debug_lines{};
 };
 
@@ -177,6 +199,7 @@ private:
     [[nodiscard]] unsigned int hud_textured_shader_program() const;
     [[nodiscard]] unsigned int hud_tinted_texture_shader_program() const;
     [[nodiscard]] HudIconAtlas& icon_atlas() const;
+    [[nodiscard]] EarthBuildIconAtlas& earth_build_icon_atlas() const;
 
     void draw_string(
         sf::Vector2u window_size,
@@ -202,7 +225,16 @@ private:
         float x,
         float y,
         float size,
-        HudIcon icon) const;
+        HudIcon icon,
+        float alpha = 1.0F) const;
+
+    void draw_earth_build_icon(
+        sf::Vector2u window_size,
+        float x,
+        float y,
+        float size,
+        EarthBuildIcon icon,
+        float alpha = 1.0F) const;
 
     void draw_resource_bar(
         sf::Vector2u window_size,
@@ -236,6 +268,10 @@ private:
         float top_y,
         const HudUnitContext& unit_context) const;
 
+    void draw_age_title(
+        sf::Vector2u window_size,
+        constants::PlayerAge age) const;
+
     void draw_game_menu(sf::Vector2u window_size, const HudUnitContext& unit_context) const;
     void draw_match_result(
         sf::Vector2u window_size,
@@ -251,6 +287,8 @@ private:
     mutable int minimap_texture_height_{0};
     mutable HudIconAtlas icon_atlas_{};
     mutable bool icon_atlas_load_attempted_{false};
+    mutable EarthBuildIconAtlas earth_build_icon_atlas_{};
+    mutable bool earth_build_icon_atlas_load_attempted_{false};
 };
 
 void enable_rgb_blend_keep_framebuffer_opaque();

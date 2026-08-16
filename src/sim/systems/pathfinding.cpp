@@ -8,6 +8,7 @@
 #include "sim/components/movement.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/spawn/unit_spawn.hpp"
 
 #include <algorithm>
 #include <array>
@@ -239,11 +240,15 @@ bool unit_grid_adjacent(
         footprint = components::effective_building_footprint(
             footprint,
             registry.any_of<components::TownCenterTag>(to));
-        return components::chebyshev_distance_to_footprint(
-                   from_cell,
-                   registry.get<components::GridPosition>(to),
-                   footprint)
-            == 1;
+        const int distance = components::chebyshev_distance_to_footprint(
+            from_cell,
+            registry.get<components::GridPosition>(to),
+            footprint);
+        if (registry.any_of<components::FarmTag>(to)) {
+            return distance <= 1;
+        }
+
+        return distance == 1;
     }
 
     return core::chebyshev_distance(from_cell, unit_occupancy_grid_cell(registry, to)) == 1;
@@ -469,6 +474,20 @@ bool unit_can_work_cell(
     const core::GridPos cell)
 {
     const core::GridPos occupancy = unit_occupancy_grid_cell(registry, unit);
+    const entt::entity farm = spawn::find_farm_at_cell(registry, cell);
+    if (farm != entt::null && registry.any_of<components::GridPosition>(farm)) {
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(farm)) {
+            footprint = registry.get<components::BuildingFootprint>(farm);
+        }
+        const auto& anchor = registry.get<components::GridPosition>(farm);
+        if (!components::building_contains_cell(anchor, footprint, occupancy)) {
+            return false;
+        }
+
+        return unit_in_work_interact_range_building(registry, unit, anchor, footprint);
+    }
+
     if (!is_cardinal_neighbor_cell(occupancy, cell)) {
         return false;
     }
@@ -660,6 +679,112 @@ core::GridPos find_best_deposit_stand_tile(
     return best;
 }
 
+core::GridPos find_best_farm_stand_tile(
+    const components::MapGrid& map,
+    entt::registry& registry,
+    const entt::entity farm,
+    const entt::entity mover,
+    const core::GridPos prefer_not)
+{
+    if (farm == entt::null || !registry.valid(farm)
+        || !registry.any_of<components::GridPosition>(farm)) {
+        return {-1, -1};
+    }
+
+    components::BuildingFootprint footprint{};
+    if (registry.any_of<components::BuildingFootprint>(farm)) {
+        footprint = registry.get<components::BuildingFootprint>(farm);
+    }
+    const auto& anchor = registry.get<components::GridPosition>(farm);
+    const core::GridPos mover_cell = unit_occupancy_grid_cell(registry, mover);
+
+    core::GridPos best{-1, -1};
+    int best_travel = std::numeric_limits<int>::max();
+    bool found = false;
+    bool found_preferred = false;
+    for (int y = 0; y < footprint.height; ++y) {
+        for (int x = 0; x < footprint.width; ++x) {
+            const core::GridPos candidate{anchor.cell.x + x, anchor.cell.y + y};
+            if (!is_tile_walkable(map, candidate, false)) {
+                continue;
+            }
+
+            if (is_movement_blocked(registry, candidate, mover)) {
+                continue;
+            }
+
+            const bool is_avoided = candidate.x == prefer_not.x && candidate.y == prefer_not.y;
+            if (found && found_preferred && is_avoided) {
+                continue;
+            }
+
+            const int travel = core::chebyshev_distance(mover_cell, candidate);
+            const bool better_class = !is_avoided && !found_preferred;
+            if (!found
+                || better_class
+                || (is_avoided == !found_preferred
+                    && (travel < best_travel
+                        || (travel == best_travel
+                            && (candidate.y < best.y
+                                || (candidate.y == best.y && candidate.x < best.x)))))) {
+                found = true;
+                found_preferred = !is_avoided;
+                best_travel = travel;
+                best = candidate;
+            }
+        }
+    }
+
+    return best;
+}
+
+core::GridPos pick_farm_wander_cell(
+    const components::MapGrid& map,
+    entt::registry& registry,
+    const entt::entity farm,
+    const entt::entity mover,
+    const core::GridPos avoid,
+    const std::uint32_t seed)
+{
+    if (farm == entt::null || !registry.valid(farm)
+        || !registry.any_of<components::GridPosition>(farm)) {
+        return {-1, -1};
+    }
+
+    components::BuildingFootprint footprint{};
+    if (registry.any_of<components::BuildingFootprint>(farm)) {
+        footprint = registry.get<components::BuildingFootprint>(farm);
+    }
+    const auto& anchor = registry.get<components::GridPosition>(farm);
+    std::array<core::GridPos, 8> cells{};
+    int count = 0;
+    for (int y = 0; y < footprint.height && count < static_cast<int>(cells.size()); ++y) {
+        for (int x = 0; x < footprint.width && count < static_cast<int>(cells.size()); ++x) {
+            const core::GridPos candidate{anchor.cell.x + x, anchor.cell.y + y};
+            if (candidate.x == avoid.x && candidate.y == avoid.y) {
+                continue;
+            }
+
+            if (!is_tile_walkable(map, candidate, false)) {
+                continue;
+            }
+
+            if (is_movement_blocked(registry, candidate, mover)) {
+                continue;
+            }
+
+            cells[static_cast<std::size_t>(count)] = candidate;
+            ++count;
+        }
+    }
+
+    if (count <= 0) {
+        return find_best_farm_stand_tile(map, registry, farm, mover, {-1, -1});
+    }
+
+    return cells[static_cast<std::size_t>(seed % static_cast<std::uint32_t>(count))];
+}
+
 core::GridPos find_best_melee_stand_tile(
     const components::MapGrid& map,
     entt::registry& registry,
@@ -672,6 +797,14 @@ core::GridPos find_best_melee_stand_tile(
     // Buildings: stand on nearest Chebyshev-1 edge so melee strike range still works.
     if (target_entity != entt::null && registry.valid(target_entity)
         && registry.any_of<components::BuildingTag, components::GridPosition>(target_entity)) {
+        if (registry.any_of<components::FarmTag>(target_entity)) {
+            const core::GridPos farm_stand =
+                find_best_farm_stand_tile(map, registry, target_entity, mover);
+            if (farm_stand.x >= 0) {
+                return farm_stand;
+            }
+        }
+
         components::BuildingFootprint footprint{};
         if (registry.any_of<components::BuildingFootprint>(target_entity)) {
             footprint = registry.get<components::BuildingFootprint>(target_entity);
@@ -827,6 +960,10 @@ bool is_building_blocking_cell(
             continue;
         }
 
+        if (registry.any_of<components::FarmTag>(entity)) {
+            continue;
+        }
+
         const auto& anchor = building_view.get<components::GridPosition>(entity);
         components::BuildingFootprint footprint{};
         if (registry.any_of<components::BuildingFootprint>(entity)) {
@@ -884,6 +1021,10 @@ bool units_block_world_point(
 
         const auto& health = unit_view.get<components::Health>(entity);
         if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
             continue;
         }
 
@@ -989,6 +1130,10 @@ PathOccupancy build_path_occupancy(
             continue;
         }
 
+        if (registry.any_of<components::FarmTag>(entity)) {
+            continue;
+        }
+
         components::BuildingFootprint footprint{};
         if (registry.any_of<components::BuildingFootprint>(entity)) {
             footprint = registry.get<components::BuildingFootprint>(entity);
@@ -1024,6 +1169,10 @@ PathOccupancy build_path_occupancy(
         }
 
         if (unit_view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
             continue;
         }
 
@@ -1153,11 +1302,76 @@ bool is_movement_blocked(
             continue;
         }
 
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
+            continue;
+        }
+
         if (unit_movement_grid_cell(registry, entity) == cell) {
             return true;
         }
 
         if (unit_reserves_cell(registry, entity, cell)) {
+            return true;
+        }
+    }
+
+    const math::Fixed half = math::Fixed::from_int(1) / math::Fixed::from_int(2);
+    const math::Fixed point_x = math::Fixed::from_int(cell.x) + half;
+    const math::Fixed point_y = math::Fixed::from_int(cell.y) + half;
+    return units_block_world_point(registry, point_x, point_y, ignore, also_ignore);
+}
+
+bool is_cell_blocked_for_building(
+    entt::registry& registry,
+    const core::GridPos cell,
+    const entt::entity ignore,
+    const entt::entity also_ignore)
+{
+    if (is_building_blocking_cell(registry, cell, ignore, also_ignore)) {
+        return true;
+    }
+
+    const auto farm_view = registry.view<
+        components::FarmTag,
+        components::GridPosition,
+        components::Health>();
+    for (const entt::entity farm : farm_view) {
+        if (is_entity_ignored_for_movement(farm, ignore, also_ignore)) {
+            continue;
+        }
+
+        if (farm_view.get<components::Health>(farm).current.raw() <= 0) {
+            continue;
+        }
+
+        components::BuildingFootprint footprint{};
+        if (registry.any_of<components::BuildingFootprint>(farm)) {
+            footprint = registry.get<components::BuildingFootprint>(farm);
+        }
+        if (components::building_contains_cell(
+                farm_view.get<components::GridPosition>(farm),
+                footprint,
+                cell)) {
+            return true;
+        }
+    }
+
+    const auto unit_view = registry.view<components::UnitTag, components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
+            continue;
+        }
+
+        const auto& health = unit_view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
+            continue;
+        }
+
+        if (unit_movement_grid_cell(registry, entity) == cell) {
             return true;
         }
     }
