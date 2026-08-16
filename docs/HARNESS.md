@@ -122,9 +122,9 @@ Never “fix” a hash without understanding the gameplay delta. Hash churn is a
 
 ## What the hash covers
 
-`compute_state_hash` mixes map tiles / forest wood, fog explored/memory planes (not the per-tick `visible` plane), then every non-world entity with `GridPosition`, sorted by stable snapshot key (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
+`compute_state_hash` mixes map tiles / forest wood, fog explored/memory planes (not the per-tick `visible` plane), then every non-world entity with `GridPosition`, sorted by stable `EntitySnapshotKey` (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
 
-Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`. Fog layout: [ECS.md](ECS.md).
+Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`. Fog layout and key rules: [ECS.md](ECS.md). Snapshot encode/restore uses the same keys so Attack/SpawnWorker targets survive `entt::entity` recycle ([LOCKSTEP.md](LOCKSTEP.md) § Snapshot blob).
 
 ## Common pitfalls
 
@@ -136,6 +136,8 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`. Fog l
 | Command seems one tick late/early | `execute_tick` is absolute sim tick, not “ticks from now” |
 | Player militia won’t auto-attack in replay | By design — player militia auto-AI was removed; issue an `attack` command |
 | Scenarios directory not found | `default_data_directory()` could not find `data/archetypes` — rebuild so POST_BUILD copies `data/`, or run with repo-root `AOA_RUNTIME_ROOT` (see [BUILD.md](BUILD.md)) |
+| Snapshot / reconnect smoke fails after spawn-order tweak | Entity snapshot ordinals or missing `EntitySnapshotIdentity` on new spawns; see [ECS.md](ECS.md) § Entity snapshot identity |
+| Hash churn after melee-only constant edit | `run_melee_contact_system` writes `WorldPosition` before combat; contact/slide constants are hash-sensitive |
 
 ## Related
 

@@ -31,11 +31,15 @@ Gameplay order in `run_gameplay_systems()` (do not reorder casually — hashes a
 4. `run_enemy_militia_ai` — `EnemyTag` militia only; player militia has no auto-attack AI. Default Earth spawn has no `EnemyTag` militia, so this system is a no-op there; combat comes from hard-coded `AttackOrder`s.
 5. `run_attack_chase_system`
 6. `run_movement_system`
-7. `run_melee_contact_system`
+7. `run_melee_contact_system` — slide adjacent attackers into strike range (see below)
 8. `run_combat_system` — same-tick damage sorted by entity id (see [DECISIONS.md](DECISIONS.md))
 9. `run_death_cleanup`
 
 Disconnected-player AI is **not** a gameplay system. `LockstepSession` injects `generate_ai_commands_for_slot()` before `Simulation::tick()` while in AI fallback (militia `Attack` / idle worker `Gather` only — see [LOCKSTEP.md](LOCKSTEP.md)).
+
+### Melee contact
+
+`run_melee_contact_system` runs after movement and before damage. For living units with an `AttackOrder` whose target is grid-adjacent and alive, it nudges `WorldPosition` toward a contact center distance (`MELEE_CONTACT_CENTER_DISTANCE_TILES` ≈ 0.42 from `MELEE_UNIT_COLLISION_RADIUS_TILES`). Cap per tick is `MELEE_CONTACT_SLIDE_PER_TICK` (0.12). Mutual attackers each take half the slide. Combat still uses its own strike distance (`MELEE_STRIKE_MAX_CENTER_DISTANCE_TILES` = 0.55). Iteration order is snapshot-key sorted. The slide math uses float intermediates on Fixed coords, so treat contact constants as hash-sensitive.
 
 ### Pathfinding
 
@@ -60,6 +64,18 @@ Constraints:
 - Created during scenario setup or spawning — not every frame.
 - Prefer tags + views over storing entity IDs in components when possible.
 - Scenario roles for the harness resolve via tags + `PlayerSlot` in `find_scenario_entity()`. Slot 0 roles: `player_worker`, `player_militia`, `town_center`. Slot 1 roles: `player2_worker`, `player2_militia` (alias `enemy_militia`), `player2_town_center`. Full table: [HARNESS.md](HARNESS.md).
+
+## Entity snapshot identity
+
+`entt::entity` ids are local and recycle across snapshot restore. Anything that must survive reconnect or appear in `compute_state_hash` uses `EntitySnapshotKey` (`src/sim/snapshot/entity_snapshot_key.*`):
+
+| Field | Meaning |
+|-------|---------|
+| `player_slot` | Owner slot |
+| `category` | `Worker` (0), `Militia` (1), `TownCenter` (2) |
+| `ordinal` | Index among living `PlayerOwnedTag` entities of that slot+category |
+
+Spawn paths call `set_entity_snapshot_identity` / `next_entity_snapshot_ordinal` so new workers keep stable ordinals. `compute_entity_snapshot_key` prefers `EntitySnapshotIdentity` when present; otherwise it rebuilds the key from living entities sorted by EnTT id. `annotate_command_entity_keys` / `resolve_command_entity_ids` rewrite command unit lists and Attack/SpawnWorker targets for the snapshot blob. Hash sort order and melee/visibility iteration use the same keys.
 
 ## Fog of war
 
@@ -95,7 +111,7 @@ Input / render path:
 1. Local pick in `game_input` produces a semantic `PlayerCommand` (cell or target entity).
 2. Singleplayer: `enqueue_player_command` sets `execute_tick = tick_count + PLAYER_COMMAND_DELAY_TICKS` (1) when unset.
 3. Lockstep: `LockstepSession::submit_local_command` uses `LOCKSTEP_COMMAND_DELAY_TICKS` (2), buffers the command in an outbox, and only enqueues after the matching `TickInputBatch` is sent and remote batches are ready. See [LOCKSTEP.md](LOCKSTEP.md).
-4. Render reads the registry after sim ticks; use `interpolation_alpha` from `FixedTimestepLoop` / lockstep render timing and `snapshot_world_positions_for_render()` for visuals only.
+4. Singleplayer graphical play reads the live registry after sim ticks (`FixedTimestepLoop` + `snapshot_world_positions_for_render()`). Lockstep graphical play must not: picks, fog HUD, and draws use a published `SimRenderSnapshot` (`capture_sim_render_snapshot` / `LockstepSession::render_snapshot()`), which copies poses, map tiles, fog planes, and per-slot HUD wood/HP. Restore-frame ordering pitfalls: [LOCKSTEP.md](LOCKSTEP.md).
 
 Details: [DECISIONS.md](DECISIONS.md) (player commands), [HARNESS.md](HARNESS.md) (hash asserts).
 

@@ -197,9 +197,31 @@ Mid-match reconnect:
 
 `JoinAccepted` is not part of the normal mid-match snapshot path.
 
-Snapshot payload includes tick count, state hash, command sequence, AI-control metadata, full `input_log`, map/fog, and entity records (`src/sim/snapshot/sim_snapshot.cpp`, magic `0x414F4153` / `AOAS`, version `9`). Public entry points: `encode_sim_snapshot`, `apply_sim_snapshot`, `decode_sim_snapshot_metadata` (`sim_snapshot.hpp`). Before sending, the host validates a local roundtrip and applies the same bytes to itself so both peers share one checkpoint.
+### Snapshot blob (public API)
 
-**Version discipline:** any change to the binary layout in `encode_sim_snapshot` / decode must bump `SNAPSHOT_VERSION`. Decode rejects mismatched magic or version, so a host and client on different builds cannot reconnect mid-match. Run `--snapshot-smoke` (and the local `--snapshot-*-smoke` suite after large layout edits) before LAN reconnect tests.
+Binary layout lives in `src/sim/snapshot/sim_snapshot.cpp` (magic `0x414F4153` / `AOAS`, `SNAPSHOT_VERSION` = `9`). Public entry points in `sim_snapshot.hpp`:
+
+| API | Role |
+|-----|------|
+| `encode_sim_snapshot` | Sync forest tiles, recompute `state_hash`, annotate command entity keys, serialize blob |
+| `apply_sim_snapshot` | Reset to default Earth scenario, restore input log + sequence, overlay map/fog/entities, restore AI metadata |
+| `decode_sim_snapshot_metadata` | Read tick/hash/sequence/AI/input_log without mutating a live sim |
+| `validate_snapshot_input_replay` | Fresh sim + restored log only; tick to metadata `tick_count`; compare hash (no entity overlay) |
+| `diagnose_snapshot_roundtrip_failure` | stderr dump used by smokes and host send validation |
+
+Encode order after magic/version: `tick_count`, `state_hash`, `next_command_sequence`, AI slot bitfield + since-tick + transition list, length-prefixed `input_log` commands (with `EntitySnapshotKey` annotations), forest wood, map tiles, fog explored/memory planes (three counts; zeros when fog missing), then entity state records sorted by snapshot key.
+
+`apply_sim_snapshot` does **not** replay the input log to rebuild the world. It wipes to `load_test_scenario`, then writes captured map/fog/entity bytes on top. Entity `entt::entity` ids are not stable across restore. Commands and attack targets must use `EntitySnapshotKey` (`player_slot`, category Worker/Militia/TownCenter, ordinal). Prefer `EntitySnapshotIdentity` when present; otherwise keys fall back to living `PlayerOwnedTag` entities sorted by EnTT id. See [ECS.md](ECS.md) § Entity snapshot identity.
+
+Before the host sends `ReconnectSnapshot` it:
+
+1. Flushes pending local commands into the input log
+2. Encodes the blob
+3. Applies it to a throwaway `Simulation` (`validate_snapshot_roundtrip`); on failure runs `diagnose_snapshot_roundtrip_failure` and does not send
+4. Self-applies the same bytes (`apply_reconnect_snapshot_locally`) so host and client share one checkpoint
+5. Sends `ReconnectSnapshot` reliably
+
+**Version discipline:** any change to the binary layout in encode/decode must bump `SNAPSHOT_VERSION`. Decode rejects mismatched magic or version, so a host and client on different builds cannot reconnect mid-match. Run `--snapshot-smoke` (and the local `--snapshot-*-smoke` suite after large layout edits) before LAN reconnect tests.
 
 Client reconnect pacing: every `LOCKSTEP_RECONNECT_INTERVAL_MS` (500), up to `LOCKSTEP_RECONNECT_MAX_ATTEMPTS` (20).
 
@@ -331,6 +353,7 @@ In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete to
 | Client never reports wire desync in 4p | No TickStateHash relay; `verify_state_hash` waits on every remote slot; see Desync detection |
 | After reconnect, clicks move the wrong units | Frame used pre-restore `SimRenderSnapshot` for input; see Stale render snapshot used for input |
 | Snapshot smoke fails after sim change | Entity keys / fog / AI metadata must roundtrip; bump `SNAPSHOT_VERSION` if the binary layout changed; run the full local snapshot suite before LAN |
+| Snapshot encode returns empty / host refuses to send | Missing `EntitySnapshotKey` annotations on Attack/SpawnWorker targets or unit lists; see Snapshot blob |
 | Reconnect rejected after a layout change | Host/client `SNAPSHOT_VERSION` mismatch — rebuild both peers from the same commit |
 | Scenarios / archetypes missing at runtime | See [BUILD.md](BUILD.md) runtime data paths (`AOA_RUNTIME_ROOT` + POST_BUILD `data/` copy) — not an `AOA_DATA_DIR` env var |
 | Desync banner, then disconnect never starts AI | `poll()` returns on `desynced_` before peer-loss handling; recovery waits on the open fix |
