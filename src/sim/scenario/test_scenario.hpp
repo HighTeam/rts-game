@@ -1,6 +1,7 @@
 #pragma once
 
 #include "data/content_types.hpp"
+#include "sim/map/map_generator.hpp"
 
 #include <entt/entt.hpp>
 #include <cstdint>
@@ -13,6 +14,11 @@ void load_test_scenario(
     entt::registry& registry,
     const data::ContentDatabase& content,
     std::uint8_t player_count = 2U);
+
+void load_test_scenario(
+    entt::registry& registry,
+    const data::ContentDatabase& content,
+    const map::MapGenerationConfig& generation);
 
 [[nodiscard]] entt::entity find_scenario_entity(entt::registry& registry, std::string_view role);
 

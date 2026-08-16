@@ -1,0 +1,10 @@
+{
+  "id": "extractor",
+  "kind": "structure",
+  "display_name": "Extractor",
+  "max_hp": 200,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "build_wood_cost": 75,
+  "vision_range": 4
+}

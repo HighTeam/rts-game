@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <system_error>
 
 namespace aoa::core {
 
@@ -23,12 +24,24 @@ template <typename T>
     return true;
 }
 
+[[nodiscard]] bool is_regular_file_nothrow(const std::filesystem::path& path)
+{
+    std::error_code error{};
+    return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+[[nodiscard]] bool is_directory_nothrow(const std::filesystem::path& path)
+{
+    std::error_code error{};
+    return std::filesystem::is_directory(path, error) && !error;
+}
+
 [[nodiscard]] std::filesystem::path resolve_pack_path()
 {
     const std::filesystem::path exe_dir = executable_directory();
     if (!exe_dir.empty()) {
         const std::filesystem::path beside_exe = exe_dir / ASSET_PACK_FILENAME;
-        if (std::filesystem::is_regular_file(beside_exe)) {
+        if (is_regular_file_nothrow(beside_exe)) {
             return beside_exe;
         }
     }
@@ -36,7 +49,7 @@ template <typename T>
 #ifdef AOA_RUNTIME_ROOT
     const std::filesystem::path beside_root =
         std::filesystem::path(AOA_RUNTIME_ROOT) / ASSET_PACK_FILENAME;
-    if (std::filesystem::is_regular_file(beside_root)) {
+    if (is_regular_file_nothrow(beside_root)) {
         return beside_root;
     }
 #endif
@@ -95,8 +108,7 @@ bool AssetStore::open_loose_directories(
     const std::filesystem::path& assets_directory,
     const std::filesystem::path& data_directory)
 {
-    if (!std::filesystem::is_directory(assets_directory)
-        || !std::filesystem::is_directory(data_directory)) {
+    if (!is_directory_nothrow(assets_directory) || !is_directory_nothrow(data_directory)) {
         return false;
     }
 
@@ -199,7 +211,7 @@ bool AssetStore::contains(const std::string_view relative_path) const
         return entries_.find(key) != entries_.end();
     }
 
-    return std::filesystem::is_regular_file(resolve_loose_file_path(key));
+    return is_regular_file_nothrow(resolve_loose_file_path(key));
 }
 
 std::vector<std::string> AssetStore::list_prefix(const std::string_view prefix) const
@@ -229,16 +241,30 @@ std::vector<std::string> AssetStore::list_prefix(const std::string_view prefix) 
 
     const std::filesystem::path scan_directory =
         relative_under_root.empty() ? scan_root : scan_root / std::filesystem::path(relative_under_root);
-    if (!std::filesystem::is_directory(scan_directory)) {
+    if (!is_directory_nothrow(scan_directory)) {
         return keys;
     }
 
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(scan_directory)) {
-        if (!entry.is_regular_file()) {
+    std::error_code iterator_error{};
+    const std::filesystem::recursive_directory_iterator end{};
+    for (std::filesystem::recursive_directory_iterator it{
+             scan_directory,
+             std::filesystem::directory_options::skip_permission_denied,
+             iterator_error};
+         !iterator_error && it != end;
+         it.increment(iterator_error)) {
+        if (!it->is_regular_file(iterator_error) || iterator_error) {
+            iterator_error.clear();
             continue;
         }
 
-        const std::filesystem::path relative = std::filesystem::relative(entry.path(), scan_root);
+        std::error_code relative_error{};
+        const std::filesystem::path relative =
+            std::filesystem::relative(it->path(), scan_root, relative_error);
+        if (relative_error) {
+            continue;
+        }
+
         std::string key = normalize_asset_path(relative.string());
         if (listing_data) {
             key = std::string{DATA_PACK_PREFIX} + key;
@@ -317,32 +343,36 @@ std::optional<std::string> AssetStore::read_text(const std::string_view relative
 bool init_asset_store(const bool prefer_loose_assets)
 {
     AssetStore& store = AssetStore::instance();
-    const std::filesystem::path assets_directory = default_assets_directory();
-    const std::filesystem::path data_directory = default_data_directory();
 
-    if (prefer_loose_assets) {
-        if (store.open_loose_directories(assets_directory, data_directory)) {
-            std::cout << "assets: using loose directories\n  assets=" << assets_directory.string()
-                      << "\n  data=" << data_directory.string() << '\n';
-            return true;
-        }
-
-        std::cerr << "assets: --loose-assets requested but assets/ or data/ not found\n";
-        return false;
-    }
-
-    if (store.open_pack()) {
+    // Portable installs: open assets.dat beside the exe before probing any loose/dev paths
+    // (AOA_RUNTIME_ROOT may point at a missing drive letter on other machines).
+    if (!prefer_loose_assets && store.open_pack()) {
         std::cout << "assets: using pack " << ASSET_PACK_FILENAME << '\n';
         return true;
     }
 
+    const std::filesystem::path assets_directory = default_assets_directory();
+    const std::filesystem::path data_directory = default_data_directory();
+
     if (store.open_loose_directories(assets_directory, data_directory)) {
-        std::cout << "assets: pack missing, falling back to loose directories\n  assets="
-                  << assets_directory.string() << "\n  data=" << data_directory.string() << '\n';
+        if (prefer_loose_assets) {
+            std::cout << "assets: using loose directories\n  assets=" << assets_directory.string()
+                      << "\n  data=" << data_directory.string() << '\n';
+        }
+        else {
+            std::cout << "assets: pack missing, falling back to loose directories\n  assets="
+                      << assets_directory.string() << "\n  data=" << data_directory.string()
+                      << '\n';
+        }
         return true;
     }
 
-    std::cerr << "assets: failed to open " << ASSET_PACK_FILENAME << " or loose assets/data\n";
+    if (prefer_loose_assets) {
+        std::cerr << "assets: --loose-assets requested but assets/ or data/ not found\n";
+    }
+    else {
+        std::cerr << "assets: failed to open " << ASSET_PACK_FILENAME << " or loose assets/data\n";
+    }
     return false;
 }
 

@@ -1,4 +1,5 @@
 #include "sim/systems/gameplay_systems.hpp"
+#include "sim/systems/match_outcome.hpp"
 
 #include "core/constants.hpp"
 #include "core/grid.hpp"
@@ -172,25 +173,24 @@ void assign_unit_path(
     const components::MapGrid& map,
     const core::GridPos goal,
     const entt::entity also_ignore,
-    const bool allow_knight_steps,
+    const bool /*allow_knight_steps*/,
     const bool has_goal_world,
     const math::Fixed goal_world_x,
     const math::Fixed goal_world_y,
-    const bool use_attack_pathfinding)
+    const bool /*use_attack_pathfinding*/)
 {
     detail::cancel_move_segment_for_repath(registry, entity);
     detail::sync_grid_from_world(registry, entity);
 
     const core::GridPos start = unit_movement_grid_cell(registry, entity);
     auto& path = registry.get_or_emplace<components::MovePath>(entity);
-    if (use_attack_pathfinding) {
-        path.cells = find_attack_path(map, start, goal, registry, entity, false, also_ignore);
-    }
-    else {
-        path.cells = find_path(map, start, goal, registry, entity, false, also_ignore, allow_knight_steps);
-    }
+    path.cells = find_path(map, start, goal, registry, entity, false, also_ignore);
     path.next_index = 0;
     path.has_goal_world = has_goal_world;
+    if (path.cells.empty() && start != goal) {
+        registry.get_or_emplace<components::MoveCooldown>(entity).ticks_remaining =
+            constants::MOVE_BLOCKED_REPATH_COOLDOWN_TICKS;
+    }
     if (has_goal_world) {
         const auto [clamped_x, clamped_y] = detail::clamp_world_goal_to_cell(goal_world_x, goal_world_y, goal);
         path.goal_world_x = clamped_x;
@@ -248,6 +248,47 @@ entt::entity find_town_center_for_player_slot(
     return under_construction;
 }
 
+entt::entity find_nearest_wood_drop_off(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const core::GridPos worker_pos)
+{
+    entt::entity best = entt::null;
+    int best_distance = std::numeric_limits<int>::max();
+    const auto dropoff_view = registry.view<
+        components::WoodDropOffTag,
+        components::PlayerOwnedTag,
+        components::GridPosition,
+        components::Health>();
+    for (const entt::entity candidate : dropoff_view) {
+        if (components::entity_player_slot(registry, candidate) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(candidate)) {
+            continue;
+        }
+
+        if (dropoff_view.get<components::Health>(candidate).current.raw() <= 0) {
+            continue;
+        }
+
+        const auto& anchor = dropoff_view.get<components::GridPosition>(candidate);
+        const components::BuildingFootprint footprint =
+            registry.any_of<components::BuildingFootprint>(candidate)
+            ? registry.get<components::BuildingFootprint>(candidate)
+            : components::BuildingFootprint{};
+        const int distance =
+            components::chebyshev_distance_to_footprint(worker_pos, anchor, footprint);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
 void deplete_forest_tile(components::MapGrid& map, const core::GridPos cell)
 {
     if (!core::is_inside_grid(cell, map.width, map.height)) {
@@ -256,6 +297,7 @@ void deplete_forest_tile(components::MapGrid& map, const core::GridPos cell)
 
     const int index = core::grid_index(cell, map.width);
     map.forest_wood[static_cast<std::size_t>(index)] = 0;
+    map.layer_hash_valid = false;
 }
 
 void deplete_bush_tile(components::MapGrid& map, const core::GridPos cell)
@@ -267,6 +309,7 @@ void deplete_bush_tile(components::MapGrid& map, const core::GridPos cell)
     const int index = core::grid_index(cell, map.width);
     map.bush_food[static_cast<std::size_t>(index)] = 0;
     map.tiles[static_cast<std::size_t>(index)] = components::TileType::Grass;
+    map.layer_hash_valid = false;
 }
 
 void deplete_gold_mine_tile(components::MapGrid& map, const core::GridPos cell)
@@ -280,6 +323,7 @@ void deplete_gold_mine_tile(components::MapGrid& map, const core::GridPos cell)
         map.mine_money[static_cast<std::size_t>(index)] = 0;
     }
     map.tiles[static_cast<std::size_t>(index)] = components::TileType::Grass;
+    map.layer_hash_valid = false;
 }
 
 bool is_occupied(entt::registry& registry, const core::GridPos cell, const entt::entity ignore)
@@ -372,43 +416,178 @@ bool resource_tile_has_remaining(const components::MapGrid& map, const core::Gri
     return false;
 }
 
+[[nodiscard]] int job_vision_range_for_entity(const entt::registry& registry, const entt::entity entity)
+{
+    if (registry.any_of<components::WorkerUnitTag>(entity)) {
+        return constants::DEFAULT_WORKER_VISION_RANGE;
+    }
+
+    if (registry.any_of<components::TownCenterTag>(entity)) {
+        return constants::DEFAULT_TOWN_CENTER_VISION_RANGE;
+    }
+
+    if (registry.any_of<components::UnitTag>(entity)) {
+        return constants::DEFAULT_UNIT_VISION_RANGE;
+    }
+
+    return constants::DEFAULT_STRUCTURE_VISION_RANGE;
+}
+
+[[nodiscard]] bool cell_in_job_retarget_range(
+    entt::registry& registry,
+    const entt::entity worker,
+    const core::GridPos cell)
+{
+    if (!registry.any_of<components::GridPosition>(worker)) {
+        return false;
+    }
+
+    const core::GridPos worker_pos = registry.get<components::GridPosition>(worker).cell;
+    const int worker_vision = job_vision_range_for_entity(registry, worker);
+    if (core::chebyshev_distance(worker_pos, cell) <= worker_vision) {
+        return true;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
+    entt::entity nearest_friendly = entt::null;
+    int nearest_distance = std::numeric_limits<int>::max();
+    const auto view = registry.view<components::PlayerOwnedTag, components::GridPosition, components::Health>();
+    for (const entt::entity friendly : view) {
+        if (friendly == worker) {
+            continue;
+        }
+
+        if (components::entity_player_slot(registry, friendly) != player_slot) {
+            continue;
+        }
+
+        if (view.get<components::Health>(friendly).current.raw() <= 0) {
+            continue;
+        }
+
+        const core::GridPos friendly_pos = view.get<components::GridPosition>(friendly).cell;
+        const int distance = core::chebyshev_distance(worker_pos, friendly_pos);
+        if (distance > worker_vision || distance >= nearest_distance) {
+            continue;
+        }
+
+        nearest_distance = distance;
+        nearest_friendly = friendly;
+    }
+
+    if (nearest_friendly == entt::null) {
+        return false;
+    }
+
+    const int friendly_vision = job_vision_range_for_entity(registry, nearest_friendly);
+    const int half_vision = std::max(1, friendly_vision / constants::JOB_RETARGET_VISION_HALF_DIVISOR);
+    const core::GridPos friendly_pos = registry.get<components::GridPosition>(nearest_friendly).cell;
+    return core::chebyshev_distance(cell, friendly_pos) <= half_vision;
+}
+
 core::GridPos find_nearest_resource_tile(
+    entt::registry& registry,
     const components::MapGrid& map,
     const core::GridPos from,
-    const components::TileType preferred_type = components::TileType::Grass)
+    const components::TileType preferred_type,
+    const entt::entity worker)
 {
     core::GridPos best{-1, -1};
     int best_distance = std::numeric_limits<int>::max();
     const bool filter_type = preferred_type != components::TileType::Grass;
 
-    for (int y = 0; y < map.height; ++y) {
-        for (int x = 0; x < map.width; ++x) {
-            const core::GridPos cell{x, y};
-            if (filter_type) {
-                if (!resource_tile_matches_type(map, cell, preferred_type)) {
-                    continue;
-                }
-            }
-            else if (!resource_tile_has_remaining(map, cell)) {
-                continue;
-            }
+    const auto consider = [&](const core::GridPos cell) {
+        if (!core::is_inside_grid(cell, map.width, map.height)) {
+            return;
+        }
 
-            const int distance = std::abs(from.x - x) + std::abs(from.y - y);
-            if (distance < best_distance) {
-                best_distance = distance;
-                best = cell;
+        if (filter_type) {
+            if (!resource_tile_matches_type(map, cell, preferred_type)) {
+                return;
             }
         }
+        else if (!resource_tile_has_remaining(map, cell)) {
+            return;
+        }
+
+        const int distance = std::abs(from.x - cell.x) + std::abs(from.y - cell.y);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = cell;
+        }
+    };
+
+    const auto consider_disk = [&](const core::GridPos origin, const int radius) {
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                if (std::max(std::abs(dx), std::abs(dy)) > radius) {
+                    continue;
+                }
+
+                consider({origin.x + dx, origin.y + dy});
+            }
+        }
+    };
+
+    if (worker == entt::null || !registry.any_of<components::GridPosition>(worker)) {
+        for (int y = 0; y < map.height; ++y) {
+            for (int x = 0; x < map.width; ++x) {
+                consider({x, y});
+            }
+        }
+        return best;
+    }
+
+    const core::GridPos worker_pos = registry.get<components::GridPosition>(worker).cell;
+    const int worker_vision = job_vision_range_for_entity(registry, worker);
+    consider_disk(worker_pos, worker_vision);
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
+    entt::entity nearest_friendly = entt::null;
+    int nearest_distance = std::numeric_limits<int>::max();
+    const auto friendly_view =
+        registry.view<components::PlayerOwnedTag, components::GridPosition, components::Health>();
+    for (const entt::entity friendly : friendly_view) {
+        if (friendly == worker) {
+            continue;
+        }
+
+        if (components::entity_player_slot(registry, friendly) != player_slot) {
+            continue;
+        }
+
+        if (friendly_view.get<components::Health>(friendly).current.raw() <= 0) {
+            continue;
+        }
+
+        const core::GridPos friendly_pos = friendly_view.get<components::GridPosition>(friendly).cell;
+        const int distance = core::chebyshev_distance(worker_pos, friendly_pos);
+        if (distance > worker_vision || distance >= nearest_distance) {
+            continue;
+        }
+
+        nearest_distance = distance;
+        nearest_friendly = friendly;
+    }
+
+    if (nearest_friendly != entt::null) {
+        const int friendly_vision = job_vision_range_for_entity(registry, nearest_friendly);
+        const int half_vision =
+            std::max(1, friendly_vision / constants::JOB_RETARGET_VISION_HALF_DIVISOR);
+        consider_disk(registry.get<components::GridPosition>(nearest_friendly).cell, half_vision);
     }
 
     return best;
 }
 
 core::GridPos find_nearest_forest_with_wood(
+    entt::registry& registry,
     const components::MapGrid& map,
-    const core::GridPos from)
+    const core::GridPos from,
+    const entt::entity worker)
 {
-    return find_nearest_resource_tile(map, from, components::TileType::Forest);
+    return find_nearest_resource_tile(
+        registry, map, from, components::TileType::Forest, worker);
 }
 
 core::GridPos find_adjacent_walkable(
@@ -417,29 +596,7 @@ core::GridPos find_adjacent_walkable(
     const core::GridPos target,
     const entt::entity ignore)
 {
-    const std::array<core::GridPos, 8> offsets = {
-        core::GridPos{0, -1},
-        core::GridPos{1, 0},
-        core::GridPos{0, 1},
-        core::GridPos{-1, 0},
-        core::GridPos{1, -1},
-        core::GridPos{1, 1},
-        core::GridPos{-1, 1},
-        core::GridPos{-1, -1},
-    };
-
-    for (const core::GridPos offset : offsets) {
-        const core::GridPos candidate{target.x + offset.x, target.y + offset.y};
-        if (!is_tile_walkable(map, candidate, false)) {
-            continue;
-        }
-
-        if (!is_occupied(registry, candidate, ignore)) {
-            return candidate;
-        }
-    }
-
-    return target;
+    return find_best_approach_stand_tile(map, registry, target, ignore);
 }
 
 void assign_path(
@@ -462,6 +619,54 @@ void assign_path(
         {},
         {},
         use_attack_pathfinding);
+}
+
+void assign_gather_stand_path(
+    entt::registry& registry,
+    const entt::entity worker,
+    const components::MapGrid& map,
+    const core::GridPos stand_tile,
+    const core::GridPos resource_cell)
+{
+    math::Fixed goal_x{};
+    math::Fixed goal_y{};
+    work_stand_world_goal_for_cell(stand_tile, resource_cell, goal_x, goal_y);
+    assign_unit_path(
+        registry,
+        worker,
+        map,
+        stand_tile,
+        entt::null,
+        true,
+        true,
+        goal_x,
+        goal_y,
+        false);
+}
+
+void assign_deposit_stand_path(
+    entt::registry& registry,
+    const entt::entity worker,
+    const components::MapGrid& map,
+    const core::GridPos stand_tile,
+    const components::GridPosition& depot_anchor,
+    const components::BuildingFootprint& depot_footprint)
+{
+    math::Fixed goal_x{};
+    math::Fixed goal_y{};
+    work_stand_world_goal_for_building(
+        stand_tile, depot_anchor, depot_footprint, goal_x, goal_y);
+    assign_unit_path(
+        registry,
+        worker,
+        map,
+        stand_tile,
+        entt::null,
+        true,
+        true,
+        goal_x,
+        goal_y,
+        false);
 }
 
 bool is_next_path_step_blocked(
@@ -519,7 +724,7 @@ bool reassign_worker_resource_target(
     const components::TileType preferred_type)
 {
     const core::GridPos next_resource =
-        find_nearest_resource_tile(map, worker_pos, preferred_type);
+        find_nearest_resource_tile(registry, map, worker_pos, preferred_type, worker);
     if (next_resource.x < 0) {
         registry.remove<components::GatherTarget>(worker);
         registry.get<components::WorkerBrain>(worker).state = components::WorkerState::Idle;
@@ -533,7 +738,7 @@ bool reassign_worker_resource_target(
         : map.tiles[static_cast<std::size_t>(core::grid_index(next_resource, map.width))];
     registry.get<components::WorkerBrain>(worker).state = components::WorkerState::MovingToResource;
     const core::GridPos stand_tile = find_adjacent_walkable(map, registry, next_resource, worker);
-    assign_path(registry, worker, map, stand_tile);
+    assign_gather_stand_path(registry, worker, map, stand_tile, next_resource);
     return true;
 }
 
@@ -618,7 +823,39 @@ bool try_begin_next_path_step(
     math::Fixed to_x = math::tile_center_coord(path_target.x);
     math::Fixed to_y = math::tile_center_coord(path_target.y);
     detail::path_step_destination(path, path_target, is_last_step, to_x, to_y);
-    if (is_unit_radius_blocked_at_world(registry, to_x, to_y, entity)) {
+    if (is_world_position_solid_blocked(
+            registry, map, components::WorldPosition{to_x, to_y}, entity, false)
+        || is_unit_radius_blocked_at_world(registry, to_x, to_y, entity)) {
+        return false;
+    }
+
+    math::Fixed from_x = to_x;
+    math::Fixed from_y = to_y;
+    if (registry.any_of<components::WorldPosition>(entity)) {
+        const auto& world = registry.get<components::WorldPosition>(entity);
+        from_x = world.x;
+        from_y = world.y;
+    }
+    if (is_world_segment_movement_blocked(
+            registry, map, from_x, from_y, to_x, to_y, entity, false)) {
+        const math::Fixed center_x = math::tile_center_coord(current.x);
+        const math::Fixed center_y = math::tile_center_coord(current.y);
+        const math::Fixed recenter_threshold = math::Fixed::from_float(
+            constants::MOVE_PATH_STEP_REACHED_TILE_DISTANCE);
+        const math::Fixed recenter_threshold_sq = recenter_threshold * recenter_threshold;
+        const math::Fixed delta_x = from_x - center_x;
+        const math::Fixed delta_y = from_y - center_y;
+        const bool off_center =
+            (delta_x * delta_x + delta_y * delta_y) > recenter_threshold_sq;
+        if (off_center
+            && !is_world_segment_movement_blocked(
+                registry, map, from_x, from_y, center_x, center_y, entity, false)
+            && !is_world_position_solid_blocked(
+                registry, map, components::WorldPosition{center_x, center_y}, entity, false)) {
+            begin_move_segment(registry, entity, center_x, center_y, move_ticks_per_tile);
+            return true;
+        }
+
         return false;
     }
 
@@ -738,14 +975,18 @@ bool try_divert_around_block(
             continue;
         }
 
-        std::vector<core::GridPos> divert_path{neighbor};
-        if (resume_goal.x >= 0) {
-            divert_path.push_back(resume_goal);
+        if (is_step_movement_blocked(registry, map, current, neighbor, entity, false)) {
+            continue;
         }
 
         registry.remove<components::MovePath>(entity);
         auto& path = registry.emplace<components::MovePath>(entity);
-        path.cells = std::move(divert_path);
+        path.cells = {neighbor};
+        if (resume_goal.x >= 0 && resume_goal != neighbor) {
+            std::vector<core::GridPos> rest =
+                find_path(map, neighbor, resume_goal, registry, entity, false, entt::null);
+            path.cells.insert(path.cells.end(), rest.begin(), rest.end());
+        }
         path.next_index = 0;
         path.has_goal_world = false;
         return true;
@@ -809,7 +1050,13 @@ void advance_move_segment(
     const math::Fixed proposed_y = math::fixed_lerp(segment.from_y, segment.to_y, progress);
 
     if (segment.ticks_elapsed < segment.ticks_total) {
-        if (radius_block_should_yield(registry, entity, proposed_x, proposed_y)) {
+        if (is_world_position_solid_blocked(
+                registry,
+                map,
+                components::WorldPosition{proposed_x, proposed_y},
+                entity,
+                false)
+            || radius_block_should_yield(registry, entity, proposed_x, proposed_y)) {
             pause_or_abort_radius_blocked_segment(registry, entity, segment, map);
             return;
         }
@@ -820,7 +1067,13 @@ void advance_move_segment(
         return;
     }
 
-    if (radius_block_should_yield(registry, entity, segment.to_x, segment.to_y)) {
+    if (is_world_position_solid_blocked(
+            registry,
+            map,
+            components::WorldPosition{segment.to_x, segment.to_y},
+            entity,
+            false)
+        || radius_block_should_yield(registry, entity, segment.to_x, segment.to_y)) {
         pause_or_abort_radius_blocked_segment(registry, entity, segment, map);
         return;
     }
@@ -878,31 +1131,42 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
 
         const auto& worker_pos = registry.get<components::GridPosition>(worker).cell;
         const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
-        const entt::entity town_center = find_town_center_for_player_slot(registry, player_slot);
-
-        if (town_center == entt::null) {
-            continue;
-        }
-
-        const auto& depot_anchor = registry.get<components::GridPosition>(town_center);
-        const components::BuildingFootprint depot_footprint =
-            registry.any_of<components::BuildingFootprint>(town_center)
-            ? registry.get<components::BuildingFootprint>(town_center)
-            : components::BuildingFootprint{};
-        const core::GridPos depot_pos = depot_anchor.cell;
         const bool should_auto_deposit = !manual || has_gather_target;
         const int carried_total =
             carried_wood.amount + carried_food.amount + carried_money.amount;
 
         if (carried_total >= definition->carry_capacity && should_auto_deposit) {
+            const entt::entity depot = (carried_food.amount > 0 || carried_money.amount > 0)
+                ? find_town_center_for_player_slot(registry, player_slot)
+                : find_nearest_wood_drop_off(registry, player_slot, worker_pos);
+            if (depot == entt::null) {
+                continue;
+            }
+
+            const auto& depot_anchor = registry.get<components::GridPosition>(depot);
+            const components::BuildingFootprint depot_footprint =
+                registry.any_of<components::BuildingFootprint>(depot)
+                ? registry.get<components::BuildingFootprint>(depot)
+                : components::BuildingFootprint{};
             brain.state = components::WorkerState::MovingToDeposit;
-            const core::GridPos stand_tile =
-                find_adjacent_walkable(map, registry, depot_pos, worker);
-            if (components::chebyshev_distance_to_footprint(worker_pos, depot_anchor, depot_footprint) <= 1) {
+            if (unit_can_work_building(
+                    registry, worker, depot_anchor, depot_footprint)) {
                 brain.state = components::WorkerState::Depositing;
             }
-            else if (!registry.any_of<components::MovePath>(worker)) {
-                assign_path(registry, worker, map, stand_tile);
+            else {
+                const core::GridPos stand_tile =
+                    find_best_deposit_stand_tile(map, registry, depot, worker);
+                bool needs_path = !registry.any_of<components::MovePath>(worker);
+                if (!needs_path) {
+                    const auto& path = registry.get<components::MovePath>(worker);
+                    needs_path = path.cells.empty() || path.cells.back() != stand_tile;
+                }
+                if (needs_path
+                    && (!registry.any_of<components::MoveCooldown>(worker)
+                        || registry.get<components::MoveCooldown>(worker).ticks_remaining <= 0)) {
+                    assign_deposit_stand_path(
+                        registry, worker, map, stand_tile, depot_anchor, depot_footprint);
+                }
             }
         }
         else if (manual && !has_gather_target) {
@@ -933,21 +1197,30 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
                 }
             }
             else {
-                resource = find_nearest_resource_tile(map, worker_pos);
+                resource = find_nearest_resource_tile(
+                    registry, map, worker_pos, components::TileType::Grass, worker);
             }
 
             if (resource.x < 0) {
                 continue;
             }
 
-            if (worker_pos == resource || core::chebyshev_distance(worker_pos, resource) == 1) {
+            if (unit_can_work_cell(registry, worker, resource)) {
                 brain.state = components::WorkerState::Gathering;
             }
             else {
                 brain.state = components::WorkerState::MovingToResource;
-                if (!registry.any_of<components::MovePath>(worker)) {
-                    const core::GridPos stand_tile = find_adjacent_walkable(map, registry, resource, worker);
-                    assign_path(registry, worker, map, stand_tile);
+                const core::GridPos stand_tile =
+                    find_adjacent_walkable(map, registry, resource, worker);
+                bool needs_path = !registry.any_of<components::MovePath>(worker);
+                if (!needs_path) {
+                    const auto& path = registry.get<components::MovePath>(worker);
+                    needs_path = path.cells.empty() || path.cells.back() != stand_tile;
+                }
+                if (needs_path
+                    && (!registry.any_of<components::MoveCooldown>(worker)
+                        || registry.get<components::MoveCooldown>(worker).ticks_remaining <= 0)) {
+                    assign_gather_stand_path(registry, worker, map, stand_tile, resource);
                 }
             }
         }
@@ -965,7 +1238,7 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
 
                 bool gathered = false;
                 auto try_gather_cell = [&](const core::GridPos cell) {
-                    if (gathered || core::chebyshev_distance(worker_pos, cell) != 1) {
+                    if (gathered || !unit_can_work_cell(registry, worker, cell)) {
                         return;
                     }
                     if (!resource_tile_has_remaining(map, cell)) {
@@ -993,6 +1266,7 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
                     }
 
                     const components::TileType gathered_type = tile;
+                    map.layer_hash_valid = false;
                     if (gather_wood) {
                         carried_food.amount = 0;
                         carried_money.amount = 0;
@@ -1057,7 +1331,24 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
         }
 
         if (brain.state == components::WorkerState::Depositing) {
-            if (components::chebyshev_distance_to_footprint(worker_pos, depot_anchor, depot_footprint) > 1) {
+            const entt::entity depot = (carried_food.amount > 0 || carried_money.amount > 0)
+                ? find_town_center_for_player_slot(registry, player_slot)
+                : find_nearest_wood_drop_off(registry, player_slot, worker_pos);
+            if (depot == entt::null) {
+                brain.state = components::WorkerState::Idle;
+                continue;
+            }
+
+            const auto& depositing_depot_anchor = registry.get<components::GridPosition>(depot);
+            const components::BuildingFootprint depositing_depot_footprint =
+                registry.any_of<components::BuildingFootprint>(depot)
+                ? registry.get<components::BuildingFootprint>(depot)
+                : components::BuildingFootprint{};
+            if (!unit_can_work_building(
+                    registry,
+                    worker,
+                    depositing_depot_anchor,
+                    depositing_depot_footprint)) {
                 brain.state = components::WorkerState::MovingToDeposit;
                 continue;
             }
@@ -1066,6 +1357,26 @@ void run_worker_system(entt::registry& registry, components::MapGrid& map, const
             brain.state = components::WorkerState::Idle;
         }
     }
+}
+
+[[nodiscard]] bool is_attack_strike_locked(const entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.any_of<components::AttackCooldown>(entity)) {
+        return false;
+    }
+
+    return registry.get<components::AttackCooldown>(entity).ticks_remaining > 0;
+}
+
+void clear_unit_movement(entt::registry& registry, const entt::entity entity)
+{
+    if (registry.any_of<components::MoveSegment>(entity)) {
+        registry.remove<components::MoveSegment>(entity);
+    }
+    if (registry.any_of<components::MovePath>(entity)) {
+        registry.remove<components::MovePath>(entity);
+    }
+    detail::sync_grid_from_world(registry, entity);
 }
 
 void run_attack_chase_system(entt::registry& registry, const components::MapGrid& map)
@@ -1090,6 +1401,11 @@ void run_attack_chase_system(entt::registry& registry, const components::MapGrid
     for (const entt::entity attacker : attackers) {
         const auto& attacker_health = registry.get<components::Health>(attacker);
         if (attacker_health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (is_attack_strike_locked(registry, attacker)) {
+            clear_unit_movement(registry, attacker);
             continue;
         }
 
@@ -1142,29 +1458,21 @@ void run_attack_chase_system(entt::registry& registry, const components::MapGrid
             continue;
         }
 
-        if (registry.any_of<components::MoveSegment>(attacker)) {
-            continue;
-        }
-
-        if (registry.any_of<components::MovePath>(attacker)) {
+        bool needs_repath = !registry.any_of<components::MovePath>(attacker);
+        if (!needs_repath) {
             const auto& path = registry.get<components::MovePath>(attacker);
-            if (!path.cells.empty()) {
-                const core::GridPos path_goal = path.cells.back();
-                if (path_goal == stand_tile) {
-                    const core::GridPos current = unit_movement_grid_cell(registry, attacker);
-                    const bool path_is_direct = attack_path_follows_direct_line(
-                        current,
-                        stand_tile,
-                        path.cells,
-                        path.next_index);
-                    if (path_is_direct && !is_next_path_step_blocked(registry, map, attacker)) {
-                        continue;
-                    }
-                }
+            needs_repath = path.cells.empty() || path.cells.back() != stand_tile;
+            if (!needs_repath && is_next_path_step_blocked(registry, map, attacker)) {
+                needs_repath = true;
             }
         }
 
-        assign_path(registry, attacker, map, stand_tile, entt::null, true, true);
+        if (!needs_repath) {
+            continue;
+        }
+
+        // Repath cancels any in-flight MoveSegment so a re-spotted target is chased immediately.
+        assign_path(registry, attacker, map, stand_tile);
     }
 }
 
@@ -1232,6 +1540,11 @@ void run_movement_system(
             continue;
         }
 
+        if (is_attack_strike_locked(registry, entity)) {
+            clear_unit_movement(registry, entity);
+            continue;
+        }
+
         if (registry.any_of<components::MoveSegment>(entity)) {
             advance_move_segment(registry, entity, map, definition->move_ticks_per_tile);
             continue;
@@ -1252,12 +1565,6 @@ void run_movement_system(
 
 void run_worker_deposit_system(entt::registry& registry)
 {
-    const auto town_center_view =
-        registry.view<components::TownCenterTag, components::PlayerOwnedTag, components::GridPosition, components::Stockpile>();
-    if (town_center_view.begin() == town_center_view.end()) {
-        return;
-    }
-
     const auto worker_view = registry.view<
         components::WorkerUnitTag,
         components::PlayerOwnedTag,
@@ -1285,8 +1592,57 @@ void run_worker_deposit_system(entt::registry& registry)
         }
 
         const std::uint8_t player_slot = components::entity_player_slot(registry, worker);
+        const core::GridPos worker_pos = registry.get<components::GridPosition>(worker).cell;
+
+        // Prefer a completed wood drop-off in range for wood-only loads.
+        entt::entity wood_depot = entt::null;
+        if (carried_wood.amount > 0) {
+            const auto dropoff_view = registry.view<
+                components::WoodDropOffTag,
+                components::PlayerOwnedTag,
+                components::GridPosition,
+                components::Health>();
+            for (const entt::entity candidate : dropoff_view) {
+                if (components::entity_player_slot(registry, candidate) != player_slot) {
+                    continue;
+                }
+
+                if (registry.any_of<components::UnderConstructionTag>(candidate)) {
+                    continue;
+                }
+
+                if (dropoff_view.get<components::Health>(candidate).current.raw() <= 0) {
+                    continue;
+                }
+
+                const auto& depot_anchor = dropoff_view.get<components::GridPosition>(candidate);
+                const components::BuildingFootprint depot_footprint =
+                    registry.any_of<components::BuildingFootprint>(candidate)
+                    ? registry.get<components::BuildingFootprint>(candidate)
+                    : components::BuildingFootprint{};
+                if (unit_can_work_building(
+                        registry, worker, depot_anchor, depot_footprint)) {
+                    wood_depot = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (wood_depot != entt::null && registry.any_of<components::LumberjackTag>(wood_depot)
+            && carried_food.amount <= 0 && carried_money.amount <= 0) {
+            player::add_player_wood(registry, player_slot, carried_wood.amount);
+            carried_wood.amount = 0;
+            registry.remove<components::MovePath>(worker);
+            registry.remove<components::MoveSegment>(worker);
+            if (registry.any_of<components::WorkerBrain>(worker)) {
+                registry.get<components::WorkerBrain>(worker).state = components::WorkerState::Idle;
+            }
+            continue;
+        }
+
         const entt::entity town_center = find_town_center_for_player_slot(registry, player_slot);
-        if (town_center == entt::null) {
+        if (town_center == entt::null
+            || !registry.any_of<components::Stockpile>(town_center)) {
             continue;
         }
 
@@ -1295,12 +1651,18 @@ void run_worker_deposit_system(entt::registry& registry)
             registry.any_of<components::BuildingFootprint>(town_center)
             ? registry.get<components::BuildingFootprint>(town_center)
             : components::BuildingFootprint{};
-        const core::GridPos worker_pos = registry.get<components::GridPosition>(worker).cell;
-        if (components::chebyshev_distance_to_footprint(worker_pos, depot_anchor, depot_footprint) > 1) {
+        if (!unit_can_work_building(
+                registry, worker, depot_anchor, depot_footprint)) {
             continue;
         }
 
         auto& stockpile = registry.get<components::Stockpile>(town_center);
+        note_resources_collected(
+            registry,
+            player_slot,
+            carried_wood.amount,
+            carried_food.amount,
+            carried_money.amount);
         stockpile.wood += carried_wood.amount;
         stockpile.food += carried_food.amount;
         stockpile.money += carried_money.amount;
@@ -1334,6 +1696,10 @@ void run_melee_contact_system(entt::registry& registry)
 
     for (const entt::entity unit : units) {
         if (view.get<components::Health>(unit).current.raw() <= 0) {
+            continue;
+        }
+
+        if (is_attack_strike_locked(registry, unit)) {
             continue;
         }
 
@@ -1442,12 +1808,23 @@ void run_combat_system(entt::registry& registry, const components::ContentPack& 
 
         target_health.current = target_health.current - math::Fixed::from_int(definition->melee_attack);
         cooldown.ticks_remaining = definition->attack_cooldown_ticks;
+        clear_unit_movement(registry, attacker);
+        if (target_health.current.raw() <= 0) {
+            note_entity_killed(registry, target, attacker);
+        }
 
+        const core::GridPos impact_cell = entity_visibility_cell(registry, target);
         if (registry.any_of<components::MilitiaUnitTag>(attacker)) {
-            components::push_sfx_event(registry, components::SfxEventKind::MilitiaMeleeHit);
+            components::push_sfx_event(
+                registry,
+                components::SfxEventKind::MilitiaMeleeHit,
+                impact_cell);
         }
         else if (registry.any_of<components::WorkerUnitTag>(attacker)) {
-            components::push_sfx_event(registry, components::SfxEventKind::WorkerMeleeHit);
+            components::push_sfx_event(
+                registry,
+                components::SfxEventKind::WorkerMeleeHit,
+                impact_cell);
         }
     }
 }
@@ -1459,36 +1836,49 @@ void run_death_cleanup(entt::registry& registry)
     const auto unit_view = registry.view<components::UnitTag, components::Health>();
     for (const entt::entity entity : unit_view) {
         if (unit_view.get<components::Health>(entity).current.raw() <= 0) {
-            components::push_sfx_event(registry, components::SfxEventKind::UnitDeath);
+            components::push_sfx_event(
+                registry,
+                components::SfxEventKind::UnitDeath,
+                entity_visibility_cell(registry, entity));
             to_destroy.push_back(entity);
         }
     }
 
+    std::vector<std::uint8_t> mana_cap_slots{};
     const auto building_view = registry.view<components::BuildingTag, components::Health>();
     for (const entt::entity entity : building_view) {
-        if (building_view.get<components::Health>(entity).current.raw() <= 0) {
-            to_destroy.push_back(entity);
+        if (building_view.get<components::Health>(entity).current.raw() > 0) {
+            continue;
         }
+
+        if (registry.any_of<components::ExtractorTag>(entity)) {
+            mana_cap_slots.push_back(components::entity_player_slot(registry, entity));
+        }
+
+        to_destroy.push_back(entity);
     }
 
     for (const entt::entity entity : to_destroy) {
         registry.destroy(entity);
     }
+
+    for (const std::uint8_t player_slot : mana_cap_slots) {
+        player::clamp_player_mana_to_cap(registry, player_slot);
+    }
 }
 
-void run_town_center_mana_generation(entt::registry& registry)
+void run_extractor_mana_generation(entt::registry& registry)
 {
     const auto view = registry.view<
-        components::TownCenterTag,
+        components::ExtractorTag,
         components::PlayerOwnedTag,
-        components::Stockpile,
         components::ManaGenerationCooldown,
         components::Health>();
 
-    std::vector<entt::entity> town_centers(view.begin(), view.end());
-    town_centers = snapshot::sort_entities_by_snapshot_key(registry, std::move(town_centers));
+    std::vector<entt::entity> extractors(view.begin(), view.end());
+    extractors = snapshot::sort_entities_by_snapshot_key(registry, std::move(extractors));
 
-    for (const entt::entity entity : town_centers) {
+    for (const entt::entity entity : extractors) {
         if (view.get<components::Health>(entity).current.raw() <= 0) {
             continue;
         }
@@ -1507,9 +1897,23 @@ void run_town_center_mana_generation(entt::registry& registry)
         }
 
         const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
-        player::add_player_mana(registry, player_slot, constants::TOWN_CENTER_MANA_GEN_AMOUNT);
-        cooldown.ticks_remaining = constants::TOWN_CENTER_MANA_GEN_INTERVAL_TICKS;
+        player::add_player_mana(registry, player_slot, constants::EXTRACTOR_MANA_GEN_AMOUNT);
+        cooldown.ticks_remaining = constants::EXTRACTOR_MANA_GEN_INTERVAL_TICKS;
     }
+}
+
+[[nodiscard]] bool unit_has_active_move(const entt::registry& registry, const entt::entity entity)
+{
+    if (registry.any_of<components::MoveSegment>(entity)) {
+        return true;
+    }
+
+    if (!registry.any_of<components::MovePath>(entity)) {
+        return false;
+    }
+
+    const auto& path = registry.get<components::MovePath>(entity);
+    return path.next_index < static_cast<int>(path.cells.size());
 }
 
 void run_builder_system(entt::registry& registry, const components::MapGrid& map)
@@ -1549,14 +1953,18 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
         }
 
         if (!unit_grid_adjacent(registry, worker, building)) {
-            if (!registry.any_of<components::MovePath>(worker)
-                && !registry.any_of<components::MoveSegment>(worker)) {
+            if (!unit_has_active_move(registry, worker)) {
                 const core::GridPos stand_tile = find_best_melee_stand_tile(
                     map,
                     registry,
                     registry.get<components::GridPosition>(building).cell,
                     worker,
                     building);
+                if (stand_tile.x < 0) {
+                    registry.remove<components::BuildOrder>(worker);
+                    continue;
+                }
+
                 assign_path(registry, worker, map, stand_tile, building, true);
             }
             continue;
@@ -1580,10 +1988,10 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
 
         registry.remove<components::UnderConstructionTag>(building);
         if (!registry.any_of<components::ManaGenerationCooldown>(building)
-            && registry.any_of<components::TownCenterTag>(building)) {
+            && registry.any_of<components::ExtractorTag>(building)) {
             registry.emplace<components::ManaGenerationCooldown>(
                 building,
-                components::ManaGenerationCooldown{constants::TOWN_CENTER_MANA_GEN_INTERVAL_TICKS});
+                components::ManaGenerationCooldown{constants::EXTRACTOR_MANA_GEN_INTERVAL_TICKS});
         }
 
         const auto builders_on_site = registry.view<components::BuildOrder>();
@@ -1598,6 +2006,62 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
             if (registry.any_of<components::BuildOrder>(other)) {
                 registry.remove<components::BuildOrder>(other);
             }
+
+            entt::entity next_building = entt::null;
+            int best_distance = std::numeric_limits<int>::max();
+            if (!registry.any_of<components::GridPosition>(other)) {
+                continue;
+            }
+
+            const core::GridPos worker_pos = registry.get<components::GridPosition>(other).cell;
+            const std::uint8_t player_slot = components::entity_player_slot(registry, other);
+            const auto construction_view = registry.view<
+                components::BuildingTag,
+                components::UnderConstructionTag,
+                components::GridPosition,
+                components::Health,
+                components::PlayerOwnedTag>();
+            for (const entt::entity candidate : construction_view) {
+                if (candidate == building) {
+                    continue;
+                }
+
+                if (components::entity_player_slot(registry, candidate) != player_slot) {
+                    continue;
+                }
+
+                if (construction_view.get<components::Health>(candidate).current.raw() <= 0) {
+                    continue;
+                }
+
+                const core::GridPos site = construction_view.get<components::GridPosition>(candidate).cell;
+                if (!cell_in_job_retarget_range(registry, other, site)) {
+                    continue;
+                }
+
+                const int distance = core::chebyshev_distance(worker_pos, site);
+                if (distance < best_distance) {
+                    best_distance = distance;
+                    next_building = candidate;
+                }
+            }
+
+            if (next_building == entt::null) {
+                continue;
+            }
+
+            const core::GridPos stand_tile = find_best_melee_stand_tile(
+                map,
+                registry,
+                registry.get<components::GridPosition>(next_building).cell,
+                other,
+                next_building);
+            if (stand_tile.x < 0) {
+                continue;
+            }
+
+            registry.emplace<components::BuildOrder>(other, components::BuildOrder{next_building, 0});
+            assign_path(registry, other, map, stand_tile, next_building, true);
         }
     }
 }
@@ -1614,17 +2078,19 @@ void run_gameplay_systems(entt::registry& registry)
     auto& map = registry.get<components::MapGrid>(world);
     const auto& content = registry.get<components::ContentPack>(world);
 
+    begin_movement_query_cache(registry, map);
     run_visibility_system(registry);
     run_worker_system(registry, map, content);
     run_worker_deposit_system(registry);
     run_builder_system(registry, map);
-    run_town_center_mana_generation(registry);
+    run_extractor_mana_generation(registry);
     run_enemy_militia_ai(registry);
     run_attack_chase_system(registry, map);
     run_movement_system(registry, map, content);
     run_melee_contact_system(registry);
     run_combat_system(registry, content);
     run_death_cleanup(registry);
+    end_movement_query_cache();
 }
 
 void snapshot_world_positions_for_render(entt::registry& registry)
@@ -1645,83 +2111,94 @@ void compute_state_hash(entt::registry& registry)
         hash *= 1099511628211ULL;
     };
 
-    const auto& map = registry.get<components::MapGrid>(world);
-    mix(static_cast<std::uint64_t>(map.width));
-    mix(static_cast<std::uint64_t>(map.height));
-    for (const components::TileType tile : map.tiles) {
-        mix(static_cast<std::uint64_t>(tile));
+    auto& map = registry.get<components::MapGrid>(world);
+    if (!map.layer_hash_valid) {
+        mix(static_cast<std::uint64_t>(map.width));
+        mix(static_cast<std::uint64_t>(map.height));
+        for (const components::TileType tile : map.tiles) {
+            mix(static_cast<std::uint64_t>(tile));
+        }
+        for (const components::GroundType ground : map.ground) {
+            mix(static_cast<std::uint64_t>(ground));
+        }
+        for (const int wood : map.forest_wood) {
+            mix(static_cast<std::uint64_t>(wood));
+        }
+        for (const int food : map.bush_food) {
+            mix(static_cast<std::uint64_t>(food));
+        }
+        for (const int money : map.mine_money) {
+            mix(static_cast<std::uint64_t>(money));
+        }
+        map.cached_layer_hash = hash;
+        map.layer_hash_valid = true;
+        if (registry.any_of<components::FogOfWarState>(world)) {
+            registry.get<components::FogOfWarState>(world).hash_valid = false;
+        }
     }
-    for (const int wood : map.forest_wood) {
-        mix(static_cast<std::uint64_t>(wood));
-    }
-    for (const int food : map.bush_food) {
-        mix(static_cast<std::uint64_t>(food));
-    }
-    for (const int money : map.mine_money) {
-        mix(static_cast<std::uint64_t>(money));
+    else {
+        hash = map.cached_layer_hash;
     }
 
     if (registry.any_of<components::FogOfWarState>(world)) {
-        const auto& fog = registry.get<components::FogOfWarState>(world);
-        mix(static_cast<std::uint64_t>(fog.width));
-        mix(static_cast<std::uint64_t>(fog.height));
-        for (std::size_t index = 0U; index < fog.explored.size(); ++index) {
-            mix(static_cast<std::uint64_t>(fog.explored[index]));
-            if (fog.explored[index] != 0U && index < fog.memory_tiles.size()) {
-                mix(static_cast<std::uint64_t>(fog.memory_tiles[index]));
+        auto& fog = registry.get<components::FogOfWarState>(world);
+        if (!fog.hash_valid) {
+            mix(static_cast<std::uint64_t>(fog.width));
+            mix(static_cast<std::uint64_t>(fog.height));
+            for (std::size_t index = 0U; index < fog.explored.size(); ++index) {
+                mix(static_cast<std::uint64_t>(fog.explored[index]));
+                if (fog.explored[index] != 0U && index < fog.memory_tiles.size()) {
+                    mix(static_cast<std::uint64_t>(fog.memory_tiles[index]));
+                }
+                if (fog.explored[index] != 0U && index < fog.memory_forest_wood.size()) {
+                    mix(static_cast<std::uint64_t>(fog.memory_forest_wood[index]));
+                }
+                if (fog.explored[index] != 0U && index < fog.memory_bush_food.size()) {
+                    mix(static_cast<std::uint64_t>(fog.memory_bush_food[index]));
+                }
+                if (fog.explored[index] != 0U && index < fog.memory_mine_money.size()) {
+                    mix(static_cast<std::uint64_t>(fog.memory_mine_money[index]));
+                }
             }
-            if (fog.explored[index] != 0U && index < fog.memory_forest_wood.size()) {
-                mix(static_cast<std::uint64_t>(fog.memory_forest_wood[index]));
-            }
-            if (fog.explored[index] != 0U && index < fog.memory_bush_food.size()) {
-                mix(static_cast<std::uint64_t>(fog.memory_bush_food[index]));
-            }
-            if (fog.explored[index] != 0U && index < fog.memory_mine_money.size()) {
-                mix(static_cast<std::uint64_t>(fog.memory_mine_money[index]));
-            }
+            fog.cached_hash = hash;
+            fog.hash_valid = true;
+        }
+        else {
+            hash = fog.cached_hash;
         }
     }
 
-    std::vector<entt::entity> entities{};
+    struct HashableEntity {
+        entt::entity entity{entt::null};
+        snapshot::EntitySnapshotKey key{};
+    };
+
+    thread_local std::vector<HashableEntity> entities;
+    entities.clear();
     for (const entt::entity entity : registry.view<components::GridPosition>()) {
         if (registry.all_of<components::WorldTag>(entity)) {
             continue;
         }
 
-        entities.push_back(entity);
-    }
-
-    std::sort(entities.begin(), entities.end(), [&registry](const entt::entity left, const entt::entity right) {
-        const std::optional<snapshot::EntitySnapshotKey> left_key =
-            snapshot::compute_entity_snapshot_key(registry, left);
-        const std::optional<snapshot::EntitySnapshotKey> right_key =
-            snapshot::compute_entity_snapshot_key(registry, right);
-
-        if (left_key.has_value() && right_key.has_value()) {
-            return snapshot::compare_entity_snapshot_keys(*left_key, *right_key);
-        }
-
-        if (left_key.has_value() != right_key.has_value()) {
-            return left_key.has_value();
-        }
-
-        const core::GridPos left_cell = registry.get<components::GridPosition>(left).cell;
-        const core::GridPos right_cell = registry.get<components::GridPosition>(right).cell;
-        if (left_cell.x != right_cell.x) {
-            return left_cell.x < right_cell.x;
-        }
-
-        return left_cell.y < right_cell.y;
-    });
-
-    for (const entt::entity entity : entities) {
         const std::optional<snapshot::EntitySnapshotKey> entity_key =
             snapshot::compute_entity_snapshot_key(registry, entity);
         if (!entity_key.has_value()) {
             continue;
         }
 
-        snapshot::mix_entity_snapshot_key(hash, *entity_key);
+        entities.push_back(HashableEntity{entity, *entity_key});
+    }
+
+    std::sort(
+        entities.begin(),
+        entities.end(),
+        [](const HashableEntity& left, const HashableEntity& right) {
+            return snapshot::compare_entity_snapshot_keys(left.key, right.key);
+        });
+
+    for (const HashableEntity& item : entities) {
+        const entt::entity entity = item.entity;
+        snapshot::mix_entity_snapshot_key(hash, item.key);
 
         if (registry.any_of<components::GridPosition>(entity)) {
             const auto& pos = registry.get<components::GridPosition>(entity).cell;

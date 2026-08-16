@@ -5,8 +5,10 @@
 #include <SFML/System/Vector2.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -16,7 +18,13 @@ enum class GameMenuScreen : std::uint8_t {
     Closed = 0,
     Main,
     SettingsGame,
+    SettingsVideo,
     SettingsAudio,
+    Save,
+    Load,
+    ConfirmOverwrite,
+    ConfirmLoad,
+    ErrorMissingSave,
 };
 
 enum class GameMenuAction : std::uint8_t {
@@ -30,11 +38,22 @@ enum class GameMenuAction : std::uint8_t {
     ExitGame,
     SettingsBack,
     SettingsTabGame,
+    SettingsTabVideo,
     SettingsTabAudio,
     ToggleFullscreen,
+    ToggleMouseCapture,
+    ToggleVsync,
+    CycleFps,
     BeginDragMaster,
     BeginDragMusic,
     BeginDragSfx,
+    BeginDragScrollSpeed,
+    SaveLoadConfirm,
+    SaveLoadBack,
+    SaveLoadFocusFilename,
+    DialogYes,
+    DialogCancel,
+    DialogOk,
 };
 
 enum class GameMenuSlider : std::uint8_t {
@@ -42,6 +61,7 @@ enum class GameMenuSlider : std::uint8_t {
     Master,
     Music,
     Sfx,
+    ScrollSpeed,
 };
 
 struct GameMenuRect {
@@ -68,24 +88,58 @@ struct GameMenuState {
     float master_volume{constants::AUDIO_MASTER_VOLUME};
     float music_volume{constants::AUDIO_MUSIC_VOLUME};
     float sfx_volume{constants::AUDIO_SFX_VOLUME};
+    float scroll_speed{constants::CAMERA_SCROLL_SPEED_DEFAULT};
     GameMenuSlider dragging_slider{GameMenuSlider::None};
     bool fullscreen{false};
+    bool mouse_capture{constants::RENDER_MOUSE_CAPTURE_DEFAULT};
+    bool vsync{constants::RENDER_VERTICAL_SYNC};
+    int fps_limit{constants::TARGET_DISPLAY_FPS};
+    bool multiplayer{false};
+    std::string filename_draft{};
+    bool filename_focused{false};
+    std::vector<std::string> save_entries{};
+    int selected_save_index{-1};
+    int save_list_scroll{0};
+    GameMenuScreen dialog_return_screen{GameMenuScreen::Main};
 
     [[nodiscard]] bool is_open() const
     {
         return screen != GameMenuScreen::Closed;
     }
 
+    [[nodiscard]] bool is_save_load_screen() const
+    {
+        return screen == GameMenuScreen::Save || screen == GameMenuScreen::Load;
+    }
+
+    [[nodiscard]] bool is_dialog_screen() const
+    {
+        return screen == GameMenuScreen::ConfirmOverwrite
+            || screen == GameMenuScreen::ConfirmLoad
+            || screen == GameMenuScreen::ErrorMissingSave;
+    }
+
+    [[nodiscard]] bool is_settings_screen() const
+    {
+        return screen == GameMenuScreen::SettingsGame
+            || screen == GameMenuScreen::SettingsVideo
+            || screen == GameMenuScreen::SettingsAudio;
+    }
+
     void open_main()
     {
         screen = GameMenuScreen::Main;
         dragging_slider = GameMenuSlider::None;
+        filename_focused = false;
     }
 
     void close()
     {
         screen = GameMenuScreen::Closed;
         dragging_slider = GameMenuSlider::None;
+        filename_focused = false;
+        selected_save_index = -1;
+        save_list_scroll = 0;
     }
 
     void toggle()
@@ -141,8 +195,65 @@ struct GameMenuState {
     };
 }
 
+[[nodiscard]] inline GameMenuRect save_load_panel_rect(const sf::Vector2u window_size)
+{
+    const float width =
+        static_cast<float>(window_size.x) * constants::HUD_SAVE_LOAD_WIDTH_FRACTION;
+    const float height =
+        static_cast<float>(window_size.y) * constants::HUD_SAVE_LOAD_HEIGHT_FRACTION;
+    return GameMenuRect{
+        (static_cast<float>(window_size.x) - width) * 0.5F,
+        (static_cast<float>(window_size.y) - height) * 0.5F,
+        width,
+        height,
+    };
+}
+
+[[nodiscard]] inline GameMenuRect confirm_panel_rect(const sf::Vector2u window_size)
+{
+    const float width =
+        static_cast<float>(window_size.x) * constants::HUD_SAVE_CONFIRM_WIDTH_FRACTION;
+    const float height =
+        static_cast<float>(window_size.y) * constants::HUD_SAVE_CONFIRM_HEIGHT_FRACTION;
+    return GameMenuRect{
+        (static_cast<float>(window_size.x) - width) * 0.5F,
+        (static_cast<float>(window_size.y) - height) * 0.5F,
+        width,
+        height,
+    };
+}
+
+[[nodiscard]] inline GameMenuRect save_load_filename_rect(const sf::Vector2u window_size)
+{
+    const GameMenuRect panel = save_load_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    return GameMenuRect{
+        panel.x + padding,
+        panel.y + padding,
+        panel.width - padding * 2.0F,
+        constants::HUD_SAVE_LOAD_INPUT_HEIGHT_PX,
+    };
+}
+
+[[nodiscard]] inline GameMenuRect save_load_list_rect(const sf::Vector2u window_size)
+{
+    const GameMenuRect panel = save_load_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
+    const float top = panel.y + padding + constants::HUD_SAVE_LOAD_INPUT_HEIGHT_PX + gap;
+    const float bottom = panel.y + panel.height - padding
+        - constants::HUD_SAVE_LOAD_ACTION_HEIGHT_PX - gap;
+    return GameMenuRect{
+        panel.x + padding,
+        top,
+        panel.width - padding * 2.0F,
+        std::max(0.0F, bottom - top),
+    };
+}
+
 [[nodiscard]] inline std::vector<GameMenuButton> build_main_menu_buttons(
-    const sf::Vector2u window_size)
+    const sf::Vector2u window_size,
+    const bool load_disabled = false)
 {
     const GameMenuRect panel = game_menu_panel_rect(window_size);
     const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
@@ -160,8 +271,8 @@ struct GameMenuState {
     };
     const Entry entries[] = {
         {GameMenuAction::Resume, "Resume", false},
-        {GameMenuAction::Save, "Save", true},
-        {GameMenuAction::Load, "Load", true},
+        {GameMenuAction::Save, "Save", false},
+        {GameMenuAction::Load, "Load", load_disabled},
         {GameMenuAction::OpenSettings, "Settings", false},
         {GameMenuAction::ExitToMainMenu, "Exit to Main Menu", false},
         {GameMenuAction::ExitGame, "Exit the Game", false},
@@ -185,51 +296,124 @@ struct GameMenuState {
     return buttons;
 }
 
-[[nodiscard]] inline std::vector<GameMenuButton> build_settings_buttons(
-    const GameMenuState& state,
-    const sf::Vector2u window_size)
+[[nodiscard]] inline GameMenuRect settings_tab_rect(
+    const sf::Vector2u window_size,
+    const int tab_index)
 {
     const GameMenuRect panel = settings_panel_rect(window_size);
     const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
     const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
-    const float tab_height = constants::HUD_SETTINGS_TAB_HEIGHT_PX;
-    const float tab_width = (panel.width - padding * 2.0F - gap) * 0.5F;
+    const float tab_width =
+        (panel.width - padding * 2.0F
+            - gap * static_cast<float>(constants::HUD_SETTINGS_TAB_COUNT - 1))
+        / static_cast<float>(constants::HUD_SETTINGS_TAB_COUNT);
+    return GameMenuRect{
+        panel.x + padding + static_cast<float>(tab_index) * (tab_width + gap),
+        panel.y + padding,
+        tab_width,
+        constants::HUD_SETTINGS_TAB_HEIGHT_PX,
+    };
+}
 
+[[nodiscard]] inline GameMenuRect settings_option_row_rect(
+    const sf::Vector2u window_size,
+    const int row_index)
+{
+    const GameMenuRect panel = settings_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
+    const float y = panel.y + padding + constants::HUD_SETTINGS_TAB_HEIGHT_PX + gap * 2.0F
+        + constants::HUD_SETTINGS_LABEL_GAP_PX
+        + static_cast<float>(row_index)
+            * (constants::HUD_SETTINGS_ROW_HEIGHT_PX + gap);
+    return GameMenuRect{
+        panel.x + padding,
+        y,
+        panel.width - padding * 2.0F,
+        constants::HUD_SETTINGS_ROW_HEIGHT_PX,
+    };
+}
+
+[[nodiscard]] inline std::string_view video_fps_button_label(const int fps_limit)
+{
+    if (fps_limit == constants::VIDEO_FPS_30) {
+        return "FPS: 30";
+    }
+    if (fps_limit == constants::VIDEO_FPS_60) {
+        return "FPS: 60";
+    }
+    if (fps_limit == constants::VIDEO_FPS_120) {
+        return "FPS: 120";
+    }
+    return "FPS: Unlimited";
+}
+
+[[nodiscard]] inline int next_video_fps_limit(const int fps_limit)
+{
+    const auto& presets = constants::VIDEO_FPS_PRESETS;
+    for (std::size_t index = 0; index < presets.size(); ++index) {
+        if (presets[index] == fps_limit) {
+            return presets[(index + 1U) % presets.size()];
+        }
+    }
+    return constants::TARGET_DISPLAY_FPS;
+}
+
+[[nodiscard]] inline std::vector<GameMenuButton> build_settings_buttons(
+    const GameMenuState& state,
+    const sf::Vector2u window_size)
+{
     std::vector<GameMenuButton> buttons{};
     buttons.push_back(GameMenuButton{
         GameMenuAction::SettingsTabGame,
         "Game",
-        GameMenuRect{panel.x + padding, panel.y + padding, tab_width, tab_height},
+        settings_tab_rect(window_size, 0),
+        false,
+    });
+    buttons.push_back(GameMenuButton{
+        GameMenuAction::SettingsTabVideo,
+        "Video",
+        settings_tab_rect(window_size, 1),
         false,
     });
     buttons.push_back(GameMenuButton{
         GameMenuAction::SettingsTabAudio,
         "Audio",
-        GameMenuRect{
-            panel.x + padding + tab_width + gap,
-            panel.y + padding,
-            tab_width,
-            tab_height,
-        },
+        settings_tab_rect(window_size, 2),
         false,
     });
 
-    if (state.screen == GameMenuScreen::SettingsGame) {
-        const float row_y = panel.y + padding + tab_height + gap * 2.0F
-            + constants::HUD_SETTINGS_LABEL_GAP_PX;
+    if (state.screen == GameMenuScreen::SettingsVideo) {
         buttons.push_back(GameMenuButton{
             GameMenuAction::ToggleFullscreen,
             state.fullscreen ? "Fullscreen: Fullscreen" : "Fullscreen: Windowed",
-            GameMenuRect{
-                panel.x + padding,
-                row_y,
-                panel.width - padding * 2.0F,
-                constants::HUD_SETTINGS_ROW_HEIGHT_PX,
-            },
+            settings_option_row_rect(window_size, 0),
             false,
+        });
+        buttons.push_back(GameMenuButton{
+            GameMenuAction::ToggleMouseCapture,
+            state.mouse_capture
+                ? constants::VIDEO_MOUSE_CAPTURE_ENABLED_LABEL
+                : constants::VIDEO_MOUSE_CAPTURE_DISABLED_LABEL,
+            settings_option_row_rect(window_size, 1),
+            state.fullscreen,
+        });
+        buttons.push_back(GameMenuButton{
+            GameMenuAction::ToggleVsync,
+            state.vsync ? "Vsync: Enabled" : "Vsync: Disabled",
+            settings_option_row_rect(window_size, 2),
+            false,
+        });
+        buttons.push_back(GameMenuButton{
+            GameMenuAction::CycleFps,
+            video_fps_button_label(state.fps_limit),
+            settings_option_row_rect(window_size, 3),
+            state.vsync,
         });
     }
 
+    const GameMenuRect panel = settings_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
     const float back_width = constants::HUD_SETTINGS_BACK_WIDTH_PX;
     const float back_height = constants::HUD_SETTINGS_BACK_HEIGHT_PX;
     buttons.push_back(GameMenuButton{
@@ -267,6 +451,39 @@ struct GameMenuState {
     };
 }
 
+[[nodiscard]] inline GameMenuRect scroll_speed_slider_rect(const sf::Vector2u window_size)
+{
+    return volume_slider_rect(window_size, 0);
+}
+
+[[nodiscard]] inline GameMenuRect match_result_panel_rect(const sf::Vector2u window_size)
+{
+    const float width =
+        static_cast<float>(window_size.x) * constants::HUD_MATCH_RESULT_WIDTH_FRACTION;
+    const float height =
+        static_cast<float>(window_size.y) * constants::HUD_MATCH_RESULT_HEIGHT_FRACTION;
+    return GameMenuRect{
+        (static_cast<float>(window_size.x) - width) * 0.5F,
+        (static_cast<float>(window_size.y) - height) * 0.5F,
+        width,
+        height,
+    };
+}
+
+[[nodiscard]] inline GameMenuRect match_result_exit_button_rect(const sf::Vector2u window_size)
+{
+    const GameMenuRect panel = match_result_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    const float width = constants::HUD_MATCH_RESULT_EXIT_WIDTH_PX;
+    const float height = constants::HUD_SETTINGS_BACK_HEIGHT_PX;
+    return GameMenuRect{
+        panel.x + (panel.width - width) * 0.5F,
+        panel.y + panel.height - padding - height,
+        width,
+        height,
+    };
+}
+
 [[nodiscard]] inline GameMenuAction hit_test_menu_button(
     const std::vector<GameMenuButton>& buttons,
     const float mouse_x,
@@ -286,8 +503,27 @@ inline void apply_slider_drag(
     const sf::Vector2u window_size,
     const float mouse_x)
 {
-    if (state.dragging_slider == GameMenuSlider::None
-        || state.screen != GameMenuScreen::SettingsAudio) {
+    if (state.dragging_slider == GameMenuSlider::None) {
+        return;
+    }
+
+    if (state.dragging_slider == GameMenuSlider::ScrollSpeed) {
+        if (state.screen != GameMenuScreen::SettingsGame) {
+            return;
+        }
+
+        const GameMenuRect slider = scroll_speed_slider_rect(window_size);
+        if (slider.width <= 0.0F) {
+            return;
+        }
+
+        const float t = std::clamp((mouse_x - slider.x) / slider.width, 0.0F, 1.0F);
+        state.scroll_speed = constants::CAMERA_SCROLL_SPEED_MIN
+            + t * (constants::CAMERA_SCROLL_SPEED_MAX - constants::CAMERA_SCROLL_SPEED_MIN);
+        return;
+    }
+
+    if (state.screen != GameMenuScreen::SettingsAudio) {
         return;
     }
 
@@ -333,6 +569,98 @@ inline void apply_slider_drag(
         return GameMenuSlider::Sfx;
     }
     return GameMenuSlider::None;
+}
+
+[[nodiscard]] inline std::vector<GameMenuButton> build_save_load_buttons(
+    const GameMenuState& state,
+    const sf::Vector2u window_size)
+{
+    const GameMenuRect panel = save_load_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    const float action_w = constants::HUD_SAVE_LOAD_ACTION_WIDTH_PX;
+    const float action_h = constants::HUD_SAVE_LOAD_ACTION_HEIGHT_PX;
+    const float y = panel.y + panel.height - padding - action_h;
+
+    std::vector<GameMenuButton> buttons{};
+    buttons.push_back(GameMenuButton{
+        GameMenuAction::SaveLoadConfirm,
+        state.screen == GameMenuScreen::Load ? "Load" : "Save",
+        GameMenuRect{panel.x + padding, y, action_w, action_h},
+        state.filename_draft.empty(),
+    });
+    buttons.push_back(GameMenuButton{
+        GameMenuAction::SaveLoadBack,
+        "Back",
+        GameMenuRect{panel.x + panel.width - padding - action_w, y, action_w, action_h},
+        false,
+    });
+    return buttons;
+}
+
+[[nodiscard]] inline std::vector<GameMenuButton> build_dialog_buttons(
+    const GameMenuState& state,
+    const sf::Vector2u window_size)
+{
+    const GameMenuRect panel = confirm_panel_rect(window_size);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    const float action_w = constants::HUD_SAVE_LOAD_ACTION_WIDTH_PX;
+    const float action_h = constants::HUD_SAVE_LOAD_ACTION_HEIGHT_PX;
+    const float y = panel.y + panel.height - padding - action_h;
+
+    std::vector<GameMenuButton> buttons{};
+    if (state.screen == GameMenuScreen::ErrorMissingSave) {
+        buttons.push_back(GameMenuButton{
+            GameMenuAction::DialogOk,
+            "Ok",
+            GameMenuRect{
+                panel.x + (panel.width - action_w) * 0.5F,
+                y,
+                action_w,
+                action_h,
+            },
+            false,
+        });
+        return buttons;
+    }
+
+    buttons.push_back(GameMenuButton{
+        GameMenuAction::DialogYes,
+        "Yes",
+        GameMenuRect{panel.x + padding, y, action_w, action_h},
+        false,
+    });
+    buttons.push_back(GameMenuButton{
+        GameMenuAction::DialogCancel,
+        "Cancel",
+        GameMenuRect{panel.x + panel.width - padding - action_w, y, action_w, action_h},
+        false,
+    });
+    return buttons;
+}
+
+[[nodiscard]] inline int hit_test_save_list_row(
+    const GameMenuState& state,
+    const sf::Vector2u window_size,
+    const float mouse_x,
+    const float mouse_y)
+{
+    const GameMenuRect list = save_load_list_rect(window_size);
+    if (!list.contains(mouse_x, mouse_y)) {
+        return -1;
+    }
+
+    const float row_h = constants::HUD_SAVE_LOAD_ROW_HEIGHT_PX;
+    const int local_row = static_cast<int>((mouse_y - list.y) / row_h);
+    if (local_row < 0 || local_row >= constants::HUD_SAVE_LOAD_VISIBLE_ROWS) {
+        return -1;
+    }
+
+    const int index = state.save_list_scroll + local_row;
+    if (index < 0 || index >= static_cast<int>(state.save_entries.size())) {
+        return -1;
+    }
+
+    return index;
 }
 
 } // namespace aoa::app

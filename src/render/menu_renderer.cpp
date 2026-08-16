@@ -1,13 +1,20 @@
 #include "render/menu_renderer.hpp"
 
 #include "core/constants.hpp"
+#include "net/lobby_wire.hpp"
 #include "render/game_renderer.hpp"
+#include "render/minimap_math.hpp"
+#include "sim/components/map_grid.hpp"
+#include "sim/map/map_generator.hpp"
+#include "sim/map/map_pattern.hpp"
 
 #include <glad/glad.h>
 
 #include <SFML/Window/Mouse.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -29,6 +36,53 @@ namespace {
     return slot.name.empty() ? "Joining..." : slot.name;
 }
 
+[[nodiscard]] std::array<float, 3> preview_tile_color(
+    const sim::components::GroundType ground,
+    const sim::components::TileType tile)
+{
+    if (tile == sim::components::TileType::Forest) {
+        return {
+            constants::MENU_PATTERN_PREVIEW_FOREST_R,
+            constants::MENU_PATTERN_PREVIEW_FOREST_G,
+            constants::MENU_PATTERN_PREVIEW_FOREST_B,
+        };
+    }
+    if (tile == sim::components::TileType::GoldMine) {
+        return {
+            constants::MENU_PATTERN_PREVIEW_GOLD_R,
+            constants::MENU_PATTERN_PREVIEW_GOLD_G,
+            constants::MENU_PATTERN_PREVIEW_GOLD_B,
+        };
+    }
+    if (tile == sim::components::TileType::Berries
+        || tile == sim::components::TileType::Blueberries) {
+        return {
+            constants::MENU_PATTERN_PREVIEW_BERRIES_R,
+            constants::MENU_PATTERN_PREVIEW_BERRIES_G,
+            constants::MENU_PATTERN_PREVIEW_BERRIES_B,
+        };
+    }
+    if (ground == sim::components::GroundType::Snow) {
+        return {
+            constants::MENU_PATTERN_PREVIEW_SNOW_R,
+            constants::MENU_PATTERN_PREVIEW_SNOW_G,
+            constants::MENU_PATTERN_PREVIEW_SNOW_B,
+        };
+    }
+    if (ground == sim::components::GroundType::Sand) {
+        return {
+            constants::MENU_PATTERN_PREVIEW_SAND_R,
+            constants::MENU_PATTERN_PREVIEW_SAND_G,
+            constants::MENU_PATTERN_PREVIEW_SAND_B,
+        };
+    }
+    return {
+        constants::MENU_PATTERN_PREVIEW_GRASS_R,
+        constants::MENU_PATTERN_PREVIEW_GRASS_G,
+        constants::MENU_PATTERN_PREVIEW_GRASS_B,
+    };
+}
+
 } // namespace
 
 MenuRenderer::MenuRenderer()
@@ -36,6 +90,11 @@ MenuRenderer::MenuRenderer()
     if (!init_gl_loader()) {
         throw std::runtime_error("Failed to initialize OpenGL loader");
     }
+}
+
+MenuRenderer::~MenuRenderer()
+{
+    destroy_present_target();
 }
 
 void MenuRenderer::load(const std::filesystem::path& assets_directory)
@@ -53,6 +112,7 @@ void MenuRenderer::resize(const sf::Vector2u window_size)
 void MenuRenderer::reset_graphics_context(const sf::Vector2u window_size)
 {
     hud_overlay_.invalidate_gl_cache();
+    destroy_present_target();
     background_.destroy_gl_resources();
 
     if (!init_gl_loader()) {
@@ -68,10 +128,100 @@ void MenuRenderer::update(const float delta_seconds)
     background_.update(delta_seconds);
 }
 
+void MenuRenderer::destroy_present_target() const
+{
+    if (present_color_ != 0U) {
+        glDeleteTextures(1, &present_color_);
+        present_color_ = 0U;
+    }
+    if (present_fbo_ != 0U) {
+        glDeleteFramebuffers(1, &present_fbo_);
+        present_fbo_ = 0U;
+    }
+    present_width_ = 0;
+    present_height_ = 0;
+}
+
+bool MenuRenderer::ensure_present_target() const
+{
+    const int width = static_cast<int>(window_size_.x);
+    const int height = static_cast<int>(window_size_.y);
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    if (present_fbo_ != 0U && present_color_ != 0U && present_width_ == width
+        && present_height_ == height) {
+        return true;
+    }
+
+    destroy_present_target();
+    glGenTextures(1, &present_color_);
+    glBindTexture(GL_TEXTURE_2D, present_color_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA8,
+        width,
+        height,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        nullptr);
+    glBindTexture(GL_TEXTURE_2D, 0U);
+
+    glGenFramebuffers(1, &present_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, present_color_, 0);
+    const bool complete =
+        glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+    if (!complete) {
+        destroy_present_target();
+        return false;
+    }
+
+    present_width_ = width;
+    present_height_ = height;
+    return true;
+}
+
+void MenuRenderer::present_target_to_window() const
+{
+    if (present_fbo_ == 0U || present_width_ <= 0 || present_height_ <= 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+        return;
+    }
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, present_fbo_);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0U);
+    glBlitFramebuffer(
+        0,
+        0,
+        present_width_,
+        present_height_,
+        0,
+        0,
+        present_width_,
+        present_height_,
+        GL_COLOR_BUFFER_BIT,
+        GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+}
+
 void MenuRenderer::draw_background() const
 {
-    glClearColor(0.02F, 0.03F, 0.04F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+    clear_opaque_framebuffer(
+        constants::MENU_CLEAR_R,
+        constants::MENU_CLEAR_G,
+        constants::MENU_CLEAR_B,
+        constants::RENDER_CLEAR_A);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
 
     if (!background_.ready()) {
         return;
@@ -105,8 +255,7 @@ void MenuRenderer::draw_panel(const app::MenuRect& panel) const
         panel.height,
         constants::HUD_OPTIONS_FRAME_BORDER_R,
         constants::HUD_OPTIONS_FRAME_BORDER_G,
-        constants::HUD_OPTIONS_FRAME_BORDER_B,
-        constants::MAIN_MENU_PANEL_ALPHA);
+        constants::HUD_OPTIONS_FRAME_BORDER_B);
     hud_overlay_.draw_rect(
         window_size_,
         panel.x + 1.0F,
@@ -115,8 +264,7 @@ void MenuRenderer::draw_panel(const app::MenuRect& panel) const
         panel.height - 2.0F,
         constants::HUD_OPTIONS_FRAME_R,
         constants::HUD_OPTIONS_FRAME_G,
-        constants::HUD_OPTIONS_FRAME_B,
-        constants::MAIN_MENU_PANEL_ALPHA);
+        constants::HUD_OPTIONS_FRAME_B);
 }
 
 void MenuRenderer::draw_button(
@@ -184,15 +332,25 @@ void MenuRenderer::draw_button(
     const float text_width =
         HudOverlay::text_width_px(button.label.size(), constants::HUD_PIXEL_SCALE);
     const float dim = button.disabled ? constants::HUD_MENU_DISABLED_DIM : 1.0F;
+    float text_r = constants::HUD_TEXT_R;
+    float text_g = constants::HUD_TEXT_G;
+    float text_b = constants::HUD_TEXT_B;
+    if (button.action == app::MainMenuAction::CycleSlotColor
+        && button.extra < constants::PLAYER_SLOT_COLOR_RGB.size()) {
+        const auto& rgb = constants::PLAYER_SLOT_COLOR_RGB[button.extra];
+        text_r = rgb[0];
+        text_g = rgb[1];
+        text_b = rgb[2];
+    }
     hud_overlay_.draw_text(
         window_size_,
         draw_rect.x + (draw_rect.width - text_width) * 0.5F,
         centered_text_y(draw_rect, constants::HUD_PIXEL_SCALE),
         button.label,
         constants::HUD_PIXEL_SCALE,
-        constants::HUD_TEXT_R * dim,
-        constants::HUD_TEXT_G * dim,
-        constants::HUD_TEXT_B * dim);
+        text_r * dim,
+        text_g * dim,
+        text_b * dim);
 }
 
 void MenuRenderer::draw_lobby_rows(
@@ -288,9 +446,9 @@ void MenuRenderer::draw_layout(
             label.y,
             label.text,
             label.pixel_scale,
-            constants::HUD_TEXT_R,
-            constants::HUD_TEXT_G,
-            constants::HUD_TEXT_B);
+            label.r,
+            label.g,
+            label.b);
     }
 
     for (const app::MenuRect& split_line : layout.split_lines) {
@@ -338,15 +496,211 @@ void MenuRenderer::draw_layout(
             constants::HUD_TEXT_B);
     }
 
-    if (context.state->screen == app::MainMenuScreen::Lobby && context.lobby != nullptr) {
-        draw_lobby_rows(layout, context);
-    }
-
     for (const app::MenuButton& button : layout.buttons) {
-        draw_button(button, context.mouse_position, false);
+        draw_button(button, context.mouse_position, button.selected);
     }
 
     draw_status_message(layout, context);
+    draw_pattern_preview(layout, context);
+}
+
+void MenuRenderer::refresh_pattern_preview_cache(const MenuRenderContext& context) const
+{
+    if (context.state == nullptr) {
+        return;
+    }
+
+    const app::MainMenuState& state = *context.state;
+    const bool preview_needed = state.screen == app::MainMenuScreen::MapPatternSelect
+        || state.screen == app::MainMenuScreen::Lobby
+        || (state.screen == app::MainMenuScreen::Singleplayer
+            && state.game_style == app::SingleplayerGameStyle::RandomGame);
+    if (!preview_needed) {
+        return;
+    }
+
+    const std::uint8_t pattern_index = state.screen == app::MainMenuScreen::MapPatternSelect
+        ? state.pattern_highlight
+        : state.map_pattern;
+    sim::map::MapPattern pattern{};
+    if (state.screen == app::MainMenuScreen::MapPatternSelect
+        && pattern_index != constants::MAP_PATTERN_OTHER_INDEX
+        && pattern_index != state.map_pattern) {
+        pattern = sim::map::make_builtin_pattern(pattern_index);
+    }
+    else {
+        pattern = sim::map::resolve_map_pattern(pattern_index, state.selected_pattern_payload);
+    }
+
+    const int settings_width = context.lobby != nullptr
+        ? context.lobby->settings.map_width
+        : state.host_settings.map_width;
+    const int settings_height = context.lobby != nullptr
+        ? context.lobby->settings.map_height
+        : state.host_settings.map_height;
+    pattern = sim::map::apply_lobby_size_to_pattern(pattern, settings_width, settings_height);
+
+    std::uint8_t requested_players = state.host_settings.player_count;
+    if (state.screen == app::MainMenuScreen::Singleplayer) {
+        requested_players = app::occupied_singleplayer_slots(state);
+    }
+    else if (context.lobby != nullptr) {
+        requested_players = net::lobby_playing_slot_count(*context.lobby);
+    }
+    const std::uint8_t player_count =
+        sim::map::map_pattern_effective_player_count(pattern, requested_players);
+
+    if (preview_pattern_index_ == pattern_index && preview_payload_ == state.selected_pattern_payload
+        && preview_map_width_ == pattern.map_width && preview_map_height_ == pattern.map_height
+        && preview_player_count_ == player_count && preview_map_.grid.width > 0) {
+        return;
+    }
+
+    sim::map::MapGenerationConfig config{};
+    config.player_count = player_count;
+    config.seed = constants::MENU_PATTERN_PREVIEW_SEED;
+    config.pattern = pattern;
+    preview_map_ = sim::map::generate_map(config);
+    preview_pattern_index_ = pattern_index;
+    preview_payload_ = state.selected_pattern_payload;
+    preview_map_width_ = pattern.map_width;
+    preview_map_height_ = pattern.map_height;
+    preview_player_count_ = player_count;
+}
+
+void MenuRenderer::draw_pattern_preview(
+    const app::MenuLayout& layout,
+    const MenuRenderContext& context) const
+{
+    if (!layout.show_pattern_preview || context.state == nullptr) {
+        return;
+    }
+
+    draw_panel(layout.pattern_preview);
+
+    const int map_width = preview_map_.grid.width;
+    const int map_height = preview_map_.grid.height;
+    const float pad = static_cast<float>(constants::MENU_PATTERN_PREVIEW_PAD_PX);
+    const app::CommandPanelFrame content{
+        layout.pattern_preview.x + pad,
+        layout.pattern_preview.y + pad,
+        layout.pattern_preview.width - pad * 2.0F,
+        layout.pattern_preview.height - pad * 2.0F,
+    };
+    const MinimapIsoLayout iso = make_minimap_iso_layout(content, map_width, map_height);
+    if (iso.scale <= 0.0F || map_width <= 0 || map_height <= 0) {
+        return;
+    }
+
+    const auto tile_point = [&](const float x, const float y) {
+        return minimap_world_to_screen(iso, x, y);
+    };
+    const auto draw_cell = [&](
+                               const float x0,
+                               const float y0,
+                               const float x1,
+                               const float y1,
+                               const float r,
+                               const float g,
+                               const float b) {
+        hud_overlay_.draw_quad(
+            window_size_,
+            tile_point(x0, y0),
+            tile_point(x1, y0),
+            tile_point(x1, y1),
+            tile_point(x0, y1),
+            r,
+            g,
+            b);
+    };
+
+    const int sample_edge = constants::MENU_PATTERN_PREVIEW_SAMPLE_EDGE;
+    const int step = std::max(
+        1,
+        (std::max(map_width, map_height) + sample_edge - 1) / sample_edge);
+
+    hud_overlay_.begin_batch();
+    for (int y = 0; y < map_height; y += step) {
+        const int y1 = std::min(y + step, map_height);
+        for (int x = 0; x < map_width; x += step) {
+            const int x1 = std::min(x + step, map_width);
+            const std::size_t index = static_cast<std::size_t>(y * map_width + x);
+            const auto color =
+                preview_tile_color(preview_map_.grid.ground[index], preview_map_.grid.tiles[index]);
+            draw_cell(
+                static_cast<float>(x),
+                static_cast<float>(y),
+                static_cast<float>(x1),
+                static_cast<float>(y1),
+                color[0],
+                color[1],
+                color[2]);
+        }
+    }
+    for (const aoa::core::GridPos& lake : preview_map_.mana_lake_anchors) {
+        draw_cell(
+            static_cast<float>(lake.x),
+            static_cast<float>(lake.y),
+            static_cast<float>(lake.x + 1),
+            static_cast<float>(lake.y + 1),
+            constants::MENU_PATTERN_PREVIEW_LAKE_R,
+            constants::MENU_PATTERN_PREVIEW_LAKE_G,
+            constants::MENU_PATTERN_PREVIEW_LAKE_B);
+    }
+    for (const aoa::core::GridPos& start : preview_map_.start_anchors) {
+        draw_cell(
+            static_cast<float>(start.x),
+            static_cast<float>(start.y),
+            static_cast<float>(start.x + 1),
+            static_cast<float>(start.y + 1),
+            constants::MENU_PATTERN_PREVIEW_START_R,
+            constants::MENU_PATTERN_PREVIEW_START_G,
+            constants::MENU_PATTERN_PREVIEW_START_B);
+    }
+
+    const float map_w = static_cast<float>(map_width);
+    const float map_h = static_cast<float>(map_height);
+    const sf::Vector2f north = tile_point(0.0F, 0.0F);
+    const sf::Vector2f east = tile_point(map_w, 0.0F);
+    const sf::Vector2f south = tile_point(map_w, map_h);
+    const sf::Vector2f west = tile_point(0.0F, map_h);
+    hud_overlay_.draw_line(
+        window_size_,
+        north.x,
+        north.y,
+        east.x,
+        east.y,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_R,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_G,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_B);
+    hud_overlay_.draw_line(
+        window_size_,
+        east.x,
+        east.y,
+        south.x,
+        south.y,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_R,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_G,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_B);
+    hud_overlay_.draw_line(
+        window_size_,
+        south.x,
+        south.y,
+        west.x,
+        west.y,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_R,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_G,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_B);
+    hud_overlay_.draw_line(
+        window_size_,
+        west.x,
+        west.y,
+        north.x,
+        north.y,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_R,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_G,
+        constants::MENU_PATTERN_PREVIEW_DIAMOND_EDGE_B);
+    hud_overlay_.end_batch();
 }
 
 void MenuRenderer::draw_settings(const MenuRenderContext& context) const
@@ -359,6 +713,8 @@ void MenuRenderer::draw_settings(const MenuRenderContext& context) const
         const bool active_tab =
             (button.action == app::GameMenuAction::SettingsTabGame
                 && settings.screen == app::GameMenuScreen::SettingsGame)
+            || (button.action == app::GameMenuAction::SettingsTabVideo
+                && settings.screen == app::GameMenuScreen::SettingsVideo)
             || (button.action == app::GameMenuAction::SettingsTabAudio
                 && settings.screen == app::GameMenuScreen::SettingsAudio);
         draw_button(
@@ -370,6 +726,45 @@ void MenuRenderer::draw_settings(const MenuRenderContext& context) const
             },
             context.mouse_position,
             active_tab);
+    }
+
+    if (settings.screen == app::GameMenuScreen::SettingsGame) {
+        const app::GameMenuRect slider = app::scroll_speed_slider_rect(window_size_);
+        const int percent = static_cast<int>(
+            (settings.scroll_speed / constants::CAMERA_SCROLL_SPEED_DEFAULT) * 100.0F + 0.5F);
+        hud_overlay_.draw_text(
+            window_size_,
+            slider.x,
+            slider.y - constants::HUD_SETTINGS_LABEL_GAP_PX,
+            "Scroll Speed: " + std::to_string(percent) + "%",
+            constants::HUD_PIXEL_SCALE,
+            constants::HUD_TEXT_R,
+            constants::HUD_TEXT_G,
+            constants::HUD_TEXT_B);
+        hud_overlay_.draw_rect(
+            window_size_,
+            slider.x,
+            slider.y,
+            slider.width,
+            slider.height,
+            constants::HUD_VOLUME_SLIDER_TRACK_R,
+            constants::HUD_VOLUME_SLIDER_TRACK_G,
+            constants::HUD_VOLUME_SLIDER_TRACK_B);
+        const float fill = std::clamp(
+            (settings.scroll_speed - constants::CAMERA_SCROLL_SPEED_MIN)
+                / (constants::CAMERA_SCROLL_SPEED_MAX - constants::CAMERA_SCROLL_SPEED_MIN),
+            0.0F,
+            1.0F);
+        hud_overlay_.draw_rect(
+            window_size_,
+            slider.x,
+            slider.y,
+            slider.width * fill,
+            slider.height,
+            constants::HUD_VOLUME_SLIDER_FILL_R,
+            constants::HUD_VOLUME_SLIDER_FILL_G,
+            constants::HUD_VOLUME_SLIDER_FILL_B);
+        return;
     }
 
     if (settings.screen != app::GameMenuScreen::SettingsAudio) {
@@ -447,6 +842,15 @@ void MenuRenderer::draw(const MenuRenderContext& context)
         return;
     }
 
+    refresh_pattern_preview_cache(context);
+
+    const bool offscreen = ensure_present_target();
+    if (offscreen) {
+        glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
+    }
+
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, static_cast<GLsizei>(window_size_.x), static_cast<GLsizei>(window_size_.y));
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
 
@@ -483,6 +887,13 @@ void MenuRenderer::draw(const MenuRenderContext& context)
     }
 
     draw_perf_hud(context);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    if (offscreen) {
+        present_target_to_window();
+    }
+    else {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+    }
 }
 
 } // namespace aoa::render

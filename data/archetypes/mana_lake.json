@@ -1,0 +1,9 @@
+{
+  "id": "mana_lake",
+  "kind": "structure",
+  "display_name": "Mana lake",
+  "max_hp": 0,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "vision_range": 0
+}

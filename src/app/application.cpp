@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 
+#include "app/app_settings.hpp"
 #include "app/chat_state.hpp"
 #include "app/fps_tracker.hpp"
 #include "app/game_cursor.hpp"
@@ -19,7 +20,10 @@
 #include "render/game_renderer.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/persistence/save_game.hpp"
 #include "sim/systems/disconnected_player_ai.hpp"
+#include "sim/systems/match_outcome.hpp"
+#include "sim/systems/visibility_system.hpp"
 
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/VideoMode.hpp>
@@ -107,6 +111,10 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == constants::CONSOLE_DEBUG_ARG) {
+            continue;
+        }
+
         if (arg == "--harness") {
             options.run_harness = true;
             continue;
@@ -134,6 +142,16 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
 
         if (arg == "--lockstep-4-smoke") {
             options.run_lockstep_4_smoke = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-2h2ai-smoke") {
+            options.run_lockstep_2h2ai_smoke = true;
+            continue;
+        }
+
+        if (arg == "--sim-8ai-bench") {
+            options.run_sim_8ai_bench = true;
             continue;
         }
 
@@ -243,7 +261,7 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
 
         if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: aoa [--headless] [--ticks N] [--expect-hash HEX] [--print-hash]\n"
-                         "       aoa [--loose-assets]\n"
+                         "       aoa [--loose-assets] [--console-debug]\n"
                          "       aoa --harness\n"
                          "       aoa --net-smoke\n"
                          "       aoa --lockstep-smoke\n"
@@ -302,7 +320,8 @@ AppFlow run_graphical(
     sf::Window& window,
     WindowDisplaySettings& display_settings,
     sim::Simulation& simulation,
-    AppShellSettings& shell_settings)
+    AppShellSettings& shell_settings,
+    const SingleplayerSetup& setup)
 {
     render::GameRenderer renderer{};
     renderer.reset_graphics_context(window.getSize());
@@ -338,7 +357,19 @@ AppFlow run_graphical(
         }
     }
 
+    if (shell_settings.vsync != display_settings.vsync
+        || shell_settings.fps_limit != display_settings.fps_limit) {
+        display_settings.vsync = shell_settings.vsync;
+        display_settings.fps_limit = shell_settings.fps_limit;
+        apply_window_frame_limits(window, display_settings);
+    }
+
     game_input.set_menu_fullscreen(display_settings.fullscreen);
+    game_input.set_menu_video(display_settings.vsync, display_settings.fps_limit);
+    display_settings.mouse_capture = shell_settings.mouse_capture;
+    game_input.set_menu_mouse_capture(display_settings.mouse_capture);
+    apply_mouse_capture(window, display_settings);
+    game_input.set_scroll_speed(shell_settings.scroll_speed);
     renderer.set_show_perf_hud(shell_settings.show_perf_hud);
     game_cursor.force_reapply(window);
 
@@ -347,40 +378,96 @@ AppFlow run_graphical(
             simulation.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
         if (world_view.begin() != world_view.end()) {
             auto& session = world_view.get<sim::components::MatchSession>(*world_view.begin());
-            session.civil_population_map_cap = constants::CIVIL_POPULATION_MAP_CAP_DEFAULT;
-            session.fog_of_war_enabled = true;
+            session.civil_population_map_cap = setup.civil_population_map_cap;
+            session.fog_of_war_mode = setup.fog_mode;
+            session.fog_of_war_enabled =
+                setup.fog_mode != sim::components::FogOfWarMode::Disabled;
+            session.cheats_enabled = setup.cheats_enabled;
+            session.player_color_indices = setup.slot_colors;
+            session.victory_condition = setup.victory_condition;
+            if (setup.player_count > 0U
+                && setup.player_count <= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
+                session.playing_slots_mask =
+                    static_cast<std::uint8_t>((1U << setup.player_count) - 1U);
+            }
         }
     }
-    simulation.set_player_ai_controlled(constants::SINGLEPLAYER_AI_PLAYER_SLOT, true);
+    renderer.set_fog_of_war_enabled(
+        setup.fog_mode != sim::components::FogOfWarMode::Disabled);
+    if (setup.fog_mode == sim::components::FogOfWarMode::Explored) {
+        sim::systems::reveal_all_explored(simulation.registry());
+    }
+    game_cursor.set_player_color(
+        static_cast<CursorPlayerColor>(setup.slot_colors[0]));
+    for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+         ++slot) {
+        if (setup.slot_is_ai[slot]) {
+            simulation.set_player_ai_controlled(slot, true);
+        }
+    }
+    simulation.set_compute_state_hash(false);
     std::uint64_t ai_command_sequence = 1U;
     AppFlow flow = AppFlow::ExitApp;
+    auto last_autosave_time = std::chrono::steady_clock::now();
 
     core::FixedTimestepLoop loop{};
     loop.run_realtime(
-        [&simulation, &tps_tracker, &game_input, &ai_command_sequence]() {
+        [&simulation, &tps_tracker, &game_input, &ai_command_sequence, &last_autosave_time]() {
             if (game_input.is_game_menu_open()) {
                 return;
             }
 
+            if (sim::systems::match_is_finished(simulation.registry())) {
+                return;
+            }
+
             const std::uint64_t execute_tick = simulation.next_command_execute_tick();
-            std::vector<sim::player::PlayerCommand> ai_commands =
-                sim::systems::generate_ai_commands_for_slot(
-                    simulation.registry(),
-                    constants::SINGLEPLAYER_AI_PLAYER_SLOT,
-                    execute_tick,
-                    ai_command_sequence);
-            for (sim::player::PlayerCommand& command : ai_commands) {
-                simulation.enqueue_player_command(std::move(command));
+            for (std::uint8_t slot = 0U;
+                 slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+                 ++slot) {
+                if (!simulation.is_player_ai_controlled(slot)) {
+                    continue;
+                }
+
+                if ((simulation.tick_count() + static_cast<std::uint64_t>(slot))
+                        % static_cast<std::uint64_t>(constants::AI_THINK_INTERVAL_TICKS)
+                    != 0U) {
+                    continue;
+                }
+
+                std::vector<sim::player::PlayerCommand> ai_commands =
+                    sim::systems::generate_ai_commands_for_slot(
+                        simulation.registry(),
+                        slot,
+                        execute_tick,
+                        ai_command_sequence);
+                for (sim::player::PlayerCommand& command : ai_commands) {
+                    simulation.enqueue_player_command(std::move(command));
+                }
             }
 
             simulation.tick();
             tps_tracker.record_tick();
+
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - last_autosave_time);
+            if (elapsed_ms.count() >= constants::AUTOSAVE_INTERVAL_MS) {
+                if (sim::persistence::save_simulation_to_file(
+                        simulation,
+                        sim::persistence::default_autosave_path())) {
+                    last_autosave_time = now;
+                }
+            }
         },
         [&renderer, &simulation, &window, &game_input, &fps_tracker, &tps_tracker, &game_audio](
             const float interpolation_alpha) {
             fps_tracker.record_frame();
             game_audio.update();
-            game_audio.drain_sim_sfx(simulation.registry());
+            game_audio.drain_sim_sfx(
+                simulation.registry(),
+                renderer,
+                renderer.local_player_slot());
             game_input.update_continuous(window, renderer, simulation);
             (void)window.setActive(true);
             const app::PlayerSelection& selection = game_input.selection();
@@ -411,7 +498,8 @@ AppFlow run_graphical(
          &display_settings,
          &game_cursor,
          &flow,
-         &shell_settings]() {
+         &shell_settings,
+         &setup]() {
             game_input.set_menu_fullscreen(display_settings.fullscreen);
 
             while (const std::optional event = window.pollEvent()) {
@@ -433,7 +521,21 @@ AppFlow run_graphical(
                         enter_fullscreen(window, renderer, display_settings);
                     }
                     game_input.set_menu_fullscreen(display_settings.fullscreen);
+                    shell_settings.fullscreen = display_settings.fullscreen;
+                    save_app_settings(shell_settings);
                     game_cursor.force_reapply(window);
+                }
+
+                if (game_input.consume_video_apply_request()) {
+                    display_settings.vsync = game_input.menu_vsync();
+                    display_settings.fps_limit = game_input.menu_fps_limit();
+                    display_settings.mouse_capture = game_input.menu_mouse_capture();
+                    apply_window_frame_limits(window, display_settings);
+                    apply_mouse_capture(window, display_settings);
+                    shell_settings.vsync = display_settings.vsync;
+                    shell_settings.fps_limit = display_settings.fps_limit;
+                    shell_settings.mouse_capture = display_settings.mouse_capture;
+                    save_app_settings(shell_settings);
                 }
 
                 if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
@@ -443,7 +545,8 @@ AppFlow run_graphical(
                                 renderer,
                                 display_settings,
                                 key_pressed->code,
-                                true)) {
+                                setup.cheats_enabled,
+                                setup.cheats_enabled)) {
                             game_input.set_menu_fullscreen(display_settings.fullscreen);
                             game_cursor.force_reapply(window);
                         }
@@ -468,10 +571,14 @@ AppFlow run_graphical(
         [&simulation]() { simulation.snapshot_world_positions_for_render(); });
 
     shell_settings.fullscreen = display_settings.fullscreen;
+    shell_settings.vsync = display_settings.vsync;
+    shell_settings.fps_limit = display_settings.fps_limit;
     shell_settings.show_perf_hud = renderer.show_perf_hud();
     shell_settings.master_volume = game_audio.master_volume();
     shell_settings.music_volume = game_audio.music_volume();
     shell_settings.sfx_volume = game_audio.sfx_volume();
+    shell_settings.scroll_speed = game_input.scroll_speed();
+    save_app_settings(shell_settings);
     return flow;
 }
 
@@ -505,6 +612,11 @@ void update_lockstep_window_title(
         title += " - Player " + std::to_string(session.ai_controlled_slot() + 1U)
             + " disconnected, AI playing";
     }
+    else if (session.has_disconnected_human_slots()) {
+        title += " - Player "
+            + std::to_string(session.first_disconnected_human_slot() + 1U)
+            + " left — AI playing (waiting for reconnect)";
+    }
     else if (session.is_waiting_for_opponent_reconnect()) {
         title += " - Opponent disconnected, waiting for reconnect...";
     }
@@ -512,9 +624,9 @@ void update_lockstep_window_title(
         const int connected_players =
             static_cast<int>(session.lobby_registered_client_count()) + 1;
         title += " - Waiting for players (" + std::to_string(connected_players) + "/"
-            + std::to_string(session.session_player_count()) + ")...";
+            + std::to_string(session.expected_human_player_count()) + ")...";
     }
-    else if (!session.is_connected()) {
+    else if (!session.is_connected() && session.expected_human_player_count() > 1U) {
         title += " - Waiting for opponent...";
     }
     else {
@@ -534,15 +646,19 @@ bool lockstep_should_show_waiting_overlay(
     const net::LockstepSession& session,
     const net::LockstepRole role)
 {
-    if (session.is_awaiting_reconnect_handshake()) {
-        return true;
+    // Centered LOADING is pre-match only. Mid-game disconnect/AI/reconnect uses chat.
+    if (session.is_match_started() || session.is_awaiting_reconnect_handshake()
+        || session.is_reconnecting() || session.is_host_gone() || session.is_ai_fallback()
+        || session.has_disconnected_human_slots()) {
+        return false;
     }
 
     if (role == net::LockstepRole::Host && !session.is_lobby_full()) {
         return true;
     }
 
-    if (role == net::LockstepRole::Host && !session.is_connected()) {
+    if (role == net::LockstepRole::Host && !session.is_connected()
+        && session.expected_human_player_count() > 1U) {
         return true;
     }
 
@@ -563,20 +679,17 @@ std::pair<std::string, std::string> lockstep_waiting_overlay_text(
     const net::LockstepSession& session,
     const net::LockstepRole role)
 {
-    if (session.is_awaiting_reconnect_handshake()) {
-        return {"LOADING", "SYNCHRONIZING MATCH STATE"};
-    }
-
     if (role == net::LockstepRole::Host && !session.is_lobby_full()) {
         const int connected_players =
             static_cast<int>(session.lobby_registered_client_count()) + 1;
         return {
             "LOADING",
             "WAITING FOR PLAYERS (" + std::to_string(connected_players) + "/"
-                + std::to_string(session.session_player_count()) + ")"};
+                + std::to_string(session.expected_human_player_count()) + ")"};
     }
 
-    if (role == net::LockstepRole::Host && !session.is_connected()) {
+    if (role == net::LockstepRole::Host && !session.is_connected()
+        && !session.is_ai_fallback() && session.expected_human_player_count() > 1U) {
         return {"LOADING", "WAITING FOR PLAYER CONNECTION"};
     }
 
@@ -611,11 +724,34 @@ AppFlow run_lockstep_match(
         if (world_view.begin() != world_view.end()) {
             auto& match_session = world_view.get<sim::components::MatchSession>(*world_view.begin());
             match_session.civil_population_map_cap = setup.civil_population_map_cap;
-            match_session.fog_of_war_enabled = setup.fog_of_war_enabled;
+            match_session.fog_of_war_mode = setup.fog_mode;
+            match_session.fog_of_war_enabled =
+                setup.fog_mode != sim::components::FogOfWarMode::Disabled;
+            match_session.cheats_enabled = setup.cheats_enabled;
+            match_session.player_color_indices = setup.slot_colors;
+            match_session.victory_condition = setup.victory_condition;
+            if (setup.player_count > 0U
+                && setup.player_count <= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
+                match_session.playing_slots_mask =
+                    static_cast<std::uint8_t>((1U << setup.player_count) - 1U);
+            }
+        }
+    }
+
+    if (setup.fog_mode == sim::components::FogOfWarMode::Explored) {
+        sim::systems::reveal_all_explored(simulation.registry());
+    }
+
+    for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+         ++slot) {
+        if (setup.slot_is_ai[slot]) {
+            simulation.set_player_ai_controlled(slot, true);
         }
     }
 
     net::LockstepSession session{role, player_slot, simulation, session_player_count};
+    session.configure_match_identity(setup.player_names, setup.reconnect_tokens);
+    session.configure_ai_slots(setup.slot_is_ai);
 
     if (setup.lockstep_debug) {
         net::LockstepDebugLog::enable(player_slot, role);
@@ -655,19 +791,26 @@ AppFlow run_lockstep_match(
     render::GameRenderer renderer{};
     renderer.reset_graphics_context(window.getSize());
     renderer.set_local_player_slot(player_slot);
-    renderer.set_fog_of_war_enabled(setup.fog_of_war_enabled);
+    renderer.set_fog_of_war_enabled(
+        setup.fog_mode != sim::components::FogOfWarMode::Disabled);
 
     GameInput game_input{};
     ChatState chat_state{};
     GameCursor game_cursor{};
     audio::GameAudio game_audio{};
     (void)game_cursor.load(core::default_assets_directory());
+    if (setup.player_slot < setup.slot_colors.size()) {
+        game_cursor.set_player_color(
+            static_cast<CursorPlayerColor>(setup.slot_colors[setup.player_slot]));
+    }
+
     (void)game_audio.load(core::default_assets_directory());
     game_audio.set_master_volume(shell_settings.master_volume);
     game_audio.set_music_volume(shell_settings.music_volume);
     game_audio.set_sfx_volume(shell_settings.sfx_volume);
     game_input.set_lockstep_session(&session);
     game_input.set_local_player_slot(player_slot);
+    game_input.set_match_roster(true, setup.player_names);
     game_input.set_chat_state(&chat_state);
     game_input.set_game_cursor(&game_cursor);
     game_input.set_game_audio(&game_audio);
@@ -689,13 +832,26 @@ AppFlow run_lockstep_match(
         }
     }
 
+    if (shell_settings.vsync != display_settings.vsync
+        || shell_settings.fps_limit != display_settings.fps_limit) {
+        display_settings.vsync = shell_settings.vsync;
+        display_settings.fps_limit = shell_settings.fps_limit;
+        apply_window_frame_limits(window, display_settings);
+    }
+
     game_input.set_menu_fullscreen(display_settings.fullscreen);
+    game_input.set_menu_video(display_settings.vsync, display_settings.fps_limit);
+    display_settings.mouse_capture = shell_settings.mouse_capture;
+    game_input.set_menu_mouse_capture(display_settings.mouse_capture);
+    apply_mouse_capture(window, display_settings);
+    game_input.set_scroll_speed(shell_settings.scroll_speed);
     renderer.set_show_perf_hud(shell_settings.show_perf_hud);
     game_cursor.force_reapply(window);
 
     const std::uint64_t tick_limit = setup.tick_limit;
     AppFlow flow = AppFlow::ExitApp;
     bool leave_match = false;
+    auto last_autosave_time = std::chrono::steady_clock::now();
 
     session.ensure_initial_render_snapshot();
     session.start_background_tick_loop();
@@ -727,7 +883,21 @@ AppFlow run_lockstep_match(
                     enter_fullscreen(window, renderer, display_settings);
                 }
                 game_input.set_menu_fullscreen(display_settings.fullscreen);
+                shell_settings.fullscreen = display_settings.fullscreen;
+                save_app_settings(shell_settings);
                 game_cursor.force_reapply(window);
+            }
+
+            if (game_input.consume_video_apply_request()) {
+                display_settings.vsync = game_input.menu_vsync();
+                display_settings.fps_limit = game_input.menu_fps_limit();
+                display_settings.mouse_capture = game_input.menu_mouse_capture();
+                apply_window_frame_limits(window, display_settings);
+                apply_mouse_capture(window, display_settings);
+                shell_settings.vsync = display_settings.vsync;
+                shell_settings.fps_limit = display_settings.fps_limit;
+                shell_settings.mouse_capture = display_settings.mouse_capture;
+                save_app_settings(shell_settings);
             }
 
             if (const auto* key_pressed = event->getIf<sf::Event::KeyPressed>()) {
@@ -737,7 +907,8 @@ AppFlow run_lockstep_match(
                             renderer,
                             display_settings,
                             key_pressed->code,
-                            false)) {
+                            setup.cheats_enabled,
+                            setup.cheats_enabled)) {
                         game_input.set_menu_fullscreen(display_settings.fullscreen);
                         game_cursor.force_reapply(window);
                     }
@@ -764,13 +935,33 @@ AppFlow run_lockstep_match(
 
         fps_tracker.record_frame();
         game_audio.update();
-        game_audio.drain_sim_sfx(simulation.registry());
+        {
+            std::lock_guard lock(session.simulation_access_mutex());
+            game_audio.drain_sim_sfx(
+                simulation.registry(),
+                renderer,
+                renderer.local_player_slot());
+        }
 
         session.service_network_latency();
 
         if (session.consume_snapshot_restored()) {
             game_input.clear_selection();
             renderer.reset_camera_frame();
+        }
+
+        if (setup.is_host && !game_input.is_game_menu_open()) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - last_autosave_time);
+            if (elapsed_ms.count() >= constants::AUTOSAVE_INTERVAL_MS) {
+                std::lock_guard lock(session.simulation_access_mutex());
+                if (sim::persistence::save_simulation_to_file(
+                        simulation,
+                        sim::persistence::default_autosave_mp_path())) {
+                    last_autosave_time = now;
+                }
+            }
         }
 
         game_input.update_continuous(window, renderer, simulation, input_snapshot);
@@ -837,10 +1028,14 @@ AppFlow run_lockstep_match(
     }
 
     shell_settings.fullscreen = display_settings.fullscreen;
+    shell_settings.vsync = display_settings.vsync;
+    shell_settings.fps_limit = display_settings.fps_limit;
     shell_settings.show_perf_hud = renderer.show_perf_hud();
     shell_settings.master_volume = game_audio.master_volume();
     shell_settings.music_volume = game_audio.music_volume();
     shell_settings.sfx_volume = game_audio.sfx_volume();
+    shell_settings.scroll_speed = game_input.scroll_speed();
+    save_app_settings(shell_settings);
     return flow;
 }
 
@@ -888,26 +1083,31 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
         .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
     };
 
+    WindowDisplaySettings display_settings{};
+    display_settings.title = std::string(constants::WINDOW_TITLE);
+    display_settings.context_settings = context_settings;
+
     sf::Window window(
         sf::VideoMode({constants::DEFAULT_WINDOW_WIDTH, constants::DEFAULT_WINDOW_HEIGHT}),
         std::string(constants::WINDOW_TITLE),
         sf::State::Windowed,
         context_settings);
-    window.setVerticalSyncEnabled(false);
-    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
+    apply_window_frame_limits(window, display_settings);
     (void)window.setActive(true);
-
-    WindowDisplaySettings display_settings{};
-    display_settings.title = std::string(constants::WINDOW_TITLE);
-    display_settings.context_settings = context_settings;
     initialize_window_display_settings(window, display_settings);
 
-    AppShellSettings shell_settings{};
-    shell_settings.fullscreen = true;
-    enter_fullscreen(
-        window,
-        [](const sf::Vector2u /*size*/) {},
-        display_settings);
+    AppShellSettings shell_settings = load_app_settings();
+    display_settings.vsync = shell_settings.vsync;
+    display_settings.fps_limit = shell_settings.fps_limit;
+    display_settings.mouse_capture = shell_settings.mouse_capture;
+    apply_window_frame_limits(window, display_settings);
+    apply_mouse_capture(window, display_settings);
+    if (shell_settings.fullscreen) {
+        enter_fullscreen(
+            window,
+            [](const sf::Vector2u /*size*/) {},
+            display_settings);
+    }
 
     (void)run_lockstep_match(window, display_settings, simulation, setup, shell_settings);
 

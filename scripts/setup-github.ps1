@@ -4,6 +4,9 @@
 # Usage:
 #   .\scripts\setup-github.ps1              # labels + milestones + issues + project
 #   .\scripts\setup-github.ps1 -SkipProject # if project scope not granted yet
+#
+# Prefer docs/BACKLOG.md as source of truth. This script is for greenfield /
+# recovery; day-to-day work updates backlog + existing issues.
 
 param(
     [string]$Owner = "HighTeam",
@@ -21,9 +24,8 @@ function New-Label {
 }
 
 function New-Milestone {
-    param([string]$Title, [string]$Description, [string]$DueOn)
-    $body = @{ title = $Title; description = $Description; due_on = $DueOn } | ConvertTo-Json
-    gh api "repos/$repoFull/milestones" --method POST --input - <<< $body | Out-Null
+    param([string]$Title, [string]$Description)
+    gh api "repos/$repoFull/milestones" -f title="$Title" -f description="$Description" | Out-Null
     Write-Host "  milestone: $Title"
 }
 
@@ -59,29 +61,37 @@ $labels = @(
 )
 foreach ($l in $labels) { New-Label $l.Name $l.Color $l.Description }
 
-Write-Host "Creating milestones..."
-# Due dates aligned to 10-week plan from Jul 2026
+Write-Host "Creating pillar milestones (named pillars from docs/BACKLOG.md)..."
 $milestones = @(
-    @{ Title = "M0 - Foundations"; Description = "Window, sim/render split, fixed-point, ECS skeleton"; Due = "2026-07-22T23:59:59Z" },
-    @{ Title = "M1 - Single-civ core simulation"; Description = "One civ, deterministic sim, data-driven JSON"; Due = "2026-08-05T23:59:59Z" },
-    @{ Title = "M2 - Lockstep networking, 2 players"; Description = "ENet, lockstep sync, reconnect - highest risk"; Due = "2026-08-19T23:59:59Z" },
-    @{ Title = "M3 - Scale to 8 players + save/load"; Description = "8-player scale, persistence"; Due = "2026-08-26T23:59:59Z" },
-    @{ Title = "M4 - Civilization content x4"; Description = "Water, Earth, Fire, Air content"; Due = "2026-09-16T23:59:59Z" },
-    @{ Title = "M5 - Menus, UI, packaging"; Description = "Menus, AI, installer, download page"; Due = "2026-09-30T23:59:59Z" }
+    @{ Title = "Polish & Debt"; Description = "Stabilize Earth loop before map/age pivots" },
+    @{ Title = "Map Redesign"; Description = "Tiles, layering, nature — before Ages/Civs" },
+    @{ Title = "RMG & Fairness"; Description = "Pattern/script RMG + balance validation" },
+    @{ Title = "Versioning & Lobby Compatibility"; Description = "Exact version match for multiplayer lobbies" },
+    @{ Title = "Ages & Technologies"; Description = "Four ages + data-driven tech hooks" },
+    @{ Title = "Civilizations & Generals"; Description = "Four civs + AoM-style generals" },
+    @{ Title = "Art & Presentation"; Description = "Shaders, models, biome art" },
+    @{ Title = "GUI Redesign"; Description = "HUD/menus from paper reference" },
+    @{ Title = "Shell & Packaging"; Description = "Menus, lobby, AI, installer" }
 )
-foreach ($m in $milestones) { New-Milestone $m.Title $m.Description $m.Due }
+foreach ($m in $milestones) { New-Milestone $m.Title $m.Description }
 
-Write-Host "Creating epic issues from scripts/issue-bodies/..."
+Write-Host "Creating epic issues from scripts/issue-bodies/ (pillar set)..."
 $issueDir = Join-Path $PSScriptRoot "issue-bodies"
-if (-not (Test-Path $issueDir)) {
-    Write-Error "Missing $issueDir — run from a complete repo checkout."
-}
-
-Get-ChildItem $issueDir -Filter "*.json" | ForEach-Object {
-    $meta = Get-Content $_.FullName | ConvertFrom-Json
-    $bodyFile = Join-Path $issueDir $meta.bodyFile
-    Write-Host "  issue: $($meta.title)"
-    New-EpicIssue -Title $meta.title -Milestone $meta.milestone -Labels $meta.labels -BodyFile $bodyFile
+$epics = @(
+    @{ Title = "[Polish] Open debt (MP save, collision, combat path, art tune)"; Milestone = "Polish & Debt"; Labels = @("engine","netcode","epic"); Body = "polish-debt.md" },
+    @{ Title = "[Map] Redesign tiles, layering, nature"; Milestone = "Map Redesign"; Labels = @("engine","content","blocking","epic"); Body = "map-redesign.md" },
+    @{ Title = "[RMG] Pattern/script generation + fairness"; Milestone = "RMG & Fairness"; Labels = @("engine","content","epic"); Body = "rmg-fairness.md" },
+    @{ Title = "[Versioning] Lobby exact-version gate"; Milestone = "Versioning & Lobby Compatibility"; Labels = @("netcode","ui","blocking","epic"); Body = "versioning-lobby.md" },
+    @{ Title = "[Ages] Four ages + technologies"; Milestone = "Ages & Technologies"; Labels = @("content","epic"); Body = "ages-tech.md" },
+    @{ Title = "[Civs] Four civs + generals (AoM-style)"; Milestone = "Civilizations & Generals"; Labels = @("content","epic"); Body = "civs-generals.md" },
+    @{ Title = "[Art] Shaders, models, biome presentation"; Milestone = "Art & Presentation"; Labels = @("engine","content","epic"); Body = "art-presentation.md" },
+    @{ Title = "[GUI] Redesign from paper reference"; Milestone = "GUI Redesign"; Labels = @("ui","epic"); Body = "gui-redesign.md" },
+    @{ Title = "[Shell] Menus, lobby, AI, packaging"; Milestone = "Shell & Packaging"; Labels = @("ui","tooling","epic"); Body = "shell-packaging.md" }
+)
+foreach ($e in $epics) {
+    $bodyFile = Join-Path $issueDir $e.Body
+    Write-Host "  issue: $($e.Title)"
+    New-EpicIssue -Title $e.Title -Milestone $e.Milestone -Labels $e.Labels -BodyFile $bodyFile
 }
 
 if (-not $SkipProject) {
@@ -90,4 +100,6 @@ if (-not $SkipProject) {
 }
 
 Write-Host ""
-Write-Host "Done. Issues: https://github.com/$repoFull/issues"
+Write-Host "Done. Backlog: docs/BACKLOG.md"
+Write-Host "Issues: https://github.com/$repoFull/issues"
+Write-Host "Project: https://github.com/users/$Owner/projects/1"

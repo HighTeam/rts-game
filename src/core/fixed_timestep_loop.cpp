@@ -32,10 +32,22 @@ void FixedTimestepLoop::run_realtime(
             std::chrono::duration<double>(current_time - previous_time).count();
         previous_time = current_time;
 
-        accumulator += frame_seconds;
+        double clamped_frame_seconds = frame_seconds;
+        if (clamped_frame_seconds > static_cast<double>(constants::SIM_MAX_FRAME_DELTA_SECONDS)) {
+            clamped_frame_seconds = static_cast<double>(constants::SIM_MAX_FRAME_DELTA_SECONDS);
+        }
+        accumulator += clamped_frame_seconds;
+
+        const double max_accumulator_seconds =
+            sim_delta_seconds * static_cast<double>(constants::SIM_MAX_TICKS_PER_FRAME);
+        if (accumulator > max_accumulator_seconds) {
+            accumulator = max_accumulator_seconds;
+        }
 
         bool snapshotted = false;
-        while (accumulator >= sim_delta_seconds) {
+        int ticks_this_frame = 0;
+        while (accumulator >= sim_delta_seconds
+            && ticks_this_frame < constants::SIM_MAX_TICKS_PER_FRAME) {
             if (!snapshotted && on_before_sim_ticks) {
                 on_before_sim_ticks();
                 snapshotted = true;
@@ -43,6 +55,7 @@ void FixedTimestepLoop::run_realtime(
 
             on_tick();
             accumulator -= sim_delta_seconds;
+            ++ticks_this_frame;
         }
 
         const float interpolation_alpha =

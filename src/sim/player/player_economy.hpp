@@ -15,6 +15,13 @@ namespace aoa::sim::player {
 
 [[nodiscard]] int count_completed_houses(const entt::registry& registry, std::uint8_t player_slot);
 
+[[nodiscard]] int count_completed_extractors(
+    const entt::registry& registry,
+    std::uint8_t player_slot);
+
+// Mana ceiling is earned: every finished extractor raises it, so it starts at zero.
+[[nodiscard]] int player_mana_cap_max(const entt::registry& registry, std::uint8_t player_slot);
+
 [[nodiscard]] int player_civil_cap_max(const entt::registry& registry, std::uint8_t player_slot);
 
 [[nodiscard]] bool player_can_spawn_units(const entt::registry& registry, std::uint8_t player_slot);
@@ -45,8 +52,23 @@ namespace aoa::sim::player {
     std::uint8_t player_slot,
     int amount);
 
+[[nodiscard]] bool try_deduct_player_money(
+    entt::registry& registry,
+    std::uint8_t player_slot,
+    int amount);
+
+[[nodiscard]] bool can_afford_player_money(
+    const entt::registry& registry,
+    std::uint8_t player_slot,
+    int amount);
+
 void add_player_wood(entt::registry& registry, std::uint8_t player_slot, int amount);
 
+void add_player_money(entt::registry& registry, std::uint8_t player_slot, int amount);
+
 void add_player_mana(entt::registry& registry, std::uint8_t player_slot, int amount);
+
+// Drops stored mana when the cap shrinks, e.g. after an extractor dies.
+void clamp_player_mana_to_cap(entt::registry& registry, std::uint8_t player_slot);
 
 } // namespace aoa::sim::player

@@ -21,6 +21,13 @@ struct IsoTileScreenCorners {
     sf::Vector2f left{};
 };
 
+struct VisibleGridRange {
+    int min_x{0};
+    int min_y{0};
+    int max_x{0};
+    int max_y{0};
+};
+
 class ClassicCamera {
 public:
     void set_window_size(sf::Vector2u window_size);
@@ -37,6 +44,10 @@ public:
 
     [[nodiscard]] sf::Vector2f grid_top_corner(int grid_x, int grid_y) const;
     [[nodiscard]] IsoTileScreenCorners grid_iso_corners(int grid_x, int grid_y) const;
+    [[nodiscard]] VisibleGridRange visible_grid_range(
+        int map_width,
+        int map_height,
+        int pad_tiles) const;
     [[nodiscard]] std::optional<core::GridPos> screen_to_grid(float screen_x, float screen_y) const;
     [[nodiscard]] sf::Vector2f world_to_screen(float world_x, float world_y, float world_z) const;
     [[nodiscard]] std::pair<float, float> screen_to_world_xz(float screen_x, float screen_y) const;

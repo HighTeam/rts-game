@@ -91,6 +91,8 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
         break;
     case PlayerCommandType::BuildTownCenter:
     case PlayerCommandType::BuildHouse:
+    case PlayerCommandType::BuildLumberjack:
+    case PlayerCommandType::BuildExtractor:
         append_pod(out, static_cast<std::int16_t>(command.cell.x));
         append_pod(out, static_cast<std::int16_t>(command.cell.y));
         break;
@@ -127,7 +129,7 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         return std::nullopt;
     }
 
-    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::ResumeBuild)) {
+    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::BuildExtractor)) {
         return std::nullopt;
     }
 
@@ -193,7 +195,9 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         break;
     }
     case PlayerCommandType::BuildTownCenter:
-    case PlayerCommandType::BuildHouse: {
+    case PlayerCommandType::BuildHouse:
+    case PlayerCommandType::BuildLumberjack:
+    case PlayerCommandType::BuildExtractor: {
         std::int16_t cell_x = 0;
         std::int16_t cell_y = 0;
         if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y)) {

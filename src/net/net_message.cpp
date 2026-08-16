@@ -24,7 +24,8 @@ namespace {
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyState)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyReady)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyLeave)
-        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyMatchStart);
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyMatchStart)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyColor);
 }
 
 } // namespace

@@ -10,8 +10,10 @@
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/persistence/save_game.hpp"
 #include "sim/player/player_command.hpp"
 #include "sim/player/player_commands.hpp"
 #include "sim/player/player_economy.hpp"
@@ -20,6 +22,8 @@
 #include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
 #include "render/game_renderer.hpp"
+#include "render/sim_render_snapshot.hpp"
+#include "sim/systems/match_outcome.hpp"
 #include "sim/systems/pathfinding.hpp"
 #include "sim/systems/visibility_system.hpp"
 
@@ -33,7 +37,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
 
 namespace aoa::app {
@@ -91,6 +97,7 @@ void GameInput::play_order_ack_sfx(
 
     if (command.type == PlayerCommandType::BuildTownCenter
         || command.type == PlayerCommandType::BuildHouse
+        || command.type == PlayerCommandType::BuildLumberjack
         || command.type == PlayerCommandType::ResumeBuild) {
         game_audio_->play_sfx(audio::SfxId::Building);
         return;
@@ -263,8 +270,10 @@ CommandPanelBuildOptions GameInput::current_build_options(
     CommandPanelBuildOptions options{};
     options.town_center_wood_cost = constants::TOWN_CENTER_BUILD_WOOD_COST;
     options.house_wood_cost = constants::HOUSE_BUILD_WOOD_COST;
+    options.lumberjack_wood_cost = constants::LUMBERJACK_BUILD_WOOD_COST;
     options.worker_food_cost = constants::WORKER_FOOD_COST;
     options.militia_food_cost = constants::MILITIA_FOOD_COST;
+    options.militia_money_cost = constants::MILITIA_MONEY_COST;
 
     auto& registry = simulation.registry();
     entt::entity world = entt::null;
@@ -288,11 +297,21 @@ CommandPanelBuildOptions GameInput::current_build_options(
         if (town_center != nullptr && town_center->spawn_militia_food_cost > 0) {
             options.militia_food_cost = town_center->spawn_militia_food_cost;
         }
+        if (town_center != nullptr && town_center->spawn_militia_money_cost > 0) {
+            options.militia_money_cost = town_center->spawn_militia_money_cost;
+        }
 
         const data::ArchetypeDefinition* house =
             data::find_archetype(content_pack.content, std::string(constants::HOUSE_BUILDING_ID));
         if (house != nullptr && house->build_wood_cost > 0) {
             options.house_wood_cost = house->build_wood_cost;
+        }
+
+        const data::ArchetypeDefinition* lumberjack = data::find_archetype(
+            content_pack.content,
+            std::string(constants::LUMBERJACK_BUILDING_ID));
+        if (lumberjack != nullptr && lumberjack->build_wood_cost > 0) {
+            options.lumberjack_wood_cost = lumberjack->build_wood_cost;
         }
     }
 
@@ -300,10 +319,15 @@ CommandPanelBuildOptions GameInput::current_build_options(
         && local_player_slot_ < render_snapshot->hud_by_player.size()) {
         const int town_wood = render_snapshot->hud_by_player[local_player_slot_].town_wood;
         const int town_food = render_snapshot->hud_by_player[local_player_slot_].town_food;
+        const int town_money = render_snapshot->hud_by_player[local_player_slot_].town_money;
         options.can_afford_town_center = town_wood >= options.town_center_wood_cost;
         options.can_afford_house = town_wood >= options.house_wood_cost;
+        options.can_afford_lumberjack = town_wood >= options.lumberjack_wood_cost;
+        options.can_afford_extractor = town_wood >= options.extractor_wood_cost
+            && town_money >= options.extractor_money_cost;
         options.can_afford_worker = town_food >= options.worker_food_cost;
-        options.can_afford_militia = town_food >= options.militia_food_cost;
+        options.can_afford_militia = town_food >= options.militia_food_cost
+            && town_money >= options.militia_money_cost;
         return options;
     }
 
@@ -315,14 +339,30 @@ CommandPanelBuildOptions GameInput::current_build_options(
         registry,
         local_player_slot_,
         options.house_wood_cost);
+    options.can_afford_lumberjack = sim::player::can_afford_player_wood(
+        registry,
+        local_player_slot_,
+        options.lumberjack_wood_cost);
+    options.can_afford_extractor = sim::player::can_afford_player_wood(
+                                       registry,
+                                       local_player_slot_,
+                                       options.extractor_wood_cost)
+        && sim::player::can_afford_player_money(
+                                       registry,
+                                       local_player_slot_,
+                                       options.extractor_money_cost);
     options.can_afford_worker = sim::player::can_afford_player_food(
         registry,
         local_player_slot_,
         options.worker_food_cost);
     options.can_afford_militia = sim::player::can_afford_player_food(
-        registry,
-        local_player_slot_,
-        options.militia_food_cost);
+                                      registry,
+                                      local_player_slot_,
+                                      options.militia_food_cost)
+        && sim::player::can_afford_player_money(
+               registry,
+               local_player_slot_,
+               options.militia_money_cost);
     return options;
 }
 
@@ -332,7 +372,9 @@ void GameInput::sync_command_panel_mode(
 {
     if (command_panel_mode_ == CommandPanelMode::BuildMenu
         || command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse) {
+        || command_panel_mode_ == CommandPanelMode::PlaceHouse
+        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
         if (!selection_has_worker(simulation, render_snapshot)) {
             command_panel_mode_ = CommandPanelMode::Empty;
             placement_ghost_anchor_.reset();
@@ -356,6 +398,9 @@ void GameInput::sync_command_panel_mode(
         bool under_construction = false;
         bool is_town_center = false;
         bool is_house = false;
+        bool is_lumberjack = false;
+        bool is_extractor = false;
+        bool is_mana_lake = false;
         if (render_snapshot != nullptr) {
             for (const render::RenderEntityPose& pose : render_snapshot->buildings) {
                 if (pose.entity != selection_.building) {
@@ -365,6 +410,9 @@ void GameInput::sync_command_panel_mode(
                 under_construction = pose.under_construction;
                 is_town_center = pose.is_town_center;
                 is_house = pose.is_house;
+                is_lumberjack = pose.is_lumberjack;
+                is_extractor = pose.is_extractor;
+                is_mana_lake = pose.is_mana_lake;
                 break;
             }
         }
@@ -375,7 +423,16 @@ void GameInput::sync_command_panel_mode(
                     registry.any_of<sim::components::UnderConstructionTag>(selection_.building);
                 is_town_center = registry.any_of<sim::components::TownCenterTag>(selection_.building);
                 is_house = registry.any_of<sim::components::HouseTag>(selection_.building);
+                is_lumberjack = registry.any_of<sim::components::LumberjackTag>(selection_.building);
+                is_extractor = registry.any_of<sim::components::ExtractorTag>(selection_.building);
+                is_mana_lake = registry.any_of<sim::components::ManaLakeTag>(selection_.building);
             }
+        }
+
+        // Lakes have no owner, so they short-circuit the ownership gate below.
+        if (is_mana_lake) {
+            command_panel_mode_ = CommandPanelMode::ManaLakeInfo;
+            return;
         }
 
         std::uint8_t building_slot = local_player_slot_;
@@ -393,7 +450,7 @@ void GameInput::sync_command_panel_mode(
         }
 
         if (building_slot == local_player_slot_) {
-            if (under_construction && (is_town_center || is_house)) {
+            if (under_construction && (is_town_center || is_house || is_lumberjack || is_extractor)) {
                 // Same Deselect/Destroy set as finished House.
                 command_panel_mode_ = CommandPanelMode::HouseActions;
                 return;
@@ -406,6 +463,16 @@ void GameInput::sync_command_panel_mode(
 
             if (is_house && !under_construction) {
                 command_panel_mode_ = CommandPanelMode::HouseActions;
+                return;
+            }
+
+            if (is_lumberjack && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::LumberjackActions;
+                return;
+            }
+
+            if (is_extractor && !under_construction) {
+                command_panel_mode_ = CommandPanelMode::ExtractorActions;
                 return;
             }
         }
@@ -450,6 +517,15 @@ bool GameInput::apply_command_panel_action(
         return true;
     }
     case CommandPanelAction::Deselect:
+        if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
+            || command_panel_mode_ == CommandPanelMode::PlaceHouse
+            || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+            || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+            command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
+                ? CommandPanelMode::WorkerActions
+                : CommandPanelMode::Empty;
+            return true;
+        }
         clear_selection();
         return true;
     case CommandPanelAction::Kill: {
@@ -478,6 +554,20 @@ bool GameInput::apply_command_panel_action(
             return true;
         }
         command_panel_mode_ = CommandPanelMode::PlaceHouse;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildLumberjack:
+        if (!current_build_options(simulation, render_snapshot).can_afford_lumberjack) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceLumberjack;
+        attack_targeting_mode_ = false;
+        return true;
+    case CommandPanelAction::BuildExtractor:
+        if (!current_build_options(simulation, render_snapshot).can_afford_extractor) {
+            return true;
+        }
+        command_panel_mode_ = CommandPanelMode::PlaceExtractor;
         attack_targeting_mode_ = false;
         return true;
     case CommandPanelAction::SpawnWorker:
@@ -543,7 +633,9 @@ bool GameInput::handle_command_panel_click(
     (void)renderer;
     if (hit_test_command_panel_frame(window.getSize(), screen_position.x, screen_position.y)
         && command_panel_mode_ != CommandPanelMode::PlaceTownCenter
-        && command_panel_mode_ != CommandPanelMode::PlaceHouse) {
+        && command_panel_mode_ != CommandPanelMode::PlaceHouse
+        && command_panel_mode_ != CommandPanelMode::PlaceLumberjack
+        && command_panel_mode_ != CommandPanelMode::PlaceExtractor) {
         const CommandPanelAction action = hit_test_command_panel(
             command_panel_mode_,
             window.getSize(),
@@ -593,13 +685,161 @@ namespace {
     return std::find(units.begin(), units.end(), entity) != units.end();
 }
 
+[[nodiscard]] bool hit_test_hud_blocks_world_pick(
+    const sf::Vector2u window_size,
+    const float mouse_x,
+    const float mouse_y)
+{
+    if (hit_test_command_panel_frame(window_size, mouse_x, mouse_y)) {
+        return true;
+    }
+
+    if (hit_test_minimap_panel_frame(window_size, mouse_x, mouse_y)) {
+        return true;
+    }
+
+    if (hit_test_status_panel_frame(window_size, mouse_x, mouse_y)) {
+        return true;
+    }
+
+    if (hit_test_resource_bar_frame(window_size, mouse_x, mouse_y)) {
+        return true;
+    }
+
+    return menu_button_rect(window_size).contains(mouse_x, mouse_y);
+}
+
+void apply_hover_stick(
+    HoverHighlight& hover,
+    const HoverHighlight& previous,
+    const render::SimRenderSnapshot& snapshot,
+    const render::GameRenderer& renderer,
+    const sf::Vector2f screen,
+    const float pick_radius_px,
+    const std::optional<core::GridPos>& hovered_cell)
+{
+    const float stick_radius = pick_radius_px * constants::HUD_HOVER_STICK_SCALE;
+    const float stick_sq = stick_radius * stick_radius;
+    const float switch_margin = constants::HUD_HOVER_SWITCH_MARGIN_PX;
+
+    if (previous.unit != entt::null) {
+        const render::RenderEntityPose* previous_pose = nullptr;
+        for (const render::RenderEntityPose& pose : snapshot.units) {
+            if (pose.entity == previous.unit && pose.health_current > 0) {
+                previous_pose = &pose;
+                break;
+            }
+        }
+
+        if (previous_pose != nullptr) {
+            const sf::Vector2f previous_screen =
+                render::render_pose_screen_position(renderer, *previous_pose, 1.0F);
+            const float previous_dx = previous_screen.x - screen.x;
+            const float previous_dy = previous_screen.y - screen.y;
+            const float previous_dist_sq = previous_dx * previous_dx + previous_dy * previous_dy;
+            if (previous_dist_sq <= stick_sq) {
+                bool keep_previous = hover.unit == entt::null || hover.unit == previous.unit;
+                if (!keep_previous) {
+                    for (const render::RenderEntityPose& pose : snapshot.units) {
+                        if (pose.entity != hover.unit) {
+                            continue;
+                        }
+
+                        const sf::Vector2f next_screen =
+                            render::render_pose_screen_position(renderer, pose, 1.0F);
+                        const float next_dx = next_screen.x - screen.x;
+                        const float next_dy = next_screen.y - screen.y;
+                        const float next_dist = std::sqrt(next_dx * next_dx + next_dy * next_dy);
+                        const float previous_dist = std::sqrt(previous_dist_sq);
+                        keep_previous = next_dist + switch_margin >= previous_dist;
+                        break;
+                    }
+                }
+
+                if (keep_previous) {
+                    hover.unit = previous.unit;
+                    hover.unit_is_enemy = previous.unit_is_enemy;
+                    hover.building = entt::null;
+                    hover.building_is_enemy = false;
+                    hover.resource_cell.reset();
+                    return;
+                }
+            }
+        }
+    }
+
+    if (previous.building == entt::null || hover.unit != entt::null) {
+        return;
+    }
+
+    for (const render::RenderEntityPose& pose : snapshot.buildings) {
+        if (pose.entity != previous.building || pose.health_current <= 0) {
+            continue;
+        }
+
+        bool still_over = false;
+        if (hovered_cell.has_value()) {
+            const sim::components::BuildingFootprint footprint{
+                pose.footprint_width,
+                pose.footprint_height,
+            };
+            const sim::components::GridPosition anchor{{pose.grid_x, pose.grid_y}};
+            still_over = sim::components::building_contains_cell(anchor, footprint, *hovered_cell);
+        }
+
+        if (!still_over) {
+            const sf::Vector2f building_screen = renderer.tile_center_screen(
+                pose.grid_x,
+                pose.grid_y,
+                constants::RENDER_ENTITY_BASE_LIFT);
+            const float dx = building_screen.x - screen.x;
+            const float dy = building_screen.y - screen.y;
+            still_over = (dx * dx + dy * dy) <= stick_sq;
+        }
+
+        if (!still_over) {
+            return;
+        }
+
+        if (hover.building == entt::null || hover.building == previous.building) {
+            hover.building = previous.building;
+            hover.building_is_enemy = previous.building_is_enemy;
+            hover.resource_cell.reset();
+        }
+        return;
+    }
+}
+
+[[nodiscard]] bool footprint_on_map(
+    const int map_width,
+    const int map_height,
+    const core::GridPos anchor,
+    const int footprint)
+{
+    for (int y = 0; y < footprint; ++y) {
+        for (int x = 0; x < footprint; ++x) {
+            if (!core::is_inside_grid({anchor.x + x, anchor.y + y}, map_width, map_height)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 [[nodiscard]] bool can_place_ghost_footprint(
     const sim::components::MapGrid& map,
     entt::registry& registry,
     const core::GridPos anchor,
     const int footprint,
-    const std::vector<entt::entity>& ignore_units)
+    const std::vector<entt::entity>& ignore_units,
+    const std::uint8_t local_player_slot)
 {
+    (void)ignore_units;
+    if (!footprint_on_map(map.width, map.height, anchor, footprint)) {
+        return false;
+    }
+
     for (int y = 0; y < footprint; ++y) {
         for (int x = 0; x < footprint; ++x) {
             const core::GridPos cell{anchor.x + x, anchor.y + y};
@@ -631,18 +871,34 @@ namespace {
                 }
             }
 
-            const auto unit_view = registry.view<
-                sim::components::UnitTag,
+            // Lakes carry no BuildingTag, so they need their own overlap rejection.
+            const auto lake_view = registry.view<
+                sim::components::ManaLakeTag,
                 sim::components::GridPosition,
-                sim::components::Health>();
-            for (const entt::entity entity : unit_view) {
-                if (unit_view.get<sim::components::Health>(entity).current.raw() <= 0) {
-                    continue;
+                sim::components::BuildingFootprint>();
+            for (const entt::entity lake : lake_view) {
+                if (sim::components::building_contains_cell(
+                        lake_view.get<sim::components::GridPosition>(lake),
+                        lake_view.get<sim::components::BuildingFootprint>(lake),
+                        cell)) {
+                    return false;
                 }
-                if (selection_contains_entity(ignore_units, entity)) {
-                    continue;
-                }
-                if (sim::systems::unit_occupancy_grid_cell(registry, entity) == cell) {
+            }
+
+            if (sim::systems::is_movement_blocked(registry, cell)) {
+                return false;
+            }
+        }
+    }
+
+    const auto world_view =
+        registry.view<sim::components::WorldTag, sim::components::FogOfWarState>();
+    if (world_view.begin() != world_view.end()) {
+        const auto& fog = world_view.get<sim::components::FogOfWarState>(*world_view.begin());
+        for (int y = 0; y < footprint; ++y) {
+            for (int x = 0; x < footprint; ++x) {
+                const core::GridPos cell{anchor.x + x, anchor.y + y};
+                if (!sim::systems::is_cell_explored_to_slot(fog, cell, local_player_slot)) {
                     return false;
                 }
             }
@@ -708,6 +964,7 @@ void GameInput::update_hover(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot)
 {
+    const HoverHighlight previous_hover = hover_;
     hover_ = HoverHighlight{};
 
     if (left_button_down_) {
@@ -719,6 +976,13 @@ void GameInput::update_hover(
         static_cast<float>(mouse_position.x),
         static_cast<float>(mouse_position.y),
     };
+    if (hit_test_hud_blocks_world_pick(
+            window.getSize(),
+            screen_position.x,
+            screen_position.y)) {
+        return;
+    }
+
     const float pick_radius_px = renderer.selection_pick_radius_px();
 
     const auto hovered_grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
@@ -741,6 +1005,40 @@ void GameInput::update_hover(
             }
         }
     }
+
+    struct StickHoverOnExit {
+        HoverHighlight& hover;
+        HoverHighlight previous;
+        const render::SimRenderSnapshot* snapshot;
+        const render::GameRenderer& renderer;
+        sf::Vector2f screen;
+        float pick_radius;
+        std::optional<core::GridPos> cell;
+
+        ~StickHoverOnExit()
+        {
+            if (snapshot == nullptr) {
+                return;
+            }
+
+            apply_hover_stick(
+                hover,
+                previous,
+                *snapshot,
+                renderer,
+                screen,
+                pick_radius,
+                cell);
+        }
+    } stick_guard{
+        hover_,
+        previous_hover,
+        render_snapshot,
+        renderer,
+        screen_position,
+        pick_radius_px,
+        hovered_grid_cell,
+    };
 
     if (render_snapshot != nullptr) {
         const entt::entity hovered_unit = render::pick_hovered_unit_at_screen(
@@ -765,6 +1063,13 @@ void GameInput::update_hover(
                     continue;
                 }
 
+                const bool enemy_building =
+                    !pose.is_nature && pose.player_slot != local_player_slot_;
+                if (enemy_building && !pose.shrouded
+                    && !render::snapshot_cell_is_visible(*render_snapshot, *hovered_grid_cell)) {
+                    continue;
+                }
+
                 const sim::components::BuildingFootprint footprint{
                     pose.footprint_width,
                     pose.footprint_height,
@@ -772,7 +1077,7 @@ void GameInput::update_hover(
                 const sim::components::GridPosition anchor{{pose.grid_x, pose.grid_y}};
                 if (sim::components::building_contains_cell(anchor, footprint, *hovered_grid_cell)) {
                     hover_.building = pose.entity;
-                    hover_.building_is_enemy = pose.player_slot != local_player_slot_;
+                    hover_.building_is_enemy = enemy_building;
                     return;
                 }
             }
@@ -846,6 +1151,14 @@ void GameInput::update_hover(
     }
 
     if (hovered_grid_cell.has_value()) {
+        const sim::components::FogOfWarState* fog = nullptr;
+        const auto world_view = registry.view<
+            sim::components::WorldTag,
+            sim::components::FogOfWarState>();
+        if (world_view.begin() != world_view.end()) {
+            fog = &world_view.get<sim::components::FogOfWarState>(*world_view.begin());
+        }
+
         const auto building_view = registry.view<
             sim::components::BuildingTag,
             sim::components::PlayerOwnedTag,
@@ -854,6 +1167,15 @@ void GameInput::update_hover(
         for (const entt::entity entity : building_view) {
             const auto& health = building_view.get<sim::components::Health>(entity);
             if (health.current.raw() <= 0) {
+                continue;
+            }
+
+            const bool enemy_building =
+                sim::components::is_opponent_entity(registry, entity, local_player_slot_);
+            if (enemy_building && fog != nullptr
+                && !sim::systems::is_entity_visible_to_slot(
+                       registry, *fog, entity, local_player_slot_)
+                && !renderer.local_player_has_seen_building(entity)) {
                 continue;
             }
 
@@ -867,8 +1189,7 @@ void GameInput::update_hover(
                 registry.any_of<sim::components::TownCenterTag>(entity));
             if (sim::components::building_contains_cell(anchor, footprint, *hovered_grid_cell)) {
                 hover_.building = entity;
-                hover_.building_is_enemy =
-                    sim::components::entity_player_slot(registry, entity) != local_player_slot_;
+                hover_.building_is_enemy = enemy_building;
                 return;
             }
         }
@@ -929,19 +1250,70 @@ void GameInput::sync_audio_volumes_from_menu()
     game_audio_->set_sfx_volume(game_menu_.sfx_volume);
 }
 
-void GameInput::apply_game_menu_action(const GameMenuAction action)
+void GameInput::apply_game_menu_action(
+    const GameMenuAction action,
+    sim::Simulation& simulation)
 {
+    const auto refresh_save_entries = [this]() {
+        game_menu_.save_entries = sim::persistence::list_save_stems();
+        game_menu_.selected_save_index = -1;
+        game_menu_.save_list_scroll = 0;
+    };
+
+    const auto open_save_screen = [&]() {
+        refresh_save_entries();
+        game_menu_.filename_draft.clear();
+        game_menu_.filename_focused = true;
+        game_menu_.screen = GameMenuScreen::Save;
+        game_menu_.dragging_slider = GameMenuSlider::None;
+    };
+
+    const auto open_load_screen = [&]() {
+        refresh_save_entries();
+        game_menu_.filename_draft.clear();
+        game_menu_.filename_focused = true;
+        game_menu_.screen = GameMenuScreen::Load;
+        game_menu_.dragging_slider = GameMenuSlider::None;
+    };
+
+    const auto write_save = [&](const std::string& stem) -> bool {
+        const std::filesystem::path path = sim::persistence::save_path_for_stem(stem);
+        if (lockstep_session_ != nullptr) {
+            std::lock_guard lock(lockstep_session_->simulation_access_mutex());
+            return sim::persistence::save_simulation_to_file(simulation, path);
+        }
+
+        return sim::persistence::save_simulation_to_file(simulation, path);
+    };
+
+    const auto read_save = [&](const std::string& stem) -> bool {
+        if (lockstep_session_ != nullptr) {
+            return false;
+        }
+
+        return sim::persistence::load_simulation_from_file(
+            simulation,
+            sim::persistence::save_path_for_stem(stem));
+    };
+
     switch (action) {
     case GameMenuAction::None:
         return;
     case GameMenuAction::ToggleMenu:
+        game_menu_.multiplayer = lockstep_session_ != nullptr;
         game_menu_.toggle();
         return;
     case GameMenuAction::Resume:
         game_menu_.close();
         return;
     case GameMenuAction::Save:
+        open_save_screen();
+        return;
     case GameMenuAction::Load:
+        if (lockstep_session_ != nullptr) {
+            return;
+        }
+        open_load_screen();
         return;
     case GameMenuAction::ExitToMainMenu:
         exit_to_main_menu_requested_ = true;
@@ -950,6 +1322,7 @@ void GameInput::apply_game_menu_action(const GameMenuAction action)
     case GameMenuAction::OpenSettings:
         game_menu_.screen = GameMenuScreen::SettingsGame;
         game_menu_.dragging_slider = GameMenuSlider::None;
+        game_menu_.filename_focused = false;
         return;
     case GameMenuAction::ExitGame:
         exit_game_requested_ = true;
@@ -962,12 +1335,34 @@ void GameInput::apply_game_menu_action(const GameMenuAction action)
         game_menu_.screen = GameMenuScreen::SettingsGame;
         game_menu_.dragging_slider = GameMenuSlider::None;
         return;
+    case GameMenuAction::SettingsTabVideo:
+        game_menu_.screen = GameMenuScreen::SettingsVideo;
+        game_menu_.dragging_slider = GameMenuSlider::None;
+        return;
     case GameMenuAction::SettingsTabAudio:
         game_menu_.screen = GameMenuScreen::SettingsAudio;
         game_menu_.dragging_slider = GameMenuSlider::None;
         return;
     case GameMenuAction::ToggleFullscreen:
         fullscreen_toggle_requested_ = true;
+        return;
+    case GameMenuAction::ToggleMouseCapture:
+        if (game_menu_.fullscreen) {
+            return;
+        }
+        game_menu_.mouse_capture = !game_menu_.mouse_capture;
+        video_apply_requested_ = true;
+        return;
+    case GameMenuAction::ToggleVsync:
+        game_menu_.vsync = !game_menu_.vsync;
+        video_apply_requested_ = true;
+        return;
+    case GameMenuAction::CycleFps:
+        if (game_menu_.vsync) {
+            return;
+        }
+        game_menu_.fps_limit = next_video_fps_limit(game_menu_.fps_limit);
+        video_apply_requested_ = true;
         return;
     case GameMenuAction::BeginDragMaster:
         game_menu_.dragging_slider = GameMenuSlider::Master;
@@ -978,25 +1373,152 @@ void GameInput::apply_game_menu_action(const GameMenuAction action)
     case GameMenuAction::BeginDragSfx:
         game_menu_.dragging_slider = GameMenuSlider::Sfx;
         return;
+    case GameMenuAction::BeginDragScrollSpeed:
+        game_menu_.dragging_slider = GameMenuSlider::ScrollSpeed;
+        return;
+    case GameMenuAction::SaveLoadFocusFilename:
+        game_menu_.filename_focused = true;
+        return;
+    case GameMenuAction::SaveLoadBack:
+        game_menu_.open_main();
+        return;
+    case GameMenuAction::SaveLoadConfirm: {
+        const auto stem = sim::persistence::normalize_save_stem(game_menu_.filename_draft);
+        if (!stem.has_value()) {
+            return;
+        }
+
+        game_menu_.filename_draft = *stem;
+        if (game_menu_.screen == GameMenuScreen::Save) {
+            if (sim::persistence::save_file_exists(*stem)) {
+                game_menu_.dialog_return_screen = GameMenuScreen::Save;
+                game_menu_.screen = GameMenuScreen::ConfirmOverwrite;
+                game_menu_.filename_focused = false;
+                return;
+            }
+
+            if (write_save(*stem)) {
+                game_menu_.open_main();
+            }
+            return;
+        }
+
+        if (game_menu_.screen != GameMenuScreen::Load) {
+            return;
+        }
+
+        if (!sim::persistence::save_file_exists(*stem)) {
+            game_menu_.dialog_return_screen = GameMenuScreen::Load;
+            game_menu_.screen = GameMenuScreen::ErrorMissingSave;
+            game_menu_.filename_focused = false;
+            return;
+        }
+
+        game_menu_.dialog_return_screen = GameMenuScreen::Load;
+        game_menu_.screen = GameMenuScreen::ConfirmLoad;
+        game_menu_.filename_focused = false;
+        return;
+    }
+    case GameMenuAction::DialogYes: {
+        const auto stem = sim::persistence::normalize_save_stem(game_menu_.filename_draft);
+        if (!stem.has_value()) {
+            game_menu_.screen = game_menu_.dialog_return_screen;
+            return;
+        }
+
+        if (game_menu_.screen == GameMenuScreen::ConfirmOverwrite) {
+            if (write_save(*stem)) {
+                game_menu_.open_main();
+            }
+            else {
+                game_menu_.screen = game_menu_.dialog_return_screen;
+            }
+            return;
+        }
+
+        if (game_menu_.screen == GameMenuScreen::ConfirmLoad) {
+            if (read_save(*stem)) {
+                game_menu_.close();
+            }
+            else {
+                game_menu_.screen = GameMenuScreen::ErrorMissingSave;
+            }
+            return;
+        }
+
+        game_menu_.screen = game_menu_.dialog_return_screen;
+        return;
+    }
+    case GameMenuAction::DialogCancel:
+    case GameMenuAction::DialogOk:
+        game_menu_.screen = game_menu_.dialog_return_screen;
+        game_menu_.filename_focused = game_menu_.is_save_load_screen();
+        return;
     }
 }
 
-bool GameInput::handle_game_menu_event(const sf::Event& event, const sf::Window& window)
+bool GameInput::handle_game_menu_event(
+    const sf::Event& event,
+    const sf::Window& window,
+    sim::Simulation& simulation)
 {
     const sf::Vector2u window_size = window.getSize();
 
     if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
+        if (game_menu_.is_save_load_screen() && game_menu_.filename_focused) {
+            if (key_pressed->code == sf::Keyboard::Key::Backspace) {
+                if (!game_menu_.filename_draft.empty()) {
+                    game_menu_.filename_draft.pop_back();
+                }
+                return true;
+            }
+
+            if (key_pressed->code == sf::Keyboard::Key::Enter) {
+                apply_game_menu_action(GameMenuAction::SaveLoadConfirm, simulation);
+                return true;
+            }
+        }
+
         if (key_pressed->code != sf::Keyboard::Key::Escape) {
             return game_menu_.is_open();
         }
 
-        if (game_menu_.screen == GameMenuScreen::SettingsGame
-            || game_menu_.screen == GameMenuScreen::SettingsAudio) {
+        if (game_menu_.is_dialog_screen()) {
+            apply_game_menu_action(GameMenuAction::DialogCancel, simulation);
+            return true;
+        }
+
+        if (game_menu_.is_save_load_screen() || game_menu_.is_settings_screen()) {
             game_menu_.open_main();
             return true;
         }
 
+        game_menu_.multiplayer = lockstep_session_ != nullptr;
         game_menu_.toggle();
+        return true;
+    }
+
+    if (const auto* text_entered = event.getIf<sf::Event::TextEntered>()) {
+        if (!game_menu_.is_save_load_screen() || !game_menu_.filename_focused) {
+            return game_menu_.is_open();
+        }
+
+        const char32_t unicode = text_entered->unicode;
+        if (unicode == 8U || unicode == 13U || unicode == 27U) {
+            return true;
+        }
+
+        if (unicode < constants::MAIN_MENU_MIN_PRINTABLE_CHAR
+            || unicode > constants::MAIN_MENU_MAX_PRINTABLE_CHAR) {
+            return true;
+        }
+
+        if (game_menu_.filename_draft.size()
+            >= static_cast<std::size_t>(constants::HUD_SAVE_LOAD_MAX_FILENAME_LENGTH)) {
+            return true;
+        }
+
+        game_menu_.filename_draft.push_back(static_cast<char>(unicode));
         return true;
     }
 
@@ -1011,6 +1533,7 @@ bool GameInput::handle_game_menu_event(const sf::Event& event, const sf::Window&
 
         if (!game_menu_.is_open()) {
             if (menu_button_rect(window_size).contains(mouse_x, mouse_y)) {
+                game_menu_.multiplayer = lockstep_session_ != nullptr;
                 game_menu_.open_main();
                 left_button_down_ = false;
                 left_press_position_.reset();
@@ -1021,12 +1544,58 @@ bool GameInput::handle_game_menu_event(const sf::Event& event, const sf::Window&
         }
 
         if (game_menu_.screen == GameMenuScreen::Main) {
-            const GameMenuAction action =
-                hit_test_menu_button(build_main_menu_buttons(window_size), mouse_x, mouse_y);
+            const GameMenuAction action = hit_test_menu_button(
+                build_main_menu_buttons(window_size, lockstep_session_ != nullptr),
+                mouse_x,
+                mouse_y);
             if (action != GameMenuAction::None) {
-                apply_game_menu_action(action);
+                apply_game_menu_action(action, simulation);
             }
             return true;
+        }
+
+        if (game_menu_.is_save_load_screen()) {
+            if (save_load_filename_rect(window_size).contains(mouse_x, mouse_y)) {
+                game_menu_.filename_focused = true;
+                return true;
+            }
+
+            const int row = hit_test_save_list_row(game_menu_, window_size, mouse_x, mouse_y);
+            if (row >= 0) {
+                game_menu_.selected_save_index = row;
+                game_menu_.filename_draft = game_menu_.save_entries[static_cast<std::size_t>(row)];
+                game_menu_.filename_focused = false;
+                return true;
+            }
+
+            game_menu_.filename_focused = false;
+            const GameMenuAction action = hit_test_menu_button(
+                build_save_load_buttons(game_menu_, window_size),
+                mouse_x,
+                mouse_y);
+            if (action != GameMenuAction::None) {
+                apply_game_menu_action(action, simulation);
+            }
+            return true;
+        }
+
+        if (game_menu_.is_dialog_screen()) {
+            const GameMenuAction action = hit_test_menu_button(
+                build_dialog_buttons(game_menu_, window_size),
+                mouse_x,
+                mouse_y);
+            if (action != GameMenuAction::None) {
+                apply_game_menu_action(action, simulation);
+            }
+            return true;
+        }
+
+        if (game_menu_.screen == GameMenuScreen::SettingsGame) {
+            if (scroll_speed_slider_rect(window_size).contains(mouse_x, mouse_y)) {
+                game_menu_.dragging_slider = GameMenuSlider::ScrollSpeed;
+                apply_slider_drag(game_menu_, window_size, mouse_x);
+                return true;
+            }
         }
 
         if (game_menu_.screen == GameMenuScreen::SettingsAudio) {
@@ -1044,7 +1613,7 @@ bool GameInput::handle_game_menu_event(const sf::Event& event, const sf::Window&
             mouse_x,
             mouse_y);
         if (action != GameMenuAction::None) {
-            apply_game_menu_action(action);
+            apply_game_menu_action(action, simulation);
         }
         return true;
     }
@@ -1065,8 +1634,22 @@ bool GameInput::handle_game_menu_event(const sf::Event& event, const sf::Window&
         return game_menu_.is_open();
     }
 
-    if (event.getIf<sf::Event::MouseWheelScrolled>() != nullptr) {
-        return game_menu_.is_open();
+    if (const auto* wheel = event.getIf<sf::Event::MouseWheelScrolled>()) {
+        if (!game_menu_.is_save_load_screen()) {
+            return game_menu_.is_open();
+        }
+
+        const int max_scroll = std::max(
+            0,
+            static_cast<int>(game_menu_.save_entries.size())
+                - constants::HUD_SAVE_LOAD_VISIBLE_ROWS);
+        if (wheel->delta > 0.0F) {
+            game_menu_.save_list_scroll = std::max(0, game_menu_.save_list_scroll - 1);
+        }
+        else if (wheel->delta < 0.0F) {
+            game_menu_.save_list_scroll = std::min(max_scroll, game_menu_.save_list_scroll + 1);
+        }
+        return true;
     }
 
     return game_menu_.is_open();
@@ -1131,16 +1714,22 @@ void GameInput::update_continuous(
             screen_position);
     }
     else if (left_button_down_ && left_press_position_.has_value()) {
-        selection_box_.active = true;
-        selection_box_.start = sf::Vector2f{
+        const sf::Vector2f press_screen{
             static_cast<float>(left_press_position_->x),
             static_cast<float>(left_press_position_->y),
         };
-        const sf::Vector2i mouse_position = sf::Mouse::getPosition(window);
-        selection_box_.current = sf::Vector2f{
-            static_cast<float>(mouse_position.x),
-            static_cast<float>(mouse_position.y),
-        };
+        if (hit_test_hud_blocks_world_pick(window.getSize(), press_screen.x, press_screen.y)) {
+            selection_box_.active = false;
+        }
+        else {
+            selection_box_.active = true;
+            selection_box_.start = press_screen;
+            const sf::Vector2i mouse_position = sf::Mouse::getPosition(window);
+            selection_box_.current = sf::Vector2f{
+                static_cast<float>(mouse_position.x),
+                static_cast<float>(mouse_position.y),
+            };
+        }
     }
     else {
         selection_box_.active = false;
@@ -1151,42 +1740,83 @@ void GameInput::update_continuous(
     placement_ghost_anchor_.reset();
     placement_ghost_valid_ = false;
     if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse) {
+        || command_panel_mode_ == CommandPanelMode::PlaceHouse
+        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
         const sf::Vector2i mouse_position = sf::Mouse::getPosition(window);
         const auto center_cell = renderer.screen_to_grid(
             static_cast<float>(mouse_position.x),
             static_cast<float>(mouse_position.y));
         if (center_cell.has_value()) {
-            const bool placing_house = command_panel_mode_ == CommandPanelMode::PlaceHouse;
-            const core::GridPos anchor = placing_house
+            const bool placing_extractor = command_panel_mode_ == CommandPanelMode::PlaceExtractor;
+            const bool placing_2x2 = placing_extractor
+                || command_panel_mode_ == CommandPanelMode::PlaceHouse
+                || command_panel_mode_ == CommandPanelMode::PlaceLumberjack;
+            const core::GridPos anchor = placing_2x2
                 ? house_anchor_from_center_cell(*center_cell)
                 : town_center_anchor_from_center_cell(*center_cell);
-            placement_ghost_anchor_ = anchor;
-            const int footprint = placing_house
+            const int footprint = placing_2x2
                 ? constants::HOUSE_FOOTPRINT_TILES
                 : constants::TOWN_CENTER_FOOTPRINT_TILES;
             auto& registry = simulation.registry();
             const auto world_view = registry.view<sim::components::WorldTag, sim::components::MapGrid>();
+            int map_width = 0;
+            int map_height = 0;
             if (world_view.begin() != world_view.end()) {
                 const auto& map = world_view.get<sim::components::MapGrid>(*world_view.begin());
-                placement_ghost_valid_ = can_place_ghost_footprint(
-                    map,
-                    registry,
-                    anchor,
-                    footprint,
-                    selection_.units);
+                map_width = map.width;
+                map_height = map.height;
             }
             else if (render_snapshot != nullptr) {
-                placement_ghost_valid_ = true;
-                for (int y = 0; y < footprint && placement_ghost_valid_; ++y) {
-                    for (int x = 0; x < footprint; ++x) {
-                        const core::GridPos cell{anchor.x + x, anchor.y + y};
-                        if (!core::is_inside_grid(
-                                cell,
-                                render_snapshot->map_width,
-                                render_snapshot->map_height)) {
-                            placement_ghost_valid_ = false;
-                            break;
+                map_width = render_snapshot->map_width;
+                map_height = render_snapshot->map_height;
+            }
+
+            // Off-map footprints: no ghost texture/highlight at all.
+            if (map_width > 0 && map_height > 0
+                && footprint_on_map(map_width, map_height, anchor, footprint)) {
+                placement_ghost_anchor_ = anchor;
+                if (placing_extractor) {
+                    placement_ghost_valid_ = world_view.begin() != world_view.end()
+                        ? sim::player::can_build_extractor_at(registry, anchor, local_player_slot_)
+                        : (render_snapshot != nullptr
+                            && render::snapshot_can_place_extractor_at(*render_snapshot, anchor));
+                    if (placement_ghost_valid_ && render_snapshot != nullptr) {
+                        for (int y = 0; y < footprint && placement_ghost_valid_; ++y) {
+                            for (int x = 0; x < footprint; ++x) {
+                                if (render::snapshot_cell_blocked_by_unit(
+                                        *render_snapshot,
+                                        {anchor.x + x, anchor.y + y})) {
+                                    placement_ghost_valid_ = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (world_view.begin() != world_view.end()) {
+                    const auto& map = world_view.get<sim::components::MapGrid>(*world_view.begin());
+                    placement_ghost_valid_ = can_place_ghost_footprint(
+                        map,
+                        registry,
+                        anchor,
+                        footprint,
+                        selection_.units,
+                        local_player_slot_);
+                }
+                else if (render_snapshot != nullptr) {
+                    placement_ghost_valid_ = true;
+                    for (int y = 0; y < footprint && placement_ghost_valid_; ++y) {
+                        for (int x = 0; x < footprint; ++x) {
+                            const core::GridPos cell{anchor.x + x, anchor.y + y};
+                            if (render::snapshot_cell_is_unexplored(*render_snapshot, cell)
+                                || render::snapshot_cell_covered_by_mana_lake(
+                                    *render_snapshot,
+                                    cell)
+                                || render::snapshot_cell_blocked_by_unit(*render_snapshot, cell)) {
+                                placement_ghost_valid_ = false;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1244,9 +1874,10 @@ void GameInput::update_continuous(
                 || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)
                 || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down);
 
-            const float speed = keyboard_active
-                ? constants::CAMERA_KEYBOARD_PAN_SPEED_PX_PER_SEC
-                : constants::CAMERA_EDGE_SCROLL_SPEED_PX_PER_SEC;
+            const float speed = (keyboard_active
+                    ? constants::CAMERA_KEYBOARD_PAN_SPEED_PX_PER_SEC
+                    : constants::CAMERA_EDGE_SCROLL_SPEED_PX_PER_SEC)
+                * game_menu_.scroll_speed;
 
             renderer.pan_camera(
                 pan_x * speed * delta_seconds,
@@ -1263,7 +1894,9 @@ CursorShape GameInput::resolve_cursor_shape(
     const render::SimRenderSnapshot* render_snapshot) const
 {
     if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse) {
+        || command_panel_mode_ == CommandPanelMode::PlaceHouse
+        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
         if (!placement_ghost_anchor_.has_value()) {
             return CursorShape::Cross;
         }
@@ -1312,7 +1945,16 @@ void GameInput::update_game_cursor(
         return;
     }
 
-    game_cursor_->set_player_color(cursor_color_for_player_slot(local_player_slot_));
+    CursorPlayerColor cursor_color = cursor_color_for_player_slot(local_player_slot_);
+    const auto session_view =
+        simulation.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+    if (session_view.begin() != session_view.end()) {
+        const auto& session =
+            session_view.get<sim::components::MatchSession>(*session_view.begin());
+        cursor_color = static_cast<CursorPlayerColor>(
+            sim::components::player_color_index(session, local_player_slot_));
+    }
+    game_cursor_->set_player_color(cursor_color);
     game_cursor_->set_shape(resolve_cursor_shape(simulation, render_snapshot));
     game_cursor_->apply(window);
 }
@@ -1365,6 +2007,14 @@ void GameInput::finalize_left_release(
         return;
     }
 
+    if (left_press_position_.has_value()
+        && hit_test_hud_blocks_world_pick(
+            window.getSize(),
+            static_cast<float>(left_press_position_->x),
+            static_cast<float>(left_press_position_->y))) {
+        return;
+    }
+
     if (attack_targeting_mode_) {
         attack_targeting_mode_ = false;
         if (try_issue_attack_at_screen(
@@ -1378,8 +2028,10 @@ void GameInput::finalize_left_release(
     }
 
     if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
-        || command_panel_mode_ == CommandPanelMode::PlaceHouse) {
-        if (hit_test_command_panel_frame(
+        || command_panel_mode_ == CommandPanelMode::PlaceHouse
+        || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+        || command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+        if (hit_test_hud_blocks_world_pick(
                 window.getSize(),
                 screen_position.x,
                 screen_position.y)) {
@@ -1391,15 +2043,24 @@ void GameInput::finalize_left_release(
             return;
         }
 
-        const bool placing_house = command_panel_mode_ == CommandPanelMode::PlaceHouse;
-        sim::player::PlayerCommand command = make_command(
-            simulation,
-            placing_house ? sim::player::PlayerCommandType::BuildHouse
-                          : sim::player::PlayerCommandType::BuildTownCenter,
-            selection_.units,
-            render_snapshot);
-        command.cell = placing_house ? house_anchor_from_center_cell(*center_cell)
-                                     : town_center_anchor_from_center_cell(*center_cell);
+        sim::player::PlayerCommandType build_type = sim::player::PlayerCommandType::BuildTownCenter;
+        core::GridPos anchor = town_center_anchor_from_center_cell(*center_cell);
+        if (command_panel_mode_ == CommandPanelMode::PlaceHouse) {
+            build_type = sim::player::PlayerCommandType::BuildHouse;
+            anchor = house_anchor_from_center_cell(*center_cell);
+        }
+        else if (command_panel_mode_ == CommandPanelMode::PlaceLumberjack) {
+            build_type = sim::player::PlayerCommandType::BuildLumberjack;
+            anchor = lumberjack_anchor_from_center_cell(*center_cell);
+        }
+        else if (command_panel_mode_ == CommandPanelMode::PlaceExtractor) {
+            build_type = sim::player::PlayerCommandType::BuildExtractor;
+            anchor = extractor_anchor_from_center_cell(*center_cell);
+        }
+
+        sim::player::PlayerCommand command =
+            make_command(simulation, build_type, selection_.units, render_snapshot);
+        command.cell = anchor;
         submit_player_command(simulation, std::move(command));
         command_panel_mode_ = CommandPanelMode::WorkerActions;
         placement_ghost_anchor_.reset();
@@ -1442,6 +2103,13 @@ void GameInput::finalize_left_release(
             }
         }
 
+        if (hit_test_hud_blocks_world_pick(
+                window.getSize(),
+                screen_position.x,
+                screen_position.y)) {
+            return;
+        }
+
         if (mode != sim::player::SelectionModifyMode::Replace) {
             const entt::entity picked = render::pick_player_unit_at_screen(
                 *render_snapshot,
@@ -1463,6 +2131,15 @@ void GameInput::finalize_left_release(
             selection_.clear_resource();
             selection_.clear_building();
             play_select_ack_if_own_units(simulation, render_snapshot);
+            return;
+        }
+
+        const entt::entity picked_lake =
+            render::pick_mana_lake_at_screen(*render_snapshot, renderer, screen_position);
+        if (picked_lake != entt::null) {
+            selection_.clear_units();
+            selection_.clear_resource();
+            selection_.building = picked_lake;
             return;
         }
 
@@ -1568,6 +2245,13 @@ void GameInput::finalize_left_release(
         }
     }
 
+    if (hit_test_hud_blocks_world_pick(
+            window.getSize(),
+            screen_position.x,
+            screen_position.y)) {
+        return;
+    }
+
     if (mode != sim::player::SelectionModifyMode::Replace) {
         const entt::entity picked = sim::player::pick_player_unit_at_screen(
             simulation.registry(),
@@ -1588,6 +2272,18 @@ void GameInput::finalize_left_release(
         selection_.clear_resource();
         selection_.clear_building();
         play_select_ack_if_own_units(simulation, nullptr);
+        return;
+    }
+
+    const entt::entity picked_lake = sim::player::pick_mana_lake_at_screen(
+        simulation.registry(),
+        renderer,
+        screen_position,
+        local_player_slot_);
+    if (picked_lake != entt::null) {
+        selection_.clear_units();
+        selection_.clear_resource();
+        selection_.building = picked_lake;
         return;
     }
 
@@ -1755,7 +2451,10 @@ bool GameInput::try_issue_attack_at_screen(
     const render::SimRenderSnapshot* render_snapshot,
     const sf::Vector2f screen_position)
 {
-    (void)window;
+    if (hit_test_hud_blocks_world_pick(window.getSize(), screen_position.x, screen_position.y)) {
+        return false;
+    }
+
     if (selection_.units.empty()) {
         return false;
     }
@@ -1851,6 +2550,18 @@ render::HudUnitContext GameInput::make_hud_context(
         context.chat_lines = chat_state_->snapshot();
     }
 
+    context.multiplayer = multiplayer_;
+    context.player_names = player_names_;
+    {
+        const auto session_view = simulation.registry()
+            .view<sim::components::WorldTag, sim::components::MatchSession>();
+        if (session_view.begin() != session_view.end()) {
+            context.has_match_session = true;
+            context.match_session =
+                session_view.get<sim::components::MatchSession>(*session_view.begin());
+        }
+    }
+
     if (command_panel_pressed_slot_ >= 0
         && std::chrono::steady_clock::now() < command_panel_press_until_) {
         context.command_panel_pressed_slot = command_panel_pressed_slot_;
@@ -1876,11 +2587,14 @@ render::HudUnitContext GameInput::make_hud_context(
                 continue;
             }
 
+            context.selected_building_is_mana_lake = pose.is_mana_lake;
             if (pose.health_current > 0) {
                 context.has_selected_building_health = true;
                 context.selected_building_health_current = pose.health_current;
                 context.selected_building_health_max = pose.health_max;
                 context.selected_building_is_house = pose.is_house;
+                context.selected_building_is_lumberjack = pose.is_lumberjack;
+                context.selected_building_is_extractor = pose.is_extractor;
                 context.has_selected_building_owner = true;
                 context.selected_building_player_slot = pose.player_slot;
             }
@@ -1890,19 +2604,26 @@ render::HudUnitContext GameInput::make_hud_context(
     }
 
     auto& registry = simulation.registry();
-    if (registry.valid(selection_.building)
-        && registry.any_of<sim::components::Health>(selection_.building)) {
-        const auto& health = registry.get<sim::components::Health>(selection_.building);
-        if (health.current.raw() > 0) {
-            context.has_selected_building_health = true;
-            context.selected_building_health_current = health.current.to_int();
-            context.selected_building_health_max = health.max.to_int();
-            context.selected_building_is_house =
-                registry.any_of<sim::components::HouseTag>(selection_.building);
-            if (registry.any_of<sim::components::PlayerOwnedTag>(selection_.building)) {
-                context.has_selected_building_owner = true;
-                context.selected_building_player_slot =
-                    sim::components::entity_player_slot(registry, selection_.building);
+    if (registry.valid(selection_.building)) {
+        context.selected_building_is_mana_lake =
+            registry.any_of<sim::components::ManaLakeTag>(selection_.building);
+        if (registry.any_of<sim::components::Health>(selection_.building)) {
+            const auto& health = registry.get<sim::components::Health>(selection_.building);
+            if (health.current.raw() > 0) {
+                context.has_selected_building_health = true;
+                context.selected_building_health_current = health.current.to_int();
+                context.selected_building_health_max = health.max.to_int();
+                context.selected_building_is_house =
+                    registry.any_of<sim::components::HouseTag>(selection_.building);
+                context.selected_building_is_lumberjack =
+                    registry.any_of<sim::components::LumberjackTag>(selection_.building);
+                context.selected_building_is_extractor =
+                    registry.any_of<sim::components::ExtractorTag>(selection_.building);
+                if (registry.any_of<sim::components::PlayerOwnedTag>(selection_.building)) {
+                    context.has_selected_building_owner = true;
+                    context.selected_building_player_slot =
+                        sim::components::entity_player_slot(registry, selection_.building);
+                }
             }
         }
     }
@@ -1922,7 +2643,42 @@ bool GameInput::handle_event(
     }
 
     if (game_menu_.is_open()) {
-        return handle_game_menu_event(event, window);
+        return handle_game_menu_event(event, window, simulation);
+    }
+
+    if (sim::systems::match_is_finished(simulation.registry())) {
+        if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
+            if (key_pressed->code == sf::Keyboard::Key::Escape) {
+                game_menu_.multiplayer = lockstep_session_ != nullptr;
+                game_menu_.open_main();
+                return true;
+            }
+        }
+
+        if (const auto* mouse_pressed = event.getIf<sf::Event::MouseButtonPressed>()) {
+            if (mouse_pressed->button == sf::Mouse::Button::Left) {
+                const sf::Vector2f press_screen{
+                    static_cast<float>(mouse_pressed->position.x),
+                    static_cast<float>(mouse_pressed->position.y),
+                };
+                if (menu_button_rect(window.getSize()).contains(press_screen.x, press_screen.y)) {
+                    game_menu_.multiplayer = lockstep_session_ != nullptr;
+                    game_menu_.open_main();
+                    return true;
+                }
+
+                if (match_result_exit_button_rect(window.getSize())
+                        .contains(press_screen.x, press_screen.y)) {
+                    exit_to_main_menu_requested_ = true;
+                    return true;
+                }
+            }
+        }
+
+        return event.getIf<sf::Event::MouseButtonPressed>() != nullptr
+            || event.getIf<sf::Event::MouseButtonReleased>() != nullptr
+            || event.getIf<sf::Event::MouseMoved>() != nullptr
+            || event.getIf<sf::Event::KeyPressed>() != nullptr;
     }
 
     if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
@@ -1934,6 +2690,8 @@ bool GameInput::handle_event(
 
             if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
                 || command_panel_mode_ == CommandPanelMode::PlaceHouse
+                || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+                || command_panel_mode_ == CommandPanelMode::PlaceExtractor
                 || command_panel_mode_ == CommandPanelMode::BuildMenu) {
                 command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
                     ? CommandPanelMode::WorkerActions
@@ -1941,14 +2699,13 @@ bool GameInput::handle_event(
                 return true;
             }
 
+            game_menu_.multiplayer = lockstep_session_ != nullptr;
             game_menu_.open_main();
             return true;
         }
 
         if (const std::optional<int> slot = command_panel_slot_for_key(key_pressed->code);
-            slot.has_value() && command_panel_mode_ != CommandPanelMode::Empty
-            && command_panel_mode_ != CommandPanelMode::PlaceTownCenter
-            && command_panel_mode_ != CommandPanelMode::PlaceHouse) {
+            slot.has_value() && command_panel_mode_ != CommandPanelMode::Empty) {
             const CommandPanelAction action = action_for_command_panel_slot(
                 command_panel_mode_,
                 *slot,
@@ -1979,6 +2736,7 @@ bool GameInput::handle_event(
                 static_cast<float>(left_press_position_->y),
             };
             if (menu_button_rect(window.getSize()).contains(press_screen.x, press_screen.y)) {
+                game_menu_.multiplayer = lockstep_session_ != nullptr;
                 game_menu_.open_main();
                 left_button_down_ = false;
                 left_press_position_.reset();
@@ -2000,6 +2758,12 @@ bool GameInput::handle_event(
                     render_snapshot,
                     press_screen);
             }
+            else if (hit_test_hud_blocks_world_pick(
+                         window.getSize(),
+                         press_screen.x,
+                         press_screen.y)) {
+                selection_box_.active = false;
+            }
             else {
                 selection_box_.active = true;
                 selection_box_.start = press_screen;
@@ -2009,6 +2773,8 @@ bool GameInput::handle_event(
         else if (mouse_pressed->button == sf::Mouse::Button::Right) {
             if (command_panel_mode_ == CommandPanelMode::PlaceTownCenter
                 || command_panel_mode_ == CommandPanelMode::PlaceHouse
+                || command_panel_mode_ == CommandPanelMode::PlaceLumberjack
+                || command_panel_mode_ == CommandPanelMode::PlaceExtractor
                 || command_panel_mode_ == CommandPanelMode::BuildMenu) {
                 command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
                     ? CommandPanelMode::WorkerActions
@@ -2070,6 +2836,13 @@ bool GameInput::handle_event(
                 command.goal_world_x = math::Fixed::from_float(world->first);
                 command.goal_world_y = math::Fixed::from_float(world->second);
                 submit_player_command(simulation, std::move(command));
+                return true;
+            }
+
+            if (hit_test_hud_blocks_world_pick(
+                    window.getSize(),
+                    screen_position.x,
+                    screen_position.y)) {
                 return true;
             }
 

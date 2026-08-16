@@ -31,6 +31,8 @@ namespace aoa::sim::systems {
 
 void initialize_fog_of_war(entt::registry& registry);
 
+void reveal_all_explored(entt::registry& registry);
+
 
 
 void run_visibility_system(entt::registry& registry);

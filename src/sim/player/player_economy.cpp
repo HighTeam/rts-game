@@ -5,6 +5,7 @@
 #include "sim/components/match_session.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/systems/match_outcome.hpp"
 
 #include <algorithm>
 
@@ -75,6 +76,39 @@ int count_completed_houses(const entt::registry& registry, const std::uint8_t pl
     }
 
     return count;
+}
+
+int count_completed_extractors(const entt::registry& registry, const std::uint8_t player_slot)
+{
+    int count = 0;
+    const auto view = registry.view<
+        components::ExtractorTag,
+        components::PlayerOwnedTag,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        ++count;
+    }
+
+    return count;
+}
+
+int player_mana_cap_max(const entt::registry& registry, const std::uint8_t player_slot)
+{
+    const int from_extractors =
+        count_completed_extractors(registry, player_slot) * constants::MANA_CAP_PER_EXTRACTOR;
+    return std::min(from_extractors, constants::PLAYER_MANA_MAX);
 }
 
 int player_civil_cap_max(const entt::registry& registry, const std::uint8_t player_slot)
@@ -244,6 +278,57 @@ bool try_deduct_player_food(
     return remaining <= 0;
 }
 
+bool can_afford_player_money(
+    const entt::registry& registry,
+    const std::uint8_t player_slot,
+    const int amount)
+{
+    if (amount <= 0) {
+        return true;
+    }
+
+    return sum_player_stockpile(registry, player_slot).money >= amount;
+}
+
+bool try_deduct_player_money(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const int amount)
+{
+    if (amount <= 0) {
+        return true;
+    }
+
+    if (!can_afford_player_money(registry, player_slot, amount)) {
+        return false;
+    }
+
+    int remaining = amount;
+    const auto view = registry.view<
+        components::TownCenterTag,
+        components::PlayerOwnedTag,
+        components::Stockpile>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        auto& stockpile = view.get<components::Stockpile>(entity);
+        const int take = std::min(stockpile.money, remaining);
+        stockpile.money -= take;
+        remaining -= take;
+        if (remaining <= 0) {
+            return true;
+        }
+    }
+
+    return remaining <= 0;
+}
+
 void add_player_wood(
     entt::registry& registry,
     const std::uint8_t player_slot,
@@ -271,6 +356,60 @@ void add_player_wood(
     }
 }
 
+void add_player_money(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const int amount)
+{
+    if (amount <= 0) {
+        return;
+    }
+
+    const auto view = registry.view<
+        components::TownCenterTag,
+        components::PlayerOwnedTag,
+        components::Stockpile>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (registry.any_of<components::UnderConstructionTag>(entity)) {
+            continue;
+        }
+
+        view.get<components::Stockpile>(entity).money += amount;
+        return;
+    }
+}
+
+void clamp_player_mana_to_cap(entt::registry& registry, const std::uint8_t player_slot)
+{
+    int excess = player_mana_total(registry, player_slot)
+        - player_mana_cap_max(registry, player_slot);
+    if (excess <= 0) {
+        return;
+    }
+
+    const auto view = registry.view<
+        components::TownCenterTag,
+        components::PlayerOwnedTag,
+        components::Stockpile>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        auto& stockpile = view.get<components::Stockpile>(entity);
+        const int take = std::min(stockpile.mana, excess);
+        stockpile.mana -= take;
+        excess -= take;
+        if (excess <= 0) {
+            return;
+        }
+    }
+}
+
 void add_player_mana(
     entt::registry& registry,
     const std::uint8_t player_slot,
@@ -281,12 +420,12 @@ void add_player_mana(
     }
 
     const int current_total = player_mana_total(registry, player_slot);
-    int remaining_capacity = constants::PLAYER_MANA_MAX - current_total;
+    const int remaining_capacity = player_mana_cap_max(registry, player_slot) - current_total;
     if (remaining_capacity <= 0) {
         return;
     }
 
-    int to_add = std::min(amount, remaining_capacity);
+    const int to_add = std::min(amount, remaining_capacity);
     const auto view = registry.view<
         components::TownCenterTag,
         components::PlayerOwnedTag,
@@ -301,6 +440,7 @@ void add_player_mana(
         }
 
         view.get<components::Stockpile>(entity).mana += to_add;
+        systems::note_mana_collected(registry, player_slot, to_add);
         return;
     }
 }

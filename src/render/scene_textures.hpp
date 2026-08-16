@@ -12,8 +12,20 @@ enum class SceneTextureKind : std::uint8_t {
     GrassVariant,
     Dirt,
     DirtVariant,
-    ForestTree,
-    ForestTreeAlt,
+    Snow,
+    Sand,
+    OakForestSmall,
+    OakForestMedium,
+    OakForestLarge,
+    DarkenedOakForestSmall,
+    DarkenedOakForestMedium,
+    DarkenedOakForestLarge,
+    PinesForestSmall,
+    PinesForestMedium,
+    PinesForestLarge,
+    DarkenedPinesForestSmall,
+    DarkenedPinesForestMedium,
+    DarkenedPinesForestLarge,
     ForestStump,
     Berries,
     Blueberries,
@@ -25,6 +37,11 @@ enum class SceneTextureKind : std::uint8_t {
     TownCenterEnemy,
     HouseFriendly,
     HouseEnemy,
+    LumberjackFriendly,
+    LumberjackEnemy,
+    ExtractorFriendly,
+    ExtractorEnemy,
+    ManaLake,
     Count,
 };
 
@@ -54,7 +71,11 @@ private:
     [[nodiscard]] bool load_texture_file(
         const std::filesystem::path& assets_directory,
         const std::string& relative_path,
-        TextureEntry& entry);
+        TextureEntry& entry,
+        int crop_x = 0,
+        int crop_y = 0,
+        int crop_width = 0,
+        int crop_height = 0);
 
     std::vector<TextureEntry> textures_{static_cast<std::size_t>(SceneTextureKind::Count)};
     bool loaded_{false};

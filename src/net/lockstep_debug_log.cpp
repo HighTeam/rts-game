@@ -17,6 +17,8 @@ namespace {
 std::mutex log_mutex{};
 std::ofstream log_file{};
 bool logging_enabled = false;
+std::chrono::steady_clock::time_point last_flush{};
+constexpr auto kLogFlushInterval = std::chrono::milliseconds(1000);
 
 const char* role_label(const LockstepRole role)
 {
@@ -48,6 +50,7 @@ void LockstepDebugLog::enable(const std::uint8_t player_slot, const LockstepRole
     }
 
     log_file << timestamp_now() << " debug enabled path=" << path.string() << '\n';
+    last_flush = std::chrono::steady_clock::now();
     log_file.flush();
     std::cout << "lockstep-debug: writing to " << path.string() << '\n';
 }
@@ -97,7 +100,12 @@ void LockstepDebugLog::log(const std::string_view message)
     }
 
     log_file << timestamp_now() << ' ' << message << '\n';
-    log_file.flush();
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_flush >= kLogFlushInterval) {
+        last_flush = now;
+        log_file.flush();
+    }
 }
 
 void LockstepDebugLog::log_event(const std::string_view event, const std::string_view detail)

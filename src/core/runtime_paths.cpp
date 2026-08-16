@@ -1,5 +1,7 @@
 #include "core/runtime_paths.hpp"
 
+#include "core/constants.hpp"
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -7,6 +9,7 @@
 #include <Windows.h>
 #endif
 
+#include <system_error>
 #include <string_view>
 #include <vector>
 
@@ -33,11 +36,12 @@ namespace {
     const std::filesystem::path& directory,
     const std::filesystem::path& validation_relative)
 {
+    std::error_code error{};
     if (validation_relative.empty()) {
-        return std::filesystem::is_directory(directory);
+        return std::filesystem::is_directory(directory, error) && !error;
     }
 
-    return std::filesystem::is_directory(directory / validation_relative);
+    return std::filesystem::is_directory(directory / validation_relative, error) && !error;
 }
 
 [[nodiscard]] std::filesystem::path resolve_runtime_directory(
@@ -52,6 +56,7 @@ namespace {
     }
 
 #ifdef AOA_RUNTIME_ROOT
+    // Dev-tree fallback only. Never throw if the compile-time drive is missing on other PCs.
     candidates.push_back(std::filesystem::path(AOA_RUNTIME_ROOT) / relative_name);
 #endif
 
@@ -63,15 +68,12 @@ namespace {
         }
     }
 
+    // Prefer the executable directory for portable installs (zip next to aoa.exe).
     if (!executable_dir.empty()) {
         return executable_dir / relative_name;
     }
 
-#ifdef AOA_RUNTIME_ROOT
-    return std::filesystem::path(AOA_RUNTIME_ROOT) / relative_name;
-#else
     return std::filesystem::path(relative_name);
-#endif
 }
 
 } // namespace
@@ -84,6 +86,35 @@ std::filesystem::path executable_directory()
 std::filesystem::path default_data_directory()
 {
     return resolve_runtime_directory("data", "archetypes");
+}
+
+std::filesystem::path default_scenarios_directory()
+{
+    return default_data_directory() / constants::SCENARIOS_DIRECTORY_NAME;
+}
+
+std::filesystem::path default_game_root_directory()
+{
+    const std::filesystem::path executable_dir = read_executable_directory();
+    if (!executable_dir.empty()) {
+        return executable_dir;
+    }
+
+#ifdef AOA_RUNTIME_ROOT
+    return std::filesystem::path(AOA_RUNTIME_ROOT);
+#else
+    return {};
+#endif
+}
+
+std::filesystem::path default_playable_scenarios_directory()
+{
+    return default_game_root_directory() / constants::SCENARIOS_DIRECTORY_NAME;
+}
+
+std::filesystem::path default_patterns_directory()
+{
+    return default_game_root_directory() / constants::PATTERNS_DIRECTORY_NAME;
 }
 
 std::filesystem::path default_assets_directory()

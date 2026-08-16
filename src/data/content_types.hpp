@@ -31,6 +31,7 @@ struct ArchetypeDefinition {
     int vision_range{0};
     int spawn_worker_food_cost{0};
     int spawn_militia_food_cost{0};
+    int spawn_militia_money_cost{0};
     int build_wood_cost{0};
     int wood_capacity{0};
     int food_capacity{0};

@@ -4,6 +4,7 @@
 #include "core/grid.hpp"
 #include "math/fixed.hpp"
 #include "net/net_constants.hpp"
+#include "render/building_sight_memory.hpp"
 #include "render/game_renderer.hpp"
 #include "data/content_types.hpp"
 #include "sim/components/building_footprint.hpp"
@@ -14,12 +15,15 @@
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/match_session.hpp"
+#include "sim/components/movement.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
 #include "sim/player/player_commands.hpp"
 #include "sim/player/player_economy.hpp"
+#include "sim/spawn/unit_spawn.hpp"
 #include "sim/systems/visibility_system.hpp"
 
 #include <algorithm>
@@ -117,6 +121,20 @@ RenderEntityPose capture_entity_pose(
     pose.is_militia = registry.any_of<sim::components::MilitiaUnitTag>(entity);
     pose.is_town_center = registry.any_of<sim::components::TownCenterTag>(entity);
     pose.is_house = registry.any_of<sim::components::HouseTag>(entity);
+    pose.is_lumberjack = registry.any_of<sim::components::LumberjackTag>(entity);
+    pose.is_extractor = registry.any_of<sim::components::ExtractorTag>(entity);
+    pose.is_mana_lake = registry.any_of<sim::components::ManaLakeTag>(entity);
+    if (pose.is_mana_lake) {
+        pose.lake_has_extractor = sim::spawn::find_extractor_on_mana_lake(
+            const_cast<entt::registry&>(registry),
+            entity) != entt::null;
+    }
+
+    if (registry.any_of<sim::components::ManaGenerationCooldown>(entity)) {
+        pose.mana_gen_ticks_remaining =
+            registry.get<sim::components::ManaGenerationCooldown>(entity).ticks_remaining;
+    }
+
     pose.under_construction = registry.any_of<sim::components::UnderConstructionTag>(entity);
     sim::components::BuildingFootprint footprint{};
     if (registry.any_of<sim::components::BuildingFootprint>(entity)) {
@@ -134,6 +152,7 @@ RenderEntityPose capture_entity_pose(
     }
 
     if (registry.any_of<sim::components::DefinitionRef>(entity)) {
+        pose.archetype_id = registry.get<sim::components::DefinitionRef>(entity).id;
         const auto world_view = registry.view<sim::components::WorldTag, sim::components::ContentPack>();
         if (world_view.begin() != world_view.end()) {
             const auto& content = world_view.get<sim::components::ContentPack>(*world_view.begin()).content;
@@ -147,6 +166,12 @@ RenderEntityPose capture_entity_pose(
                 pose.pierce_armor = definition->pierce_armor;
             }
         }
+    }
+
+    if (registry.any_of<sim::components::MovePath>(entity)) {
+        const auto& path = registry.get<sim::components::MovePath>(entity);
+        pose.debug_path_cells = path.cells;
+        pose.debug_path_next_index = path.next_index;
     }
 
     return pose;
@@ -163,7 +188,7 @@ void capture_hud_stats(
     stats.town_food = stockpile.food;
     stats.town_money = stockpile.money;
     stats.town_mana = stockpile.mana;
-    stats.town_mana_max = constants::PLAYER_MANA_MAX;
+    stats.town_mana_max = sim::player::player_mana_cap_max(registry, player_slot);
     stats.civil_cap_current = sim::player::count_player_units(registry, player_slot);
     stats.civil_cap_max = sim::player::player_civil_cap_max(registry, player_slot);
 
@@ -204,9 +229,12 @@ void capture_hud_stats(
 
 SimRenderSnapshot capture_sim_render_snapshot(
     const entt::registry& registry,
-    const std::uint8_t local_player_slot)
+    const std::uint8_t local_player_slot,
+    BuildingSightMemory* building_sight_memory,
+    const std::uint64_t tick_count)
 {
     SimRenderSnapshot snapshot{};
+    snapshot.tick_count = tick_count;
 
     const auto world_view = registry.view<sim::components::WorldTag, sim::components::MapGrid>();
     if (world_view.begin() == world_view.end()) {
@@ -218,9 +246,14 @@ SimRenderSnapshot capture_sim_render_snapshot(
     snapshot.map_width = map.width;
     snapshot.map_height = map.height;
     snapshot.tiles = map.tiles;
+    snapshot.ground = map.ground;
     snapshot.forest_wood = map.forest_wood;
     snapshot.bush_food = map.bush_food;
     snapshot.mine_money = map.mine_money;
+    if (registry.any_of<sim::components::MatchSession>(world)) {
+        snapshot.player_color_indices =
+            registry.get<sim::components::MatchSession>(world).player_color_indices;
+    }
 
     const sim::components::FogOfWarState* fog = nullptr;
     if (registry.any_of<sim::components::FogOfWarState>(world)) {
@@ -267,15 +300,69 @@ SimRenderSnapshot capture_sim_render_snapshot(
         sim::components::Health>();
     for (const entt::entity entity : building_view) {
         if (should_draw_entity(entity)) {
-            snapshot.buildings.push_back(capture_entity_pose(registry, entity, local_player_slot));
+            RenderEntityPose pose = capture_entity_pose(registry, entity, local_player_slot);
+            if (building_sight_memory != nullptr) {
+                building_sight_memory->observe_visible(pose);
+            }
+            snapshot.buildings.push_back(std::move(pose));
+            continue;
+        }
+
+        // Explored-but-not-visible: never pull live construction/completion.
+        // Only show the last pose this player actually saw.
+        if (building_sight_memory == nullptr) {
+            continue;
+        }
+
+        const RenderEntityPose* remembered = building_sight_memory->find(entity);
+        if (remembered == nullptr) {
             continue;
         }
 
         if (fog != nullptr
-            && sim::systems::is_building_renderable_in_shroud(registry, *fog, entity, local_player_slot)) {
-            snapshot.buildings.push_back(
-                capture_entity_pose(registry, entity, local_player_slot, true));
+            && !sim::systems::is_building_renderable_in_shroud(
+                   registry, *fog, entity, local_player_slot)) {
+            continue;
         }
+
+        snapshot.buildings.push_back(*remembered);
+    }
+
+    if (building_sight_memory != nullptr) {
+        // Drop memories for buildings that no longer exist.
+        for (const RenderEntityPose& remembered : building_sight_memory->remembered_poses()) {
+            if (!registry.valid(remembered.entity)
+                || !registry.any_of<sim::components::BuildingTag>(remembered.entity)) {
+                building_sight_memory->forget(remembered.entity);
+            }
+        }
+    }
+
+    // Lakes are terrain-like: once explored they stay drawn, and they never die.
+    const auto lake_view = registry.view<
+        sim::components::ManaLakeTag,
+        sim::components::GridPosition,
+        sim::components::BuildingFootprint>();
+    for (const entt::entity entity : lake_view) {
+        if (fog != nullptr) {
+            const auto& anchor = lake_view.get<sim::components::GridPosition>(entity);
+            const auto& footprint = lake_view.get<sim::components::BuildingFootprint>(entity);
+            bool explored = false;
+            for (int y = 0; y < footprint.height && !explored; ++y) {
+                for (int x = 0; x < footprint.width && !explored; ++x) {
+                    explored = sim::systems::is_cell_explored_to_slot(
+                        *fog,
+                        core::GridPos{anchor.cell.x + x, anchor.cell.y + y},
+                        local_player_slot);
+                }
+            }
+
+            if (!explored) {
+                continue;
+            }
+        }
+
+        snapshot.buildings.push_back(capture_entity_pose(registry, entity, local_player_slot));
     }
 
     const auto unit_view = registry.view<
@@ -654,7 +741,7 @@ entt::entity pick_player_building_at_screen(
     float best_distance_sq = pick_radius_px * pick_radius_px;
 
     for (const RenderEntityPose& pose : snapshot.buildings) {
-        if (pose.player_slot != local_player_slot || pose.health_current <= 0) {
+        if (pose.is_nature || pose.player_slot != local_player_slot || pose.health_current <= 0) {
             continue;
         }
 
@@ -702,8 +789,7 @@ entt::entity pick_enemy_building_at_screen(
         return entt::null;
     }
 
-    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)
-        || !snapshot_cell_is_visible(snapshot, *grid_cell)) {
+    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)) {
         return entt::null;
     }
 
@@ -711,7 +797,12 @@ entt::entity pick_enemy_building_at_screen(
     float best_distance_sq = pick_radius_px * pick_radius_px;
 
     for (const RenderEntityPose& pose : snapshot.buildings) {
-        if (pose.player_slot == local_player_slot || pose.health_current <= 0 || pose.shrouded) {
+        if (pose.is_nature || pose.player_slot == local_player_slot || pose.health_current <= 0) {
+            continue;
+        }
+
+        // Visible enemies always; shrouded memory poses are selectable for info.
+        if (!pose.shrouded && !snapshot_cell_is_visible(snapshot, *grid_cell)) {
             continue;
         }
 
@@ -745,6 +836,100 @@ entt::entity pick_enemy_building_at_screen(
     }
 
     return best;
+}
+
+entt::entity pick_mana_lake_at_screen(
+    const SimRenderSnapshot& snapshot,
+    const GameRenderer& renderer,
+    const sf::Vector2f screen_position)
+{
+    const auto grid_cell = renderer.screen_to_grid(screen_position.x, screen_position.y);
+    if (!grid_cell.has_value()) {
+        return entt::null;
+    }
+
+    if (snapshot_cell_is_unexplored(snapshot, *grid_cell)) {
+        return entt::null;
+    }
+
+    for (const RenderEntityPose& pose : snapshot.buildings) {
+        if (!pose.is_mana_lake || pose.lake_has_extractor) {
+            continue;
+        }
+
+        const sim::components::BuildingFootprint footprint{
+            pose.footprint_width,
+            pose.footprint_height,
+        };
+        const sim::components::GridPosition anchor_pos{{pose.grid_x, pose.grid_y}};
+        if (!sim::components::building_contains_cell(anchor_pos, footprint, *grid_cell)) {
+            continue;
+        }
+
+        return pose.entity;
+    }
+
+    return entt::null;
+}
+
+bool snapshot_cell_covered_by_mana_lake(
+    const SimRenderSnapshot& snapshot,
+    const core::GridPos cell)
+{
+    for (const RenderEntityPose& pose : snapshot.buildings) {
+        if (!pose.is_mana_lake) {
+            continue;
+        }
+
+        const sim::components::BuildingFootprint footprint{
+            pose.footprint_width,
+            pose.footprint_height,
+        };
+        const sim::components::GridPosition anchor_pos{{pose.grid_x, pose.grid_y}};
+        if (sim::components::building_contains_cell(anchor_pos, footprint, cell)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool snapshot_cell_blocked_by_unit(
+    const SimRenderSnapshot& snapshot,
+    const core::GridPos cell)
+{
+    for (const RenderEntityPose& pose : snapshot.units) {
+        if (pose.health_current <= 0) {
+            continue;
+        }
+
+        if (pose.grid_x == cell.x && pose.grid_y == cell.y) {
+            return true;
+        }
+
+        if (static_cast<int>(pose.cur_x) == cell.x && static_cast<int>(pose.cur_y) == cell.y) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool snapshot_can_place_extractor_at(
+    const SimRenderSnapshot& snapshot,
+    const core::GridPos anchor_cell)
+{
+    for (const RenderEntityPose& pose : snapshot.buildings) {
+        if (!pose.is_mana_lake || pose.lake_has_extractor) {
+            continue;
+        }
+
+        if (pose.grid_x == anchor_cell.x && pose.grid_y == anchor_cell.y) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 std::vector<entt::entity> pick_player_units_in_screen_rect(

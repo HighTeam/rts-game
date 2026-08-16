@@ -3,19 +3,23 @@
 #include "core/constants.hpp"
 #include "render/game_renderer.hpp"
 
+#include <algorithm>
+
 #include <SFML/Window/VideoMode.hpp>
 
 namespace aoa::app {
 
-namespace {
-
-void apply_window_frame_limits(sf::Window& window)
+void apply_window_frame_limits(sf::Window& window, const WindowDisplaySettings& settings)
 {
-    window.setVerticalSyncEnabled(false);
-    window.setFramerateLimit(constants::TARGET_DISPLAY_FPS);
+    window.setVerticalSyncEnabled(settings.vsync);
+    window.setFramerateLimit(
+        settings.vsync ? 0U : static_cast<unsigned int>(std::max(0, settings.fps_limit)));
 }
 
-} // namespace
+void apply_mouse_capture(sf::Window& window, const WindowDisplaySettings& settings)
+{
+    window.setMouseCursorGrabbed(settings.fullscreen || settings.mouse_capture);
+}
 
 void enter_fullscreen(
     sf::Window& window,
@@ -31,13 +35,13 @@ void enter_fullscreen(
         settings.title,
         sf::State::Fullscreen,
         settings.context_settings);
-    apply_window_frame_limits(window);
+    apply_window_frame_limits(window, settings);
     (void)window.setActive(true);
     window.setMouseCursorVisible(true);
-    window.setMouseCursorGrabbed(true);
+    settings.fullscreen = true;
+    apply_mouse_capture(window, settings);
 
     reset_graphics_context(window.getSize());
-    settings.fullscreen = true;
 }
 
 void leave_fullscreen(
@@ -55,14 +59,14 @@ void leave_fullscreen(
         sf::Style::Default,
         sf::State::Windowed,
         settings.context_settings);
-    apply_window_frame_limits(window);
+    apply_window_frame_limits(window, settings);
     (void)window.setActive(true);
     window.setPosition(settings.windowed_position);
     window.setMouseCursorVisible(true);
-    window.setMouseCursorGrabbed(false);
+    settings.fullscreen = false;
+    apply_mouse_capture(window, settings);
 
     reset_graphics_context(window.getSize());
-    settings.fullscreen = false;
 }
 
 void enter_fullscreen(sf::Window& window, render::GameRenderer& renderer, WindowDisplaySettings& settings)
@@ -92,22 +96,39 @@ bool handle_display_key(
     render::GameRenderer& renderer,
     WindowDisplaySettings& settings,
     const sf::Keyboard::Key key,
-    const bool allow_fog_toggle)
+    const bool allow_fog_toggle,
+    const bool cheats_enabled)
 {
+    if (key == sf::Keyboard::Key::F7) {
+        if (cheats_enabled) {
+            renderer.toggle_selection_debug();
+        }
+        return false;
+    }
+
+    if (key == sf::Keyboard::Key::F8) {
+        if (cheats_enabled) {
+            renderer.toggle_hitboxes();
+        }
+        return false;
+    }
+
     if (key == sf::Keyboard::Key::F9) {
         renderer.toggle_perf_hud();
         return false;
     }
 
     if (key == sf::Keyboard::Key::F10) {
-        if (allow_fog_toggle) {
+        if (allow_fog_toggle && cheats_enabled) {
             renderer.toggle_fog_of_war();
         }
         return false;
     }
 
     if (key == sf::Keyboard::Key::F11) {
-        renderer.toggle_grid_lines();
+        if (cheats_enabled) {
+            renderer.toggle_grid_lines();
+        }
         return false;
     }
 

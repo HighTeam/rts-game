@@ -34,6 +34,18 @@ std::optional<EntitySnapshotCategory> category_for_entity(
         return EntitySnapshotCategory::House;
     }
 
+    if (registry.any_of<components::LumberjackTag>(entity)) {
+        return EntitySnapshotCategory::Lumberjack;
+    }
+
+    if (registry.any_of<components::ExtractorTag>(entity)) {
+        return EntitySnapshotCategory::Extractor;
+    }
+
+    if (registry.any_of<components::ManaLakeTag>(entity)) {
+        return EntitySnapshotCategory::ManaLake;
+    }
+
     return std::nullopt;
 }
 
@@ -110,6 +122,53 @@ std::vector<entt::entity> collect_entities_for_key(
             }
 
             if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Lumberjack: {
+        const auto view = registry.view<
+            components::LumberjackTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Extractor: {
+        const auto view = registry.view<
+            components::ExtractorTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::ManaLake: {
+        const auto view = registry.view<components::ManaLakeTag, components::PlayerSlot>();
+        for (const entt::entity entity : view) {
+            if (view.get<components::PlayerSlot>(entity).value != player_slot) {
                 continue;
             }
 

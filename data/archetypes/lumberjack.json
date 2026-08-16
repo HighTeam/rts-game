@@ -1,0 +1,10 @@
+{
+  "id": "lumberjack",
+  "kind": "structure",
+  "display_name": "Lumberjack",
+  "max_hp": 150,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "build_wood_cost": 65,
+  "vision_range": 4
+}

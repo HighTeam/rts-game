@@ -20,11 +20,13 @@
 
 #include "render/sim_render_snapshot.hpp"
 
+#include "net/net_constants.hpp"
 #include "sim/player/player_commands.hpp"
 
-
-
 #include <SFML/Window/Window.hpp>
+
+#include <algorithm>
+#include <array>
 
 
 
@@ -77,6 +79,13 @@ public:
     void set_local_player_slot(const std::uint8_t player_slot) { local_player_slot_ = player_slot; }
 
     void set_chat_state(ChatState* chat_state) { chat_state_ = chat_state; }
+    void set_match_roster(
+        const bool multiplayer,
+        const std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS>& player_names)
+    {
+        multiplayer_ = multiplayer;
+        player_names_ = player_names;
+    }
 
     void set_game_cursor(GameCursor* game_cursor) { game_cursor_ = game_cursor; }
 
@@ -93,6 +102,33 @@ public:
     }
 
     void set_menu_fullscreen(const bool fullscreen) { game_menu_.fullscreen = fullscreen; }
+
+    void set_menu_video(const bool vsync, const int fps_limit)
+    {
+        game_menu_.vsync = vsync;
+        game_menu_.fps_limit = fps_limit;
+    }
+
+    void set_menu_mouse_capture(const bool mouse_capture)
+    {
+        game_menu_.mouse_capture = mouse_capture;
+    }
+
+    [[nodiscard]] bool menu_mouse_capture() const { return game_menu_.mouse_capture; }
+
+    [[nodiscard]] bool menu_vsync() const { return game_menu_.vsync; }
+
+    [[nodiscard]] int menu_fps_limit() const { return game_menu_.fps_limit; }
+
+    void set_scroll_speed(const float scroll_speed)
+    {
+        game_menu_.scroll_speed = std::clamp(
+            scroll_speed,
+            constants::CAMERA_SCROLL_SPEED_MIN,
+            constants::CAMERA_SCROLL_SPEED_MAX);
+    }
+
+    [[nodiscard]] float scroll_speed() const { return game_menu_.scroll_speed; }
 
     [[nodiscard]] bool is_game_menu_open() const { return game_menu_.is_open(); }
 
@@ -114,6 +150,13 @@ public:
     {
         const bool requested = fullscreen_toggle_requested_;
         fullscreen_toggle_requested_ = false;
+        return requested;
+    }
+
+    [[nodiscard]] bool consume_video_apply_request()
+    {
+        const bool requested = video_apply_requested_;
+        video_apply_requested_ = false;
         return requested;
     }
 
@@ -298,9 +341,12 @@ private:
 
     bool handle_chat_event(const sf::Event& event);
 
-    bool handle_game_menu_event(const sf::Event& event, const sf::Window& window);
+    bool handle_game_menu_event(
+        const sf::Event& event,
+        const sf::Window& window,
+        sim::Simulation& simulation);
 
-    void apply_game_menu_action(GameMenuAction action);
+    void apply_game_menu_action(GameMenuAction action, sim::Simulation& simulation);
 
     void sync_audio_volumes_from_menu();
 
@@ -343,6 +389,8 @@ private:
     std::string chat_draft_{};
 
     ChatState* chat_state_{nullptr};
+    bool multiplayer_{false};
+    std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names_{};
 
     GameCursor* game_cursor_{nullptr};
 
@@ -354,6 +402,7 @@ private:
     bool exit_to_main_menu_requested_{false};
 
     bool fullscreen_toggle_requested_{false};
+    bool video_apply_requested_{false};
 
     std::optional<sf::Vector2i> left_press_position_{};
 

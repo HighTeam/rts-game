@@ -25,6 +25,8 @@ enum class PlayerCommandType : std::uint8_t {
     Stop = 9,
     BuildHouse = 10,
     ResumeBuild = 11,
+    BuildLumberjack = 12,
+    BuildExtractor = 13,
 };
 
 struct PlayerCommand {

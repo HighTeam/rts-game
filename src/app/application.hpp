@@ -3,10 +3,12 @@
 #include "app/window_display.hpp"
 #include "core/constants.hpp"
 #include "net/net_constants.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/simulation.hpp"
 
 #include <SFML/Window/Window.hpp>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -21,10 +23,28 @@ enum class AppFlow : std::uint8_t {
 // Settings that survive across menu and match sessions inside one app run.
 struct AppShellSettings {
     bool fullscreen{true};
+    bool mouse_capture{constants::RENDER_MOUSE_CAPTURE_DEFAULT};
+    bool vsync{constants::RENDER_VERTICAL_SYNC};
+    int fps_limit{constants::TARGET_DISPLAY_FPS};
     bool show_perf_hud{false};
     float master_volume{constants::AUDIO_MASTER_VOLUME};
     float music_volume{constants::AUDIO_MUSIC_VOLUME};
     float sfx_volume{constants::AUDIO_SFX_VOLUME};
+    float scroll_speed{constants::CAMERA_SCROLL_SPEED_DEFAULT};
+};
+
+struct SingleplayerSetup {
+    std::uint8_t player_count{constants::SINGLEPLAYER_PLAYER_COUNT};
+    std::array<bool, constants::MAX_PLAYER_SLOTS> slot_is_ai{false, true};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_colors{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
+    sim::components::FogOfWarMode fog_mode{sim::components::FogOfWarMode::Enabled};
+    int civil_population_map_cap{constants::CIVIL_POPULATION_MAP_CAP_DEFAULT};
+    bool cheats_enabled{false};
+    std::uint8_t map_pattern{constants::MAP_PATTERN_COMMONS_INDEX};
+    std::uint64_t map_seed{0U};
+    std::string pattern_payload{};
+    sim::components::VictoryCondition victory_condition{
+        sim::components::VictoryCondition::Normal};
 };
 
 // Everything a graphical lockstep match needs, independent of the CLI options.
@@ -36,11 +56,21 @@ struct LockstepMatchSetup {
     std::uint16_t port{aoa::net::constants::DEFAULT_PORT};
     int civil_population_map_cap{constants::CIVIL_POPULATION_MAP_CAP_DEFAULT};
     bool fog_of_war_enabled{true};
+    sim::components::FogOfWarMode fog_mode{sim::components::FogOfWarMode::Enabled};
+    bool cheats_enabled{false};
+    std::array<bool, constants::MAX_PLAYER_SLOTS> slot_is_ai{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_colors{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
     bool lockstep_debug{false};
     bool auto_input{false};
     std::uint64_t tick_limit{0U};
     // Peers coming from a lobby must wait for the host to rebind the match port.
     bool delay_before_connect{false};
+    std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names{};
+    std::array<std::uint64_t, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> reconnect_tokens{};
+    sim::components::VictoryCondition victory_condition{
+        sim::components::VictoryCondition::Normal};
+    std::uint64_t map_seed{0U};
+    std::string pattern_payload{};
 };
 
 struct LaunchOptions {
@@ -51,6 +81,8 @@ struct LaunchOptions {
     bool run_lockstep_disconnect_smoke{false};
     bool run_lockstep_reconnect_smoke{false};
     bool run_lockstep_4_smoke{false};
+    bool run_lockstep_2h2ai_smoke{false};
+    bool run_sim_8ai_bench{false};
     bool run_lockstep_4_stress_smoke{false};
     bool run_lockstep_4_reconnect_smoke{false};
     bool run_snapshot_smoke{false};
@@ -83,7 +115,8 @@ AppFlow run_graphical(
     sf::Window& window,
     WindowDisplaySettings& display_settings,
     sim::Simulation& simulation,
-    AppShellSettings& shell_settings);
+    AppShellSettings& shell_settings,
+    const SingleplayerSetup& setup = {});
 
 AppFlow run_lockstep_match(
     sf::Window& window,

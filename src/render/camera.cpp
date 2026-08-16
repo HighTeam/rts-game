@@ -387,6 +387,56 @@ IsoTileScreenCorners ClassicCamera::grid_iso_corners(const int grid_x, const int
     };
 }
 
+VisibleGridRange ClassicCamera::visible_grid_range(
+    const int map_width,
+    const int map_height,
+    const int pad_tiles) const
+{
+    VisibleGridRange range{0, 0, map_width, map_height};
+    if (map_width <= 0 || map_height <= 0 || window_size_.x == 0U || window_size_.y == 0U) {
+        return range;
+    }
+
+    const float half_w = tile_half_width();
+    const float half_h = tile_half_height();
+    if (half_w <= 0.0F || half_h <= 0.0F) {
+        return range;
+    }
+
+    const float pad_px = static_cast<float>(std::max(pad_tiles, 0)) * tile_width();
+    const float min_screen_x = -pad_px;
+    const float max_screen_x = static_cast<float>(window_size_.x) + pad_px;
+    const float min_screen_y = -pad_px;
+    const float max_screen_y = static_cast<float>(window_size_.y) + pad_px;
+
+    int min_x = map_width;
+    int min_y = map_height;
+    int max_x = 0;
+    int max_y = 0;
+    const std::array<sf::Vector2f, 4> corners{
+        sf::Vector2f{min_screen_x, min_screen_y},
+        sf::Vector2f{max_screen_x, min_screen_y},
+        sf::Vector2f{min_screen_x, max_screen_y},
+        sf::Vector2f{max_screen_x, max_screen_y},
+    };
+    for (const sf::Vector2f& corner : corners) {
+        const float sx = (corner.x - pan_.x) / half_w;
+        const float sy = (corner.y - pan_.y) / half_h;
+        const float grid_x = (sx + sy) * 0.5F;
+        const float grid_y = (sy - sx) * 0.5F;
+        min_x = std::min(min_x, static_cast<int>(std::floor(grid_x)) - pad_tiles);
+        min_y = std::min(min_y, static_cast<int>(std::floor(grid_y)) - pad_tiles);
+        max_x = std::max(max_x, static_cast<int>(std::ceil(grid_x)) + pad_tiles + 1);
+        max_y = std::max(max_y, static_cast<int>(std::ceil(grid_y)) + pad_tiles + 1);
+    }
+
+    range.min_x = std::clamp(min_x, 0, map_width);
+    range.min_y = std::clamp(min_y, 0, map_height);
+    range.max_x = std::clamp(max_x, range.min_x, map_width);
+    range.max_y = std::clamp(max_y, range.min_y, map_height);
+    return range;
+}
+
 std::array<float, 3> ClassicCamera::world_to_clip(
     const float world_x,
     const float world_y,

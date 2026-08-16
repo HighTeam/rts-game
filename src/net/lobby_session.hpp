@@ -50,6 +50,15 @@ public:
     void toggle_local_ready();
     [[nodiscard]] bool local_ready() const;
 
+    void set_settings(const LobbySettings& settings);
+    void cycle_slot_kind(std::uint8_t slot);
+    void cycle_slot_color(std::uint8_t slot);
+    void request_local_color_cycle();
+    [[nodiscard]] bool try_apply_scenario(std::uint8_t required_player_count, const std::string& name);
+    [[nodiscard]] bool try_lock_player_count(std::uint8_t required_player_count);
+    void clear_player_count_lock();
+    void clear_scenario_requirement();
+
     [[nodiscard]] bool can_start_match() const;
     void request_match_start();
 
@@ -61,6 +70,9 @@ public:
     [[nodiscard]] std::uint8_t local_slot() const { return local_slot_; }
     [[nodiscard]] const LobbyStateMessage& view() const { return view_; }
     [[nodiscard]] std::uint8_t occupied_slot_count() const;
+    [[nodiscard]] std::uint8_t connected_human_count() const;
+    [[nodiscard]] std::uint8_t playing_slot_count() const;
+    [[nodiscard]] std::uint8_t configured_slot_count() const;
 
 private:
     void handle_packet(const ReceivedPacket& packet);
@@ -70,6 +82,9 @@ private:
     void send_lobby_state_to_clients();
     void release_slot(std::uint8_t player_slot);
     void send_to_host(NetMessageKind kind, const std::vector<std::byte>& payload);
+    void apply_color(std::uint8_t slot, std::uint8_t preferred);
+    void refresh_playing_player_count();
+    void init_default_slots(const std::string& host_name);
 
     LobbyRole role_{LobbyRole::Host};
     LobbyStatus status_{LobbyStatus::Idle};

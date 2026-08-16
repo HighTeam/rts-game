@@ -1,9 +1,11 @@
 #pragma once
 
 #include "app/chat_state.hpp"
+#include "core/constants.hpp"
 #include "net/enet_transport.hpp"
 #include "net/lockstep_network_hud.hpp"
 #include "net/lockstep_wire.hpp"
+#include "render/building_sight_memory.hpp"
 #include "render/sim_render_snapshot.hpp"
 #include "sim/player/player_command.hpp"
 #include "sim/simulation.hpp"
@@ -53,6 +55,13 @@ public:
 
     void submit_local_command(sim::player::PlayerCommand command);
     void set_chat_state(app::ChatState* chat_state);
+    void configure_match_identity(
+        const std::array<std::string, constants::LOCKSTEP_MAX_PLAYER_SLOTS>& player_names,
+        const std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS>& reconnect_tokens);
+    void configure_ai_slots(
+        const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_ai);
+    [[nodiscard]] std::uint8_t expected_human_player_count() const;
+    [[nodiscard]] std::string player_display_name(std::uint8_t player_slot) const;
     void send_chat_message(std::string_view text);
     void poll();
     void run_tick_frame();
@@ -73,12 +82,15 @@ public:
     [[nodiscard]] bool is_reconnecting() const;
     [[nodiscard]] bool is_host_gone() const;
     [[nodiscard]] bool is_session_ready() const;
+    [[nodiscard]] bool is_match_started() const;
     [[nodiscard]] std::uint8_t player_slot() const;
     [[nodiscard]] std::uint8_t session_player_count() const;
     [[nodiscard]] std::uint8_t connected_peer_count() const;
     [[nodiscard]] std::uint8_t lobby_registered_client_count() const;
     [[nodiscard]] bool is_lobby_full() const;
     [[nodiscard]] bool is_waiting_for_opponent_reconnect() const;
+    [[nodiscard]] bool has_disconnected_human_slots() const;
+    [[nodiscard]] std::uint8_t first_disconnected_human_slot() const;
     [[nodiscard]] bool is_awaiting_reconnect_handshake() const;
     [[nodiscard]] bool is_desynced() const;
     [[nodiscard]] std::uint64_t desync_tick() const;
@@ -112,7 +124,17 @@ private:
     void maybe_send_pending_reconnect_snapshot();
     [[nodiscard]] bool should_send_reconnect_snapshot_now() const;
     void handle_resync_ready(std::uint8_t player_slot);
-    void handle_reconnect_request(std::uint8_t player_slot, std::uint8_t enet_client_slot);
+    void handle_reconnect_request(
+        std::uint8_t player_slot,
+        std::uint8_t enet_client_slot,
+        std::uint64_t claim_token);
+    [[nodiscard]] bool is_slot_reclaimable_mid_match(std::uint8_t player_slot) const;
+    [[nodiscard]] bool try_accept_mid_match_lobby_rejoin(
+        std::uint8_t enet_client_slot,
+        std::string_view join_name);
+    void push_system_chat(std::string_view text);
+    void maybe_timeout_resync_handshake();
+    [[nodiscard]] bool claim_token_accepted(std::uint8_t player_slot, std::uint64_t claim_token) const;
     void handle_host_player_slot_disconnected(std::uint8_t player_slot);
     void handle_slot_ai_takeover(std::uint8_t player_slot);
     void handle_slot_ai_resume(std::uint8_t player_slot);
@@ -170,6 +192,7 @@ private:
     [[nodiscard]] bool try_advance_ai_fallback_tick();
     void handle_peer_connected();
     void note_opponent_transport_down();
+    void take_over_unconnected_human_slots();
     [[nodiscard]] bool can_run_live_lockstep() const;
     [[nodiscard]] bool should_verify_state_hashes() const;
     void clear_state_hash_tracking();
@@ -187,6 +210,7 @@ private:
     std::mutex network_service_mutex_{};
     std::vector<ReceivedPacket> inbound_packet_queue_{};
     std::atomic<std::shared_ptr<const render::SimRenderSnapshot>> render_snapshot_{};
+    render::BuildingSightMemory building_sight_memory_{};
     std::atomic<std::uint64_t> render_clock_anchor_ns_{0U};
     std::chrono::steady_clock::time_point last_latency_probe_sent_{};
     std::uint32_t latency_probe_sequence_{0U};
@@ -217,10 +241,14 @@ private:
     bool host_lost_{false};
     bool reconnecting_{false};
     bool host_gone_{false};
+    bool pending_host_lost_during_grace_{false};
     bool reconnect_request_sent_{false};
     bool opponent_needs_snapshot_{false};
     bool opponent_reconnect_pending_{false};
+    // Set only after a valid mid-match ReconnectRequest; blocks unsolicited snapshots.
+    bool mid_match_reconnect_authorized_{false};
     bool awaiting_reconnect_handshake_{false};
+    bool sync_status_chat_announced_{false};
     bool resync_strict_batch_gate_{false};
     bool client_resync_ready_{false};
     bool resync_ready_sent_{false};
@@ -233,6 +261,10 @@ private:
     std::uint8_t disconnected_slots_mask_{0U};
     std::uint8_t resync_pending_slots_mask_{0U};
     std::uint8_t ai_controlled_slot_{0U};
+    std::array<std::string, constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names_{};
+    std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> reconnect_tokens_{};
+    std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_ai_{};
+    std::chrono::steady_clock::time_point resync_handshake_started_{};
     std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> ai_command_sequence_by_slot_{};
     int reconnect_attempts_{0};
     std::chrono::steady_clock::time_point last_reconnect_try_{};

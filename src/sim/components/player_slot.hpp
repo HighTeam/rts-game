@@ -45,7 +45,7 @@ struct PlayerSlot {
     const entt::entity attacker,
     const entt::entity target)
 {
-    if (!registry.valid(target) || !registry.any_of<Health, GridPosition>(target)) {
+    if (!registry.valid(target) || !registry.all_of<Health, GridPosition>(target)) {
         return false;
     }
 

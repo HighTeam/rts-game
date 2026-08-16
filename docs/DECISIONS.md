@@ -17,7 +17,7 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Player militia auto-AI | Pre-M2 harness | Done — removed; only enemy militia auto-attacks |
 | World object taxonomy (Option A) | M1 prep | Decided — see [`docs/TAXONOMY.md`](TAXONOMY.md) |
 | Disconnect / pause policy | M2 prep | Done — AI takeover on disconnect; see below |
-| Host migration policy | M3 | Pending |
+| Host migration policy | M3 | Done — no migration; see below |
 
 Do **not** duplicate implementation work on #21. When a decision lands, update this table (optional), check the box on #21, and reference the PR that introduced it.
 
@@ -116,7 +116,17 @@ When a human player disconnects during a multiplayer match:
 1. **No global pause** — the match continues for the remaining connected peer when that peer is the **host**. The sim **never freezes** waiting for reconnect.
 2. **Immediate AI takeover (host only)** — if the **client** disconnects, the host enables AI for player 2 **on the same tick** transport drops; UI shows “Player N left — AI playing (waiting for reconnect)”.
 3. **Reconnect grace** — for `LOCKSTEP_RECONNECT_GRACE_MS` (30s), the host still accepts reconnect; AI keeps playing until the human returns.
-4. **Client loses host** — the client **stops playing**, retries reconnect automatically, and exits if the host is gone. The client does **not** simulate the host with AI (host migration remains **M3**).
+4. **Client loses host** — the client **stops playing**, retries reconnect automatically, and exits if the host is gone. The client does **not** simulate the host with AI.
 5. **Reconnect** — on reconnect, AI control **stops immediately** for that player; they resume issuing commands from their client. Catch-up uses snapshot + input log replay + `ResyncReady` handshake.
 
 Poor connection (late/missing input batches) must not freeze the whole match — use input delay buffering and per-player stall policy (future tuning); only session-wide halt on desync or host loss.
+
+---
+
+## Host migration policy (M3)
+
+**Decision: no host migration.**
+
+- If the host drops, clients do not promote another peer to host.
+- Clients keep the existing reconnect-then-exit path from the disconnect policy above.
+- Rationale: lockstep authority stays on one host; migrating mid-match needs lobby rebind, snapshot ownership, and peer re-auth that we are not taking on for M3. Revisit only if dedicated-server or host-transfer becomes a product requirement.

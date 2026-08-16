@@ -4,6 +4,7 @@
 #include "sim/components/map_grid.hpp"
 
 #include <cstdint>
+#include <entt/entt.hpp>
 
 namespace aoa::sim::components {
 
@@ -40,6 +41,11 @@ struct Stockpile {
 
 struct ManaGenerationCooldown {
     int ticks_remaining{0};
+};
+
+// Set on an extractor; points at the mana lake footprint it was built on.
+struct ManaLakeRef {
+    entt::entity lake{entt::null};
 };
 
 struct ForestResource {

@@ -101,16 +101,19 @@ constexpr PlayerBaseLayout k_eight_player_layouts[] = {
 
 std::span<const PlayerBaseLayout> base_layouts_for_player_count(const std::uint8_t player_count)
 {
-    switch (player_count) {
-    case 2U:
-        return k_two_player_layouts;
-    case 4U:
-        return k_four_player_layouts;
-    case 8U:
-        return k_eight_player_layouts;
-    default:
+    if (player_count == 0U || player_count > 8U) {
         throw std::invalid_argument("Unsupported scenario player count: " + std::to_string(player_count));
     }
+
+    if (player_count <= 2U) {
+        return std::span<const PlayerBaseLayout>(k_two_player_layouts, player_count);
+    }
+
+    if (player_count <= 4U) {
+        return std::span<const PlayerBaseLayout>(k_four_player_layouts, player_count);
+    }
+
+    return std::span<const PlayerBaseLayout>(k_eight_player_layouts, player_count);
 }
 
 } // namespace aoa::sim::scenario

@@ -1,11 +1,23 @@
 {
   "tiles": {
-    "grass": "textures/Miniature world/Tiles/Grass Block 1.png",
-    "grass_variant": "textures/Miniature world/Tiles/Grass Block 2.png",
+    "grass": "textures/HighTeam/Grass tiles/grass1.png",
+    "grass_variant": "textures/HighTeam/Grass tiles/grass1.png",
     "dirt": "textures/Miniature world/Tiles/Dirt Block 1.png",
     "dirt_variant": "textures/Miniature world/Tiles/Dirt Block 2.png",
-    "forest_tree": "textures/Miniature world/Without outline/Objects/Tree 1.png",
-    "forest_tree_alt": "textures/Miniature world/Without outline/Objects/Tree(Pine).png",
+    "snow": "textures/Isometric_Winter_Biome_Pack/PNGs/Ground/GroundTile008.png",
+    "sand": "textures/HighTeam/Sand tiles/sand1.png",
+    "oak_forest_small": "textures/Evergrow/Nature_Assets_Separated/32x80/Forest_Tree_Assets_Oak1_32x80.png",
+    "oak_forest_medium": "textures/Evergrow/Nature_Assets_Separated/48x112/Forest_Tree_Assets_Oak1_48x112.png",
+    "oak_forest_large": "textures/Evergrow/Nature_Assets_Separated/80x128/Forest_Tree_Assets_Oak1_80x128.png",
+    "darkened_oak_forest_small": "textures/Evergrow/Nature_Assets_Separated/32x80/Forest_Tree_Assets_Oak2_32x80.png",
+    "darkened_oak_forest_medium": "textures/Evergrow/Nature_Assets_Separated/48x112/Forest_Tree_Assets_Oak2_48x112.png",
+    "darkened_oak_forest_large": "textures/Evergrow/Nature_Assets_Separated/80x128/Forest_Tree_Assets_Oak2_80x128.png",
+    "pines_forest_small": "textures/Evergrow/Nature_Assets_Separated/32x80/Forest_Tree_Assets_Pine1_32x80.png",
+    "pines_forest_medium": "textures/Evergrow/Nature_Assets_Separated/48x112/Forest_Tree_Assets_Pine1_48x112.png",
+    "pines_forest_large": "textures/Evergrow/Nature_Assets_Separated/80x128/Forest_Tree_Assets_Pine1_80x128.png",
+    "darkened_pines_forest_small": "textures/Evergrow/Nature_Assets_Separated/32x80/Forest_Tree_Assets_Pine2_32x80.png",
+    "darkened_pines_forest_medium": "textures/Evergrow/Nature_Assets_Separated/48x112/Forest_Tree_Assets_Pine2_48x112.png",
+    "darkened_pines_forest_large": "textures/Evergrow/Nature_Assets_Separated/80x128/Forest_Tree_Assets_Pine2_80x128.png",
     "forest_stump": "textures/Miniature world/Without outline/Objects/Stump 1.png",
     "berries": "textures/Evergrow/Nature_Assets_Separated/48x48/Forest_Deccoration_Assets_LargeBush2.png",
     "blueberries": "textures/Evergrow/Nature_Assets_Separated/48x48/Forest_Deccoration_Assets_LargeBush1.png",
@@ -18,7 +30,14 @@
     "town_center_friendly": "textures/Isometric House Pack by Captainskeleto/House/15.png",
     "town_center_enemy": "textures/Isometric House Pack by Captainskeleto/House/15.png",
     "house_friendly": "textures/Isometric House Pack by Captainskeleto/House/00.png",
-    "house_enemy": "textures/Isometric House Pack by Captainskeleto/House/00.png"
+    "house_enemy": "textures/Isometric House Pack by Captainskeleto/House/00.png",
+    "lumberjack_friendly": "textures/Isometric House Pack by Captainskeleto/House/43.png",
+    "lumberjack_enemy": "textures/Isometric House Pack by Captainskeleto/House/43.png",
+    "extractor_friendly": "textures/Evergrow/Town_Assets_Separated/64x80/Town_Assets_WaterWell_64x80.png",
+    "extractor_enemy": "textures/Evergrow/Town_Assets_Separated/64x80/Town_Assets_WaterWell_64x80.png"
+  },
+  "nature": {
+    "mana_lake": "textures/HighTeam/Magic Lakes/magic_lake1.png"
   },
   "hud": {
     "icon_atlas": "textures/Shikashi's Fantasy Icons Pack/2 - Transparent & Drop Shadow.png"

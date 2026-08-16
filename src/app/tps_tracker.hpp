@@ -29,8 +29,16 @@ public:
             return;
         }
 
-        note_completed_ticks(tick_count - last_tick_count_);
+        const std::uint64_t jumped = tick_count - last_tick_count_;
         last_tick_count_ = tick_count;
+        // Snapshot restore / reconnect jumps the counter; that is not real TPS.
+        if (jumped > static_cast<std::uint64_t>(constants::SIM_TICKS_PER_SECOND) * 2U) {
+            ensure_window_started();
+            maybe_close_sample_window();
+            return;
+        }
+
+        note_completed_ticks(jumped);
     }
 
     [[nodiscard]] float tps() const

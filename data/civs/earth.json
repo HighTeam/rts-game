@@ -2,10 +2,10 @@
   "civ_id": "earth",
   "display_name": "Earth",
   "unit_archetypes": ["worker", "militia"],
-  "structure_archetypes": ["town_center", "house"],
+  "structure_archetypes": ["town_center", "house", "lumberjack", "extractor", "mana_lake"],
   "resource_node_archetypes": ["forest_patch", "berry_bush", "blueberry_bush", "gold_mine"],
-  "starting_stockpile_food": 100,
-  "starting_stockpile_wood": 200,
-  "starting_stockpile_money": 100,
+  "starting_stockpile_food": 50,
+  "starting_stockpile_wood": 60,
+  "starting_stockpile_money": 35,
   "starting_stockpile_mana": 0
 }

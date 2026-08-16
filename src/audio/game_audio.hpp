@@ -12,8 +12,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+
+namespace aoa::render {
+class GameRenderer;
+}
 
 namespace aoa::audio {
 
@@ -54,8 +59,12 @@ public:
     void play_random_death();
     void play_random_select_ack();
     void play_random_move_ack();
+    /// Thread-safe: queues Yes/No reactions for playback on the audio update thread.
     void play_chat_reaction(const std::string& text);
-    void drain_sim_sfx(entt::registry& registry);
+    void drain_sim_sfx(
+        entt::registry& registry,
+        const render::GameRenderer& renderer,
+        std::uint8_t local_player_slot);
 
     void set_master_volume(float volume_0_to_100);
     void set_music_volume(float volume_0_to_100);
@@ -67,6 +76,7 @@ public:
 private:
     void play_next_music_track();
     void prune_finished_voices();
+    void drain_pending_chat_reactions();
     void apply_music_volume();
     [[nodiscard]] float effective_sfx_volume() const;
     [[nodiscard]] float effective_music_volume() const;
@@ -83,6 +93,8 @@ private:
     float master_volume_{100.0F};
     float music_volume_{45.0F};
     float sfx_volume_{80.0F};
+    std::mutex pending_chat_reactions_mutex_{};
+    std::vector<SfxId> pending_chat_reactions_{};
 };
 
 } // namespace aoa::audio

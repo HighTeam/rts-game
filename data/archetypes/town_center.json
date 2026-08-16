@@ -7,6 +7,7 @@
   "footprint_height": 3,
   "spawn_worker_food_cost": 45,
   "spawn_militia_food_cost": 65,
+  "spawn_militia_money_cost": 35,
   "build_wood_cost": 250,
   "vision_range": 8
 }

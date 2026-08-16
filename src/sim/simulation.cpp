@@ -4,9 +4,12 @@
 #include "data/content_loader.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/map/map_generator.hpp"
 #include "sim/scenario/test_scenario.hpp"
 #include "sim/systems/gameplay_systems.hpp"
+#include "sim/systems/match_outcome.hpp"
 #include "sim/systems/sim_systems.hpp"
 
 #include <string>
@@ -14,11 +17,16 @@
 namespace aoa::sim {
 
 Simulation::Simulation(const std::uint8_t player_count)
+    : Simulation(map::MapGenerationConfig{.player_count = player_count})
+{
+}
+
+Simulation::Simulation(const map::MapGenerationConfig& generation)
 {
     const data::ContentDatabase content = data::load_content_database(
         data::default_data_directory());
 
-    scenario::load_test_scenario(registry_, content, player_count);
+    scenario::load_test_scenario(registry_, content, generation);
 }
 
 void Simulation::enqueue_player_command(player::PlayerCommand command)
@@ -69,6 +77,10 @@ void Simulation::set_player_ai_controlled(const std::uint8_t player_slot, const 
 
     const auto worker_view = registry_.view<components::WorkerUnitTag, components::PlayerOwnedTag>();
     for (const entt::entity worker : worker_view) {
+        if (components::entity_player_slot(registry_, worker) != player_slot) {
+            continue;
+        }
+
         registry_.remove<components::ManualControlTag>(worker);
     }
 }
@@ -94,8 +106,11 @@ void Simulation::restore_command_log(
 void Simulation::tick()
 {
     ++tick_count_;
-    command_queue_.apply_pending(registry_, tick_count_);
-    systems::run_sim_systems(registry_);
+    if (!systems::match_is_finished(registry_)) {
+        command_queue_.apply_pending(registry_, tick_count_);
+    }
+
+    systems::run_sim_systems(registry_, compute_state_hash_, tick_count_);
 }
 
 void Simulation::snapshot_world_positions_for_render()

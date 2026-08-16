@@ -3,8 +3,13 @@
 #include "core/asset_io.hpp"
 #include "core/asset_store.hpp"
 #include "core/constants.hpp"
+#include "render/game_renderer.hpp"
+#include "sim/components/fog_of_war.hpp"
+#include "sim/components/tags.hpp"
+#include "sim/systems/visibility_system.hpp"
 
 #include <SFML/Audio/SoundSource.hpp>
+#include <SFML/System/Vector2.hpp>
 
 #include <algorithm>
 
@@ -220,22 +225,89 @@ void GameAudio::play_random_move_ack()
 
 void GameAudio::play_chat_reaction(const std::string& text)
 {
+    SfxId id = SfxId::Count;
     if (text == constants::CHAT_SFX_YES_TEXT) {
-        play_sfx(SfxId::Yes);
+        id = SfxId::Yes;
+    }
+    else if (text == constants::CHAT_SFX_NO_TEXT) {
+        id = SfxId::No;
+    }
+    else {
         return;
     }
 
-    if (text == constants::CHAT_SFX_NO_TEXT) {
-        play_sfx(SfxId::No);
+    std::lock_guard lock(pending_chat_reactions_mutex_);
+    pending_chat_reactions_.push_back(id);
+}
+
+void GameAudio::drain_pending_chat_reactions()
+{
+    std::vector<SfxId> pending{};
+    {
+        std::lock_guard lock(pending_chat_reactions_mutex_);
+        pending.swap(pending_chat_reactions_);
+    }
+
+    for (const SfxId id : pending) {
+        play_sfx(id);
     }
 }
 
-void GameAudio::drain_sim_sfx(entt::registry& registry)
+namespace {
+
+[[nodiscard]] bool sfx_event_is_locally_audible(
+    const entt::registry& registry,
+    const render::GameRenderer& renderer,
+    const std::uint8_t local_player_slot,
+    const core::GridPos cell)
 {
-    const std::vector<sim::components::SfxEventKind> events =
+    const sf::Vector2u window_size = renderer.window_size();
+    if (window_size.x == 0U || window_size.y == 0U) {
+        return false;
+    }
+
+    const sf::Vector2f screen = renderer.tile_center_screen(
+        cell.x,
+        cell.y,
+        constants::RENDER_ENTITY_BASE_LIFT);
+    if (screen.x < 0.0F || screen.y < 0.0F
+        || screen.x >= static_cast<float>(window_size.x)
+        || screen.y >= static_cast<float>(window_size.y)) {
+        return false;
+    }
+
+    if (!renderer.fog_of_war_enabled()) {
+        return true;
+    }
+
+    const auto world_view = registry.view<sim::components::WorldTag, sim::components::FogOfWarState>();
+    if (world_view.begin() == world_view.end()) {
+        return true;
+    }
+
+    const auto& fog = world_view.get<sim::components::FogOfWarState>(*world_view.begin());
+    if (fog.visible.empty()) {
+        return true;
+    }
+
+    return sim::systems::is_cell_visible_to_slot(fog, cell, local_player_slot);
+}
+
+} // namespace
+
+void GameAudio::drain_sim_sfx(
+    entt::registry& registry,
+    const render::GameRenderer& renderer,
+    const std::uint8_t local_player_slot)
+{
+    const std::vector<sim::components::SfxEvent> events =
         sim::components::drain_sfx_events(registry);
-    for (const sim::components::SfxEventKind kind : events) {
-        switch (kind) {
+    for (const sim::components::SfxEvent& event : events) {
+        if (!sfx_event_is_locally_audible(registry, renderer, local_player_slot, event.cell)) {
+            continue;
+        }
+
+        switch (event.kind) {
         case sim::components::SfxEventKind::MilitiaMeleeHit:
             play_sfx(SfxId::SwordClash);
             break;
@@ -275,6 +347,7 @@ void GameAudio::play_next_music_track()
 
 void GameAudio::update()
 {
+    drain_pending_chat_reactions();
     prune_finished_voices();
     if (!music_ready_) {
         return;

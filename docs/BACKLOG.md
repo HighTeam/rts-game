@@ -1,214 +1,231 @@
-# RTS Project — v1.0/MVP Backlog
+# Age of Affinities — Product Backlog
 
-How to use this: each `## Milestone` = a GitHub Milestone. Each `###` = an Issue (Epic) with the checklist as its issue body — GitHub renders `- [ ]` as tickable checkboxes and tracks % complete automatically. Split any checklist item into its own Issue if it grows past ~1 sitting of work. `[BLOCKING]` = nothing downstream can start until this closes; prioritize these ruthlessly over anything that *feels* more fun to build.
+How to use this: each `## Pillar` = a GitHub Milestone. Each `###` = an Issue (Epic) with a checkbox body — GitHub tracks % complete. Split any item into its own Issue if it grows past ~1 sitting. `[BLOCKING]` = nothing downstream in that pillar (or the next) should start until it closes.
 
-Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
+**Version bumps** are owner-gated: do not raise game version unless told. Bumps may be `+0.0.1`, `+0.1.0`, etc., depending on the change set. Versioning exists so mismatched clients cannot share a lobby.
 
----
-
-## M0 — Foundations
-
-*Goal: a window opens, renders something, and the sim/render split exists. No gameplay yet.*
-
-### [BLOCKING] Build & repo setup
-
-- [ ] CMake project (don't fight VS2022 .sln files directly — CMake + VS2022 generator, or CMake + Claude Code, either way CMake is the source of truth)
-- [ ] vcpkg or manual setup for: SFML, OpenGL loader (glad/glew), EnTT, ENet, a JSON lib (nlohmann/json)
-- [ ] Private GitHub repo, .gitignore, branch strategy (even solo: main + short-lived feature branches, so history stays bisectable when a desync bug shows up later)
-- [ ] CI: a GitHub Action that just builds on push (catches "works on my machine" early, costs you nothing since GitHub Actions free tier covers a solo private repo easily)
-
-### [BLOCKING] Core loop skeleton
-
-- [ ] Fixed-timestep sim loop decoupled from render loop (pick a tick rate — 20/sec is a reasonable AoE2-era default — and write this so render can interpolate between ticks later)
-- [ ] Window + OpenGL context via SFML, clear-color triangle to confirm the pipeline
-- [ ] Fixed-point math library (Q16.16 or similar) — do this now, not when you "need" it; retrofitting fixed-point into float-based sim code later is a rewrite, not a patch
-- [ ] Headless build mode (sim runs with no window) — needed for automated desync/regression testing later, cheap to add now
-
-### ECS skeleton
-
-- [ ] EnTT registry wired into the sim loop
-- [ ] Component conventions doc (even a short one): what's a component vs. a system, naming, where data-driven civ stats will plug in later
+Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`, `epic`.
 
 ---
 
-## M1 — Single-civ core simulation (no networking, no polish)
+## Status snapshot (keep current)
 
-*Goal: one civ, one resource, one building, one unit, deterministic and testable.*
-
-### [BLOCKING] Deterministic sim core
-
-- [x] Tile/grid map representation, single hardcoded test map
-- [x] Resource node (wood) + gather/deposit loop for one worker unit
-- [x] Town Center equivalent: spawns workers, is a valid attack target
-- [x] One military unit: move, attack, die
-- [x] A* pathfinding on the grid (16-way, forest blocked, enemy AI)
-- [x] Per-tick state hash function (hash all sim-relevant component data every tick) — desync detector for M2
-- [x] Combat same-tick tie-break (sorted entity id; no mutual kill same tick)
-
-### Data-driven civ definitions [BLOCKING for M4]
-
-- [x] Civ/unit/building stats loaded from JSON, not hardcoded in C++ classes
-- [x] Archetype JSON + loader (`data/archetypes/`, `content_loader.cpp`) — M4 content authoring ready
-
-### Headless regression harness
-
-- [x] Scripted test scenarios (spawn X units, issue commands, run N ticks, assert final hash) — catches sim bugs before they become "why did multiplayer desync" bugs three weeks from now
-- [x] Command-replay scenario (`earth_player_commands`) — replays gather/deposit via tick-scoped `PlayerCommand` queue
-
-### Classic render pipeline (DE-style) — GitHub #26
-
-*Goal: AoE2 DE-like look — 3D scene, locked isometric Classic camera, pan + zoom, basic shaders. Sim stays grid-based.*
-
-- [x] Camera module: Classic mode — fixed isometric azimuth, pan, smooth zoom (no orbit)
-- [x] Grid → isometric world projection
-- [x] 3D terrain + entity draw pass
-- [x] Basic shaders (lighting, team-color hook, selection outline hook)
-- [x] `CameraView` enum: Classic implemented; Full 3D stub for later
-- [x] Settings **Camera view** dropdown documented for M5 (Classic / Full 3D; Full 3D becomes default when ready)
-
-See [docs/DECISIONS.md](DECISIONS.md) for render + camera decisions.
+| Area | State |
+|------|--------|
+| Foundations (window, fixed-point, ECS, CMake/vcpkg) | Done |
+| Earth core sim (worker, militia, TC, gather/deposit, pathfinding, hash) | Done |
+| Classic isometric render + fog + HUD basics | Done |
+| Lockstep 2–4p, reconnect, AI takeover on disconnect | Done |
+| SP save/load + autosave; House / Lumberjack / Extractor / Mana lake | Done (polish remains) |
+| Crossing / Commons + Pattern Maker; lobby map picker | Shipped (size/fairness polish below) |
+| 8-player brutal soak, MP coordinated save/load | Open |
+| Map redesign → RMG → Ages/Civs | Planned (this backlog) |
 
 ---
 
-## M2 — Lockstep networking, 2 players
+## Pillar: Polish & Debt
 
-*Goal: two instances of the game, on two machines (or localhost), play a synced match. This is the highest-risk milestone in the project — budget slack here, steal it from later content milestones if needed, not from here.*
+*Goal: stabilize the current Earth loop before large content/map pivots.*
 
-### [BLOCKING] Transport layer
+### Open netcode / persistence
 
-- [x] ENet integration: connect, send/receive reliable messages
-- [x] Message serialization format for inputs (compact — player commands, not state) — wire format in `src/sim/player/player_command.hpp` + `src/net/net_message.hpp`; lockstep batches wired
+- [ ] Multiplayer save/load — coordinated multi-peer load (encode already has snapshot + input log)
+- [ ] LAN brutal soak — 8 players (deferred from M3; omit from “must ship now” unless needed)
 
-### [BLOCKING] Lockstep sync
+### Open gameplay / engine debt
 
-- [x] Turn/tick-based input collection: every client sends inputs for tick N; sim doesn't advance until all inputs for N are received
-- [x] Input delay buffer — uses `PLAYER_COMMAND_DELAY_TICKS` via `next_command_execute_tick()`
-- [x] Full input log from game start — `CommandQueue::input_log()` + network `TickInputBatch`
-- [x] Live desync detection: exchange per-tick state hashes between clients
-- [x] Wire lockstep into graphical play — `--lockstep-host` / `--join` open window by default; inputs route through `LockstepSession`
+- [ ] **Combat attack pathfinding** — dog-leg / double-diagonal near enemy when not 8-aligned; see [scripts/issue-bodies/pathfinding-combat.md](../scripts/issue-bodies/pathfinding-combat.md)
+- [ ] **Unit collision** — harden unit–unit blocking (soft-slide still leaks); see [scripts/issue-bodies/unit-collision.md](../scripts/issue-bodies/unit-collision.md)
+- [ ] Extractor / Mana lake sprite offsets — visual pass until footprint and art agree
+- [ ] Work interact / stand range — keep tuned (currently `WORK_INTERACT_RANGE_TILES = 0.8`)
+- [ ] Hitbox / movement — units must not walk center through 1×1 resource tiles or buildings mid-segment
 
-### Reconnect
+### Earth content already landed (reference, not open work)
 
-- [x] On reconnect: client receives tick count + input log snapshot, replays to catch up, resumes live lockstep (`ReconnectRequest` / `ReconnectSnapshot` / `JoinAccepted` / `ResyncReady`)
-- [x] Disconnect policy decided: no global pause; **immediate** AI takeover on disconnect; player resumes on reconnect — [docs/DECISIONS.md](DECISIONS.md)
-- [x] AI takeover on disconnect — deterministic `generate_ai_commands_for_slot()`; match continues in `ai_fallback` mode (no sim freeze during reconnect grace)
-
-### Multiplayer polish (M2)
-
-- [x] Immediate AI on client disconnect — host sim never freezes waiting for reconnect
-- [x] Lockstep render timing — interpolation alpha driven by tick-thread clock; snapshot on sim tick
-- [x] Automated disconnect regression — `--lockstep-disconnect-smoke`
-- [x] Automated reconnect regression — `--lockstep-reconnect-smoke` (3× disconnect/reconnect in-process)
-
-### Gameplay (deferred — not M2 blocking)
-
-- [ ] **Combat attack pathfinding** — dog-leg / double-diagonal near enemy when not 8-aligned; see [scripts/issue-bodies/pathfinding-combat.md](scripts/issue-bodies/pathfinding-combat.md)
-- [ ] **Unit collision** — units can walk through each other; see [scripts/issue-bodies/unit-collision.md](scripts/issue-bodies/unit-collision.md)
-
-### Networking test scenarios
-
-- [x] Two local instances (localhost) as the daily dev-loop test — `--lockstep-host` / `--lockstep-join`
-- [x] **LAN soak — 2 players** — 30+ min, disconnect/reconnect, no desync ([scripts/issue-bodies/m2-tests.md](scripts/issue-bodies/m2-tests.md))
-- [ ] **LAN soak — 4 players** — after M3 multi-peer lockstep ships
-- [ ] **LAN brutal — 8 players** — 60+ min, multi-disconnect, bad-connection client; required before calling multiplayer proven at scale ([scripts/issue-bodies/m2-tests.md](scripts/issue-bodies/m2-tests.md))
+- [x] House (+3 civil cap)
+- [x] Lumberjack (wood drop-off)
+- [x] Mana lake (Nature, animated) + Extractor (build-on-lake, +max mana, timed extract)
+- [x] Dynamic mana cap (start 0/0; no TC mana pump)
+- [x] Multi-select move formation goals; building spawn order S→N; place-mode T:Deselect / RMB cancel
 
 ---
 
-## M3 — Scale to 8 players + save/load
+## Pillar: Map Redesign
 
-*Goal: same architecture as M2, proven at target player count, plus persistence.*
+*Goal: keep the isometric grid, expand the world language. **Must land before Ages and Civs.***
 
-### 8-player scaling
+### [BLOCKING] Tile & nature vocabulary
 
-- [ ] Multi-peer ENet + N-way lockstep (see [scripts/issue-bodies/m3-8player.md](scripts/issue-bodies/m3-8player.md))
-- [ ] Scale testing without 8 PCs — [docs/M3_SCALE_TESTING.md](M3_SCALE_TESTING.md) (CI smokes + headless peers + 2-PC split LAN)
-- [ ] Host migration policy decision: if host disconnects, does the match end, or does another client take over hosting? (Decide now — affects lobby/network code shape; retrofitting host migration later is painful)
+- [ ] New ground tiles (e.g. sand, snow) with walk/path rules
+- [ ] New tree / forest variants and harvest rules where applicable
+- [ ] New obstacles (blocking, non-harvest or special)
+- [ ] Nature undestructable “buildings” / props (landmarks) — selectable info, no player destroy
+- [ ] Data-driven tile/prop archetypes (JSON) — avoid hardcoding every new tile in C++
 
-### Save/load
+### [BLOCKING] Map layering
 
-- [ ] Serialize full sim state (should be straightforward if ECS components are clean data, per M1 design)
-- [ ] Singleplayer save/load
-- [ ] Multiplayer save/load (save = snapshot + input log up to that point, same mechanism as reconnect — reuse, don't rebuild)
+- [ ] Height / layer model for hills and elevated obstacles (grid stays isometric; clarify sim vs render ownership)
+- [ ] Movement / pathfinding rules for slopes, cliffs, blocked facings
+- [ ] Placement rules for buildings on layered terrain
+- [ ] Fog / vision interaction with layers (decide once, document in DECISIONS.md)
 
----
+### Scenario / hand-authored maps
 
-## M4 — Civilization content ×4
-
-*Goal: replicate the proven single-civ pattern three more times. This should be content authoring, not new engine work — if it isn't, that's a signal M1's data-driven design needs revisiting before going further.*
-
-### Per civilization (×4: Water, Earth, Fire, Air)
-
-- [ ] Unique unit roster defined in data files
-- [ ] Unique technologies / tech tree defined in data files
-- [ ] Civ-specific bonuses (the "hook" system for bonuses needs to be designed once, generically, then reused per civ — e.g. a bonus is "modify stat X by Y% under condition Z," not four hardcoded special cases)
-- [ ] Balance pass (expect this to be iterative and never really "done" — timebox it, don't let it become infinite polish)
-
-### Content authoring tooling
-
-- [ ] Consider whether you need any tooling to author civ JSON faster, or whether hand-editing is fine at this scale (4 civs, MVP-depth trees) — don't over-invest in tools for content you're only authoring once
+- [ ] Refresh test / skirmish layouts using the new tile set
+- [ ] Fairness checklist for hand maps (symmetric or intentional asymmetry)
 
 ---
 
-## M5 — Menus, UI, packaging
+## Pillar: RMG & Fairness
 
-*Goal: the client-facing shell around the game that's been working headless/minimal this whole time.*
+*Goal: generate playable maps from a pattern/script after the new map vocabulary exists.*
 
-### Main menu
+### [BLOCKING] Pattern / script pipeline
+
+- [x] Map pattern format (current `.pattern` + Pattern Maker) — tile vocabulary still expands with Map Redesign
+- [x] Generator reads pattern → places bases, resources, roads (Crossing hardcoded; Commons + Other… files)
+- [x] Deterministic seed + lockstep-safe generation (same seed ⇒ same map on all peers)
+
+### Accepted current gen (polish later)
+
+Picker is Crossing / Commons / Other…. Commons is the default and is unlocked for 48 / 64 / 96 / 128. Crossing stays 64×64 and 2-player locked. Default / Continental / Archipelago are out of the picker (old `builtin` strings still parse).
+
+- [ ] Commons pieces are authored in 96-space; changing lobby size does not scale offsets — 48/64 clamp, 128 stays sparse
+- [ ] Per-size fairness pass (start rings, forest / gold / berry density, chokes)
+- [ ] Crossing multi-size or dedicated 2p-only copy if we want more than 64×64
+
+### Fairness & validation
+
+- [ ] Resource / start balance checks (distance rings, choke fairness)
+- [ ] Reject or repair unfair rolls
+- [ ] Dev tools: dump seed, preview map, regenerate
+
+---
+
+## Pillar: Versioning & Lobby Compatibility
+
+*Goal: players only match with compatible builds. Owner controls when the number increases.*
+
+### Version identity
+
+- [ ] Single source of truth for game version (build + runtime readable)
+- [ ] Show version in main menu / lobby UI
+- [ ] **Do not bump version unless the owner says so** (may be `+0.0.1` or larger in one drop)
+
+### Lobby enforcement
+
+- [ ] Host advertises required/protocol version (or exact version policy)
+- [ ] Joiners with mismatched version are rejected with a clear message
+- [ ] Example policy: peers on `1.4.5` can play together; `1.4.6` cannot join a `1.4.5` lobby (exact match unless a wider “compatible range” is decided later)
+- [ ] Document wire field(s) in DECISIONS.md / net docs
+
+---
+
+## Pillar: Ages & Technologies
+
+*Goal: four ages with unique tech identity. Starts after Map Redesign is far enough that age content has a world to live in.*
+
+### Ages
+
+- [ ] **Age of Human**
+- [ ] **Age of Magic**
+- [ ] **Age of Technology**
+- [ ] **Age of Spirits**
+- [ ] Age-up flow (costs, requirements, UI hooks) — data-driven
+
+### Technologies
+
+- [ ] Per-age unique technology sets in JSON
+- [ ] Generic bonus hook system (“modify stat X by Y under condition Z”) — design once, reuse
+- [ ] Research buildings / UI stubs (full GUI may wait on GUI Redesign)
+
+---
+
+## Pillar: Civilizations & Generals
+
+*Goal: four civs with AoM-style major/minor leadership (generals). After map + age foundations.*
+
+### Civilizations (×4)
+
+- [ ] Unique unit roster per civ (data files)
+- [ ] Civ bonuses via the shared hook system
+- [ ] Balance pass (timeboxed)
+
+### Generals (AoM-style)
+
+- [ ] 1–3+ generals per civ (major + minor style)
+- [ ] General pick / unlock rules
+- [ ] Per-general unique units, techs, or powers (data-driven)
+- [ ] Lobby / game-setup selection hooks
+
+---
+
+## Pillar: Art & Presentation
+
+*Goal: raise visual fidelity without blocking sim pillars.*
+
+### Map presentation
+
+- [ ] Map / terrain shaders (lighting, biomes, height cues)
+- [ ] Tile/prop art pass for new sand/snow/trees/obstacles
+
+### Units & buildings
+
+- [ ] Unit models (replace placeholders where needed)
+- [ ] Building models
+- [ ] Animation pipeline conventions (spritesheets vs meshes — decide and document)
+
+---
+
+## Pillar: GUI Redesign
+
+*Goal: replace / overhaul HUD and menus from the paper reference.*
+
+- [ ] Capture paper reference into repo notes or design pack (screens, panels, flow)
+- [ ] Information architecture: options panel, info panel, minimap, resource bar, chat
+- [ ] In-game HUD redesign pass
+- [ ] Menu shell redesign (ties to Shell & Packaging)
+- [ ] Build / train / research panel patterns for ages & generals
+
+---
+
+## Pillar: Shell & Packaging
+
+*Goal: shippable client shell around the working game.*
+
+### Main menu & lobby
 
 - [ ] Singleplayer / Multiplayer / Settings / Account / Credits / Leave
-- [ ] Logo + menu art/PNGs
+- [ ] Logo + menu art
+- [ ] Map selection, resources, unit cap, map size
+- [ ] Civ / general / age-related setup as content unlocks
+- [ ] Ready-check; **version gate** (see Versioning pillar)
 
-### Game creation / lobby menu
+### Settings & AI
 
-- [ ] Map selection (from list, not procedural — as you scoped)
-- [ ] Resource amount, unit cap, map size settings
-- [ ] Civ selection per player (including Random)
-- [ ] Ready-check before host can start
-
-### Settings screen
-
-- [ ] Video, Audio, Controls tabs (AoE2 DE's model is a reasonable reference)
-- [ ] Account tab (nickname-only for MVP, as scoped)
-
-### Basic AI opponent
-
-- [ ] Rule-based/scripted AI is sufficient for MVP — do not attempt anything ML-based; a simple build-order + attack-timing script that's "predictable" (as you said) is correct scope
-
-### End-game analytics
-
-- [ ] Define what's actually being measured (APM? resources gathered? match duration?) before building the pipe — this is a small task once scoped, easy to scope-creep if not
+- [ ] Video, Audio, Controls, Account (nickname MVP)
+- [ ] Rule-based AI opponent (no ML)
 
 ### Packaging
 
-- [ ] **`raw-assets/`** (gitignored) vs **`assets/`** (shipped) — interim: direct copies; later: immutable binary packs
-- [ ] Asset pack format (`.dat`-style; audio `.adp` TBD) + standalone pack tool (CRUD entries)
-- [ ] Game loads `assets/` packs only — flagged as a help-needed area; tackle in M5, not earlier
-- [ ] Windows installer/build packaging for distribution
-- [ ] Minimal static download page (website) — do not over-invest here for MVP
+- [ ] Asset pack pipeline maturity (`assets.dat` / future packs)
+- [ ] Windows installer / distribution package
+- [ ] Minimal download page (do not over-invest for MVP)
+
+### Analytics (optional / later)
+
+- [ ] Define metrics before building pipes (APM, resources, duration, …)
 
 ---
 
-## Cross-cutting: things to decide once, early, because they're expensive to change later
+## Suggested order of attack
 
-- [ ] Fixed-point math (M0) — expensive to retrofit
-- [ ] Data-driven civ/unit/building definitions (M1) — expensive to retrofit
-- [ ] Host migration policy (M3) — affects network code shape
-- [x] Disconnect/pause policy (M2) — affects UI and netcode together
-- [ ] Tick rate — pick once, changing it later touches balance, netcode timing, and input feel simultaneously
-- [x] Render style — AoE2 DE-like 2.5D/3D hybrid (M1 #26)
-- [x] Camera view — Classic now, Full 3D later default (M1 #26 + M5 Settings)
+1. **Polish & Debt** — enough that the Earth build is trustworthy  
+2. **Map Redesign** — tiles, layering, nature  
+3. **RMG & Fairness** — pattern/script generation on the new vocabulary  
+4. **Versioning** — as soon as multiplayer lobbies are used for wider playtests (can overlap earlier)  
+5. **Ages & Technologies** then **Civilizations & Generals**  
+6. **Art & Presentation** and **GUI Redesign** in parallel where staffed  
+7. **Shell & Packaging** for external playtests / release  
 
----
-
-## Suggested weekly pacing (10-11 weeks)
-
-| Week | Milestone |
-|------|-----------|
-| 1 | M0 |
-| 2-3 | M1 |
-| 4-5 | M2 *(protect this — steal time from M4 content if you fall behind, not from this)* |
-| 6 | M3 |
-| 7-9 | M4 |
-| 10-11 | M5 |
-
-If you're behind schedule at week 6, the item to cut first is tech-tree depth in M4 (fewer techs per civ, still all 4 civs present) — not networking robustness, and not the data-driven architecture in M1. Content is reversible to trim; architecture isn't.
+If schedule slips: cut tech-tree depth and general count before cutting map fairness, lockstep robustness, or data-driven architecture.

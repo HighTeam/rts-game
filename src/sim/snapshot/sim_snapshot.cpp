@@ -66,7 +66,7 @@ namespace {
 
 constexpr std::uint32_t SNAPSHOT_MAGIC = 0x414F4153U; // AOAS
 
-constexpr std::uint16_t SNAPSHOT_VERSION = 14U;
+constexpr std::uint16_t SNAPSHOT_VERSION = 16U;
 
 
 
@@ -258,7 +258,7 @@ void append_entity_snapshot_key(std::vector<std::byte>& out, const snapshot::Ent
 
 
 
-    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::House)) {
+    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::ManaLake)) {
 
         return false;
 
@@ -311,6 +311,7 @@ void sync_map_tiles_with_forest_wood(components::MapGrid& map)
             map.tiles[index] = components::TileType::Forest;
         }
     }
+    map.layer_hash_valid = false;
 }
 
 void normalize_registry_for_snapshot(entt::registry& registry)
@@ -370,7 +371,7 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
 
 
 
-    if (!registry.all_of<components::GridPosition, components::Health>(entity)) {
+    if (!registry.all_of<components::GridPosition>(entity)) {
 
         return std::nullopt;
 
@@ -402,11 +403,14 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
 
     }
 
-    const auto& health = registry.get<components::Health>(entity);
+    // Mana lakes are indestructible nature entities and carry no Health component.
+    if (const auto* health = registry.try_get<components::Health>(entity); health != nullptr) {
 
-    record.health_current = health.current;
+        record.health_current = health->current;
 
-    record.health_max = health.max;
+        record.health_max = health->max;
+
+    }
 
 
 
@@ -1303,6 +1307,100 @@ entt::entity ensure_entity_for_record(
 
     }
 
+    case snapshot::EntitySnapshotCategory::Lumberjack: {
+
+        const auto* lumberjack_archetype = data::find_structure_archetype(
+
+            content_pack.content,
+
+            std::string(constants::LUMBERJACK_BUILDING_ID));
+
+        if (lumberjack_archetype == nullptr) {
+
+            return entt::null;
+
+        }
+
+
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+
+        return spawn::spawn_player_lumberjack(
+
+            registry,
+
+            *lumberjack_archetype,
+
+            record.grid_cell,
+
+            record.key.player_slot,
+
+            under_construction);
+
+    }
+
+    case snapshot::EntitySnapshotCategory::Extractor: {
+
+        const auto* extractor_archetype = data::find_structure_archetype(
+
+            content_pack.content,
+
+            std::string(constants::EXTRACTOR_BUILDING_ID));
+
+        if (extractor_archetype == nullptr) {
+
+            return entt::null;
+
+        }
+
+
+
+        const bool under_construction =
+            (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
+
+        return spawn::spawn_player_extractor(
+
+            registry,
+
+            *extractor_archetype,
+
+            record.grid_cell,
+
+            record.key.player_slot,
+
+            under_construction);
+
+    }
+
+    case snapshot::EntitySnapshotCategory::ManaLake: {
+
+        const auto* mana_lake_archetype = data::find_structure_archetype(
+
+            content_pack.content,
+
+            std::string(constants::MANA_LAKE_BUILDING_ID));
+
+        if (mana_lake_archetype == nullptr) {
+
+            return entt::null;
+
+        }
+
+
+
+        return spawn::spawn_mana_lake(
+
+            registry,
+
+            *mana_lake_archetype,
+
+            record.grid_cell,
+
+            record.key.player_slot);
+
+    }
+
     }
 
 
@@ -1398,7 +1496,10 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
     registry.get<components::GridPosition>(entity).cell = record.grid_cell;
 
     if (record.key.category != snapshot::EntitySnapshotCategory::TownCenter
-        && record.key.category != snapshot::EntitySnapshotCategory::House) {
+        && record.key.category != snapshot::EntitySnapshotCategory::House
+        && record.key.category != snapshot::EntitySnapshotCategory::Lumberjack
+        && record.key.category != snapshot::EntitySnapshotCategory::Extractor
+        && record.key.category != snapshot::EntitySnapshotCategory::ManaLake) {
 
         auto& world = registry.get_or_emplace<components::WorldPosition>(entity);
 
@@ -1416,11 +1517,13 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
 
 
-    auto& health = registry.get<components::Health>(entity);
+    if (auto* health = registry.try_get<components::Health>(entity); health != nullptr) {
 
-    health.current = record.health_current;
+        health->current = record.health_current;
 
-    health.max = record.health_max;
+        health->max = record.health_max;
+
+    }
 
 
 
@@ -1490,21 +1593,7 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
 
 
-    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::BuildOrder)) != 0U) {
-
-        const entt::entity target = snapshot::resolve_entity_snapshot_key(registry, record.build_target_key);
-
-        if (target != entt::null) {
-
-            registry.emplace<components::BuildOrder>(
-                entity,
-                components::BuildOrder{target, record.build_hit_cooldown_ticks});
-
-        }
-
-    }
-
-
+    // BuildOrder targets (House/TC) are restored after Workers — apply in a later pass.
 
     if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::AttackCooldown)) != 0U) {
 
@@ -1624,6 +1713,46 @@ void apply_entity_attack_orders(entt::registry& registry, const EntityStateRecor
 
 
 
+void apply_entity_build_orders(entt::registry& registry, const EntityStateRecord& record)
+
+{
+
+    if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::BuildOrder)) == 0U) {
+
+        return;
+
+    }
+
+
+
+    const entt::entity entity = snapshot::resolve_entity_snapshot_key(registry, record.key);
+
+    if (entity == entt::null) {
+
+        return;
+
+    }
+
+
+
+    const entt::entity target = snapshot::resolve_entity_snapshot_key(registry, record.build_target_key);
+
+    if (target == entt::null) {
+
+        return;
+
+    }
+
+
+
+    registry.emplace<components::BuildOrder>(
+        entity,
+        components::BuildOrder{target, record.build_hit_cooldown_ticks});
+
+}
+
+
+
 struct DecodedSnapshot {
 
     SimSnapshot metadata{};
@@ -1635,6 +1764,8 @@ struct DecodedSnapshot {
     std::vector<int> mine_money{};
 
     std::vector<components::TileType> map_tiles{};
+
+    std::vector<components::GroundType> map_ground{};
 
     std::vector<std::uint8_t> fog_explored{};
 
@@ -1871,6 +2002,38 @@ struct DecodedSnapshot {
         decoded.map_tiles[static_cast<std::size_t>(index)] =
 
             static_cast<components::TileType>(tile_raw);
+
+    }
+
+
+
+    std::uint32_t ground_count = 0U;
+
+    if (!read_pod(cursor, ground_count)) {
+
+        return std::nullopt;
+
+    }
+
+
+
+    decoded.map_ground.resize(ground_count);
+
+    for (std::uint32_t index = 0U; index < ground_count; ++index) {
+
+        std::uint8_t ground_raw = 0U;
+
+        if (!read_pod(cursor, ground_raw)) {
+
+            return std::nullopt;
+
+        }
+
+
+
+        decoded.map_ground[static_cast<std::size_t>(index)] =
+
+            static_cast<components::GroundType>(ground_raw);
 
     }
 
@@ -2323,6 +2486,18 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
 
 
+    const auto ground_count = static_cast<std::uint32_t>(map.ground.size());
+
+    append_pod(out, ground_count);
+
+    for (const components::GroundType ground : map.ground) {
+
+        append_pod(out, static_cast<std::uint8_t>(ground));
+
+    }
+
+
+
     if (registry.any_of<components::FogOfWarState>(world)) {
 
         const auto& fog = registry.get<components::FogOfWarState>(world);
@@ -2518,6 +2693,17 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
     map.tiles = decoded->map_tiles;
 
+    if (map.ground.size() != map.tiles.size()) {
+        map.ground.assign(map.tiles.size(), components::GroundType::Grass);
+    }
+
+    if (decoded->map_ground.size() != map.ground.size()) {
+        std::cerr << "snapshot restore: map ground size mismatch\n";
+        return false;
+    }
+
+    map.ground = decoded->map_ground;
+
     if (simulation.registry().any_of<components::FogOfWarState>(world)) {
         auto& fog = simulation.registry().get<components::FogOfWarState>(world);
         if (!decoded->fog_explored.empty()) {
@@ -2608,6 +2794,17 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
         apply_entity_attack_orders(simulation.registry(), record);
 
     }
+
+
+
+    for (const EntityStateRecord& record : decoded->entity_states) {
+
+        apply_entity_build_orders(simulation.registry(), record);
+
+    }
+
+    // Lakes restore after extractors, so extractor lake refs are only valid now.
+    spawn::relink_extractor_mana_lakes(simulation.registry());
 
     normalize_registry_for_snapshot(simulation.registry());
 

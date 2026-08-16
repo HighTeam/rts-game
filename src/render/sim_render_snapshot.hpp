@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <entt/entt.hpp>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -48,12 +49,20 @@ struct RenderEntityPose {
     bool is_militia{false};
     bool is_town_center{false};
     bool is_house{false};
+    bool is_lumberjack{false};
+    bool is_extractor{false};
+    bool is_mana_lake{false};
+    bool lake_has_extractor{false};
+    int mana_gen_ticks_remaining{0};
     bool under_construction{false};
     bool shrouded{false};
     bool is_nature{false};
     int footprint_width{1};
     int footprint_height{1};
     std::uint8_t player_slot{0U};
+    std::string archetype_id{};
+    std::vector<core::GridPos> debug_path_cells{};
+    int debug_path_next_index{0};
 };
 
 struct RenderHudPlayerStats {
@@ -74,6 +83,7 @@ struct SimRenderSnapshot {
     int map_width{0};
     int map_height{0};
     std::vector<sim::components::TileType> tiles{};
+    std::vector<sim::components::GroundType> ground{};
     std::vector<int> forest_wood{};
     std::vector<int> bush_food{};
     std::vector<int> mine_money{};
@@ -86,11 +96,16 @@ struct SimRenderSnapshot {
     std::vector<RenderEntityPose> buildings{};
     std::vector<RenderEntityPose> units{};
     std::array<RenderHudPlayerStats, 8> hud_by_player{};
+    std::array<std::uint8_t, 8> player_color_indices{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
 };
+
+class BuildingSightMemory;
 
 [[nodiscard]] SimRenderSnapshot capture_sim_render_snapshot(
     const entt::registry& registry,
-    std::uint8_t local_player_slot);
+    std::uint8_t local_player_slot,
+    BuildingSightMemory* building_sight_memory = nullptr,
+    std::uint64_t tick_count = 0U);
 
 [[nodiscard]] std::pair<float, float> interpolate_render_pose(
     const RenderEntityPose& pose,
@@ -136,6 +151,24 @@ class GameRenderer;
     sf::Vector2f screen_position,
     float pick_radius_px,
     std::uint8_t local_player_slot);
+
+// Lakes carrying an extractor are not selectable; the extractor owns the footprint.
+[[nodiscard]] entt::entity pick_mana_lake_at_screen(
+    const SimRenderSnapshot& snapshot,
+    const GameRenderer& renderer,
+    sf::Vector2f screen_position);
+
+[[nodiscard]] bool snapshot_can_place_extractor_at(
+    const SimRenderSnapshot& snapshot,
+    core::GridPos anchor_cell);
+
+[[nodiscard]] bool snapshot_cell_covered_by_mana_lake(
+    const SimRenderSnapshot& snapshot,
+    core::GridPos cell);
+
+[[nodiscard]] bool snapshot_cell_blocked_by_unit(
+    const SimRenderSnapshot& snapshot,
+    core::GridPos cell);
 
 [[nodiscard]] std::vector<entt::entity> pick_player_units_in_screen_rect(
     const SimRenderSnapshot& snapshot,

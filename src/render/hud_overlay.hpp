@@ -5,12 +5,15 @@
 #include "app/game_menu.hpp"
 #include "core/grid.hpp"
 #include "net/lockstep_network_hud.hpp"
+#include "net/net_constants.hpp"
 #include "render/hud_icons.hpp"
 #include "render/sim_render_snapshot.hpp"
 #include "sim/simulation.hpp"
+#include "sim/components/match_session.hpp"
 
 #include <SFML/System/Vector2.hpp>
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <optional>
@@ -31,6 +34,9 @@ struct HudUnitContext {
     int selected_building_health_current{0};
     int selected_building_health_max{0};
     bool selected_building_is_house{false};
+    bool selected_building_is_lumberjack{false};
+    bool selected_building_is_extractor{false};
+    bool selected_building_is_mana_lake{false};
     bool has_selected_building_owner{false};
     std::uint8_t selected_building_player_slot{0U};
     int command_panel_pressed_slot{-1};
@@ -43,6 +49,10 @@ struct HudUnitContext {
     float camera_world_max_x{0.0F};
     float camera_world_max_z{0.0F};
     app::GameMenuState game_menu{};
+    bool multiplayer{false};
+    std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names{};
+    bool has_match_session{false};
+    sim::components::MatchSession match_session{};
 };
 
 struct HudInfoPanel {
@@ -62,7 +72,15 @@ struct HudInfoPanel {
     int carry_amount{0};
     HudIcon carry_icon{HudIcon::Wood};
     bool carry_is_remaining{false};
+    // Mana lakes and finished extractors advertise how much mana they add per cycle.
+    bool has_mana_rate{false};
+    int mana_rate{0};
+    bool has_extraction_progress{false};
+    int extraction_percent{0};
+    std::vector<std::string> debug_lines{};
 };
+
+class BuildingSightMemory;
 
 class HudOverlay {
 public:
@@ -75,7 +93,10 @@ public:
         float camera_zoom,
         const HudUnitContext& unit_context = {},
         const net::LockstepNetworkHudStats& network_stats = {},
-        bool show_perf_hud = false) const;
+        bool show_perf_hud = false,
+        bool show_selection_debug = false,
+        BuildingSightMemory* building_sight_memory = nullptr,
+        const SimRenderSnapshot* minimap_snapshot = nullptr) const;
 
     void draw_snapshot(
         const SimRenderSnapshot& snapshot,
@@ -86,7 +107,8 @@ public:
         float camera_zoom,
         const HudUnitContext& unit_context = {},
         const net::LockstepNetworkHudStats& network_stats = {},
-        bool show_perf_hud = false) const;
+        bool show_perf_hud = false,
+        bool show_selection_debug = false) const;
 
     void draw_waiting_overlay(
         sf::Vector2u window_size,
@@ -116,6 +138,29 @@ public:
         float g,
         float b,
         float a = 1.0F) const;
+
+    void draw_line(
+        sf::Vector2u window_size,
+        float x0,
+        float y0,
+        float x1,
+        float y1,
+        float r,
+        float g,
+        float b) const;
+
+    void draw_quad(
+        sf::Vector2u window_size,
+        const sf::Vector2f& p0,
+        const sf::Vector2f& p1,
+        const sf::Vector2f& p2,
+        const sf::Vector2f& p3,
+        float r,
+        float g,
+        float b) const;
+
+    void begin_batch() const;
+    void end_batch() const;
 
     // Draws a texture scaled to cover the whole window, cropping the overflowing axis.
     void draw_cover_texture(
@@ -192,6 +237,11 @@ private:
         const HudUnitContext& unit_context) const;
 
     void draw_game_menu(sf::Vector2u window_size, const HudUnitContext& unit_context) const;
+    void draw_match_result(
+        sf::Vector2u window_size,
+        const sim::components::MatchSession& session,
+        std::uint8_t local_player_slot,
+        const HudUnitContext& unit_context) const;
 
     mutable unsigned int hud_shader_program_{0U};
     mutable unsigned int hud_textured_shader_program_{0U};
@@ -202,5 +252,8 @@ private:
     mutable HudIconAtlas icon_atlas_{};
     mutable bool icon_atlas_load_attempted_{false};
 };
+
+void enable_rgb_blend_keep_framebuffer_opaque();
+void clear_opaque_framebuffer(float r, float g, float b, float a);
 
 } // namespace aoa::render

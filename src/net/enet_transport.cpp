@@ -356,10 +356,12 @@ void EnetTransport::network_thread_loop()
 
 void EnetTransport::destroy_host_locked()
 {
+    // Force-drop without waiting for a remote ACK. A blocking enet_host_service
+    // wait here freezes the UI thread (same transport mutex) during client reconnect.
     if (host_ != nullptr && !is_server_ && client_peer_ != nullptr) {
-        enet_peer_disconnect(client_peer_, 0);
+        enet_peer_disconnect_now(client_peer_, 0);
         ENetEvent event{};
-        while (enet_host_service(host_, &event, 1000) > 0) {
+        while (enet_host_service(host_, &event, 0) > 0) {
             if (event.type == ENET_EVENT_TYPE_RECEIVE) {
                 enet_packet_destroy(event.packet);
             }

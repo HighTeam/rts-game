@@ -20,9 +20,12 @@
 #include "sim/snapshot/sim_snapshot.hpp"
 #include "sim/systems/disconnected_player_ai.hpp"
 #include "sim/systems/gameplay_systems.hpp"
+#include "sim/systems/pathfinding.hpp"
 
+#include <array>
 #include <chrono>
 #include <iostream>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -1007,6 +1010,136 @@ int run_lockstep_4_smoke()
     EnetTransport::global_deinitialize();
     std::cout << "lockstep-4-smoke: ok ticks=" << constants::LOCKSTEP_4_SMOKE_TICKS << " hash=0x"
               << std::hex << host_simulation.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+int run_lockstep_2h2ai_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-2h2ai-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client{
+        LockstepRole::Client,
+        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
+        client_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_ai{};
+    slot_is_ai[2] = true;
+    slot_is_ai[3] = true;
+    host_simulation.set_player_ai_controlled(2U, true);
+    host_simulation.set_player_ai_controlled(3U, true);
+    client_simulation.set_player_ai_controlled(2U, true);
+    client_simulation.set_player_ai_controlled(3U, true);
+    host.configure_ai_slots(slot_is_ai);
+    client.configure_ai_slots(slot_is_ai);
+
+    if (!host.start_host(constants::LOCKSTEP_2H2AI_SMOKE_PORT)) {
+        std::cerr << "lockstep-2h2ai-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client.connect("127.0.0.1", constants::LOCKSTEP_2H2AI_SMOKE_PORT)) {
+        std::cerr << "lockstep-2h2ai-smoke: failed to connect client\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    bool ready = false;
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        client.poll();
+        if (host.is_desynced() || client.is_desynced()) {
+            std::cerr << "lockstep-2h2ai-smoke: desync during handshake\n";
+            EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        if (host.is_lobby_full() && host.is_session_ready() && client.is_session_ready()
+            && host.is_connected() && client.is_connected()) {
+            ready = true;
+            break;
+        }
+    }
+
+    if (!ready) {
+        std::cerr << "lockstep-2h2ai-smoke: handshake timed out lobby_full="
+                  << host.is_lobby_full() << " host_ready=" << host.is_session_ready()
+                  << " client_ready=" << client.is_session_ready() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_both_lockstep_sessions(
+            host,
+            client,
+            host_simulation,
+            client_simulation,
+            constants::LOCKSTEP_2H2AI_SMOKE_TICKS)) {
+        std::cerr << "lockstep-2h2ai-smoke: advance/hash failed host=0x" << std::hex
+                  << host_simulation.state_hash() << " client=0x" << client_simulation.state_hash()
+                  << std::dec << " desync=" << (host.is_desynced() || client.is_desynced())
+                  << " tick=" << host_simulation.tick_count() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    const std::uint64_t tick_before_leave = host_simulation.tick_count();
+    client.disconnect_transport();
+
+    bool ai_took_over = false;
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        if (host.has_disconnected_human_slots()) {
+            ai_took_over = true;
+            break;
+        }
+
+        (void)host.try_advance_tick();
+        if (host.has_disconnected_human_slots()) {
+            ai_took_over = true;
+            break;
+        }
+    }
+
+    if (!ai_took_over) {
+        std::cerr << "lockstep-2h2ai-smoke: host did not AI-takeover after P2 leave\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    std::uint64_t ticks_after_leave = 0U;
+    for (int attempt = 0; attempt < constants::LOCKSTEP_ADVANCE_ATTEMPTS; ++attempt) {
+        host.poll();
+        if (host.try_advance_tick()) {
+            ++ticks_after_leave;
+            if (ticks_after_leave >= 10U) {
+                break;
+            }
+        }
+    }
+
+    if (ticks_after_leave < 10U || host_simulation.tick_count() <= tick_before_leave) {
+        std::cerr << "lockstep-2h2ai-smoke: host stalled after P2 leave advanced="
+                  << ticks_after_leave << " tick=" << host_simulation.tick_count() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-2h2ai-smoke: ok ticks=" << host_simulation.tick_count()
+              << " hash=0x" << std::hex << host_simulation.state_hash() << std::dec << '\n';
     return 0;
 }
 
@@ -1996,6 +2129,94 @@ int run_snapshot_heavy_smoke()
 
     std::cout << "snapshot-heavy-smoke: ok ticks=" << source.tick_count() << " hash=0x"
               << std::hex << source.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+int run_sim_8ai_bench()
+{
+    constexpr std::uint8_t player_count = 8U;
+    constexpr std::uint64_t bench_ticks = 40U;
+
+    const auto time_ms = [](const auto& start) {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start)
+            .count();
+    };
+
+    const auto print_result = [&](const char* label, const double ms) {
+        std::cout << "sim-8ai-bench " << label << ": ticks=" << bench_ticks
+                  << " total_ms=" << static_cast<int>(ms + 0.5)
+                  << " ms_per_tick=" << (ms / static_cast<double>(bench_ticks)) << '\n';
+    };
+
+    {
+        sim::Simulation simulation{player_count};
+        simulation.set_compute_state_hash(false);
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t tick = 0U; tick < bench_ticks; ++tick) {
+            simulation.tick();
+        }
+        print_result("idle_no_hash", time_ms(start));
+    }
+
+    {
+        sim::Simulation simulation{player_count};
+        simulation.set_compute_state_hash(true);
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t tick = 0U; tick < bench_ticks; ++tick) {
+            simulation.tick();
+        }
+        print_result("idle_hash", time_ms(start));
+    }
+
+    {
+        sim::Simulation simulation{player_count};
+        for (std::uint8_t slot = 1U; slot < player_count; ++slot) {
+            simulation.set_player_ai_controlled(slot, true);
+        }
+        simulation.set_compute_state_hash(false);
+        sim::systems::reset_pathfind_profile();
+        std::uint64_t ai_command_sequence = 1U;
+        double ai_ms = 0.0;
+        double tick_ms = 0.0;
+        for (std::uint64_t tick = 0U; tick < bench_ticks; ++tick) {
+            const std::uint64_t execute_tick = simulation.next_command_execute_tick();
+            const auto ai_start = std::chrono::steady_clock::now();
+            for (std::uint8_t slot = 0U; slot < player_count; ++slot) {
+                if (!simulation.is_player_ai_controlled(slot)) {
+                    continue;
+                }
+
+                if ((simulation.tick_count() + static_cast<std::uint64_t>(slot))
+                        % static_cast<std::uint64_t>(aoa::constants::AI_THINK_INTERVAL_TICKS)
+                    != 0U) {
+                    continue;
+                }
+
+                std::vector<sim::player::PlayerCommand> ai_commands =
+                    sim::systems::generate_ai_commands_for_slot(
+                        simulation.registry(),
+                        slot,
+                        execute_tick,
+                        ai_command_sequence);
+                for (sim::player::PlayerCommand& command : ai_commands) {
+                    simulation.enqueue_player_command(std::move(command));
+                }
+            }
+            ai_ms += time_ms(ai_start);
+
+            const auto tick_start = std::chrono::steady_clock::now();
+            simulation.tick();
+            tick_ms += time_ms(tick_start);
+        }
+        print_result("ai_think_only", ai_ms);
+        print_result("ai_tick_only", tick_ms);
+        const sim::systems::PathfindProfile profile = sim::systems::pathfind_profile();
+        std::cout << "sim-8ai-bench pathfind: calls=" << profile.calls
+                  << " failed=" << profile.failed
+                  << " expanded=" << profile.expanded_nodes << '\n';
+    }
+
     return 0;
 }
 

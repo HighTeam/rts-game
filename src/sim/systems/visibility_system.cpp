@@ -122,16 +122,21 @@ void sync_fog_memory_from_map(
 
     const int map_index = core::grid_index({x, y}, map.width);
 
-    fog.memory_tiles[fog_index] = static_cast<std::uint8_t>(map.tiles[static_cast<std::size_t>(map_index)]);
-
-    fog.memory_forest_wood[fog_index] = map.forest_wood[static_cast<std::size_t>(map_index)];
-
-    fog.memory_bush_food[fog_index] = map.bush_food[static_cast<std::size_t>(map_index)];
-
-    fog.memory_mine_money[fog_index] =
-        static_cast<std::size_t>(map_index) < map.mine_money.size()
+    const auto tile = static_cast<std::uint8_t>(map.tiles[static_cast<std::size_t>(map_index)]);
+    const int wood = map.forest_wood[static_cast<std::size_t>(map_index)];
+    const int food = map.bush_food[static_cast<std::size_t>(map_index)];
+    const int money = static_cast<std::size_t>(map_index) < map.mine_money.size()
         ? map.mine_money[static_cast<std::size_t>(map_index)]
         : 0;
+    if (fog.memory_tiles[fog_index] != tile || fog.memory_forest_wood[fog_index] != wood
+        || fog.memory_bush_food[fog_index] != food || fog.memory_mine_money[fog_index] != money) {
+        fog.hash_valid = false;
+    }
+
+    fog.memory_tiles[fog_index] = tile;
+    fog.memory_forest_wood[fog_index] = wood;
+    fog.memory_bush_food[fog_index] = food;
+    fog.memory_mine_money[fog_index] = money;
 
 }
 
@@ -162,6 +167,10 @@ void set_fog_cell(
 
 
     const std::size_t index = fog_cell_index(fog, x, y, player_slot);
+
+    if (fog.explored[index] == 0U) {
+        fog.hash_valid = false;
+    }
 
     fog.explored[index] = 1U;
 
@@ -416,6 +425,24 @@ void vision_origin_for_entity(
         static_cast<float>(grid.cell.y) + static_cast<float>(footprint.height) * 0.5F);
 }
 
+[[nodiscard]] bool construction_provides_vision(
+    const entt::registry& registry,
+    const entt::entity entity)
+{
+    if (!registry.any_of<components::UnderConstructionTag>(entity)
+        || (!registry.any_of<components::BuildingTag>(entity)
+            && !registry.any_of<components::TownCenterTag>(entity))) {
+        return false;
+    }
+
+    if (!registry.any_of<components::Health>(entity)) {
+        return false;
+    }
+
+    return registry.get<components::Health>(entity).current.to_int()
+        > aoa::constants::CONSTRUCTION_VISION_ACTIVE_MIN_HP;
+}
+
 void reveal_vision_for_entity(
     components::FogOfWarState& fog,
     const components::MapGrid& map,
@@ -428,6 +455,10 @@ void reveal_vision_for_entity(
     if (registry.any_of<components::UnderConstructionTag>(entity)
         && (registry.any_of<components::BuildingTag>(entity)
             || registry.any_of<components::TownCenterTag>(entity))) {
+        if (!construction_provides_vision(registry, entity)) {
+            return;
+        }
+
         const auto& grid = registry.get<components::GridPosition>(entity);
         components::BuildingFootprint footprint{};
         if (registry.any_of<components::BuildingFootprint>(entity)) {
@@ -454,19 +485,6 @@ void reveal_vision_for_entity(
     vision_origin_for_entity(registry, entity, origin_x, origin_y);
     const int vision_range = vision_range_for_entity(registry, content_pack, entity);
     reveal_vision_circle(fog, map, origin_x, origin_y, vision_range, player_slot, mark_explored);
-}
-
-[[nodiscard]] float construction_vision_radius_tiles(
-    const int footprint_width,
-    const int footprint_height)
-{
-    const float padded_width = static_cast<float>(
-        footprint_width + 2 * aoa::constants::CONSTRUCTION_VISION_FOOTPRINT_PADDING_TILES);
-    const float padded_height = static_cast<float>(
-        footprint_height + 2 * aoa::constants::CONSTRUCTION_VISION_FOOTPRINT_PADDING_TILES);
-    const float half_diagonal =
-        0.5F * std::sqrt((padded_width * padded_width) + (padded_height * padded_height));
-    return half_diagonal + aoa::constants::FOG_VISION_RADIUS_TILE_PADDING;
 }
 
 
@@ -503,14 +521,14 @@ std::vector<VisionSource> collect_vision_sources_for_slot(
             continue;
         }
 
-        math::Fixed origin_x{};
-        math::Fixed origin_y{};
-        vision_origin_for_entity(registry, entity, origin_x, origin_y);
-
-        float radius = 0.0F;
         if (registry.any_of<components::UnderConstructionTag>(entity)
             && (registry.any_of<components::BuildingTag>(entity)
                 || registry.any_of<components::TownCenterTag>(entity))) {
+            if (!construction_provides_vision(registry, entity)) {
+                continue;
+            }
+
+            const auto& grid = vision_view.get<components::GridPosition>(entity);
             components::BuildingFootprint footprint{};
             if (registry.any_of<components::BuildingFootprint>(entity)) {
                 footprint = registry.get<components::BuildingFootprint>(entity);
@@ -518,14 +536,24 @@ std::vector<VisionSource> collect_vision_sources_for_slot(
             footprint = components::effective_building_footprint(
                 footprint,
                 registry.any_of<components::TownCenterTag>(entity));
-            radius = construction_vision_radius_tiles(footprint.width, footprint.height);
-        }
-        else {
-            const int vision_range = vision_range_for_entity(registry, content_pack, entity);
-            radius =
-                static_cast<float>(vision_range) + aoa::constants::FOG_VISION_RADIUS_TILE_PADDING;
+            for (int y = 0; y < footprint.height; ++y) {
+                for (int x = 0; x < footprint.width; ++x) {
+                    sources.push_back(VisionSource{
+                        static_cast<float>(grid.cell.x + x) + 0.5F,
+                        static_cast<float>(grid.cell.y + y) + 0.5F,
+                        aoa::constants::CONSTRUCTION_VISION_PER_TILE_RADIUS,
+                    });
+                }
+            }
+            continue;
         }
 
+        math::Fixed origin_x{};
+        math::Fixed origin_y{};
+        vision_origin_for_entity(registry, entity, origin_x, origin_y);
+        const int vision_range = vision_range_for_entity(registry, content_pack, entity);
+        const float radius =
+            static_cast<float>(vision_range) + aoa::constants::FOG_VISION_RADIUS_TILE_PADDING;
         sources.push_back(VisionSource{origin_x.to_float(), origin_y.to_float(), radius});
     }
 
@@ -594,6 +622,43 @@ void initialize_fog_of_war(entt::registry& registry)
 
     run_visibility_system(registry);
 
+}
+
+void reveal_all_explored(entt::registry& registry)
+{
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::MapGrid>(world)
+        || !registry.any_of<components::FogOfWarState>(world)) {
+        return;
+    }
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    auto& fog = registry.get<components::FogOfWarState>(world);
+    const std::size_t cells_per_player = static_cast<std::size_t>(map.width * map.height);
+    for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(aoa::constants::MAX_PLAYER_SLOTS);
+         ++slot) {
+        for (std::size_t cell = 0U; cell < cells_per_player; ++cell) {
+            const std::size_t index = static_cast<std::size_t>(slot) * cells_per_player + cell;
+            if (index >= fog.explored.size()) {
+                continue;
+            }
+
+            fog.explored[index] = 1U;
+            fog.hash_valid = false;
+            if (index < fog.memory_tiles.size() && cell < map.tiles.size()) {
+                fog.memory_tiles[index] = static_cast<std::uint8_t>(map.tiles[cell]);
+            }
+            if (index < fog.memory_forest_wood.size() && cell < map.forest_wood.size()) {
+                fog.memory_forest_wood[index] = map.forest_wood[cell];
+            }
+            if (index < fog.memory_bush_food.size() && cell < map.bush_food.size()) {
+                fog.memory_bush_food[index] = map.bush_food[cell];
+            }
+            if (index < fog.memory_mine_money.size() && cell < map.mine_money.size()) {
+                fog.memory_mine_money[index] = map.mine_money[cell];
+            }
+        }
+    }
 }
 
 

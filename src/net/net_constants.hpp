@@ -6,6 +6,19 @@
 namespace aoa::net::constants {
 
 inline constexpr std::uint16_t DEFAULT_PORT = 27000U;
+inline constexpr std::uint16_t LAN_DISCOVERY_PORT = 27015U;
+inline constexpr std::uint32_t LAN_DISCOVERY_MAGIC = 0x31414F41U;
+inline constexpr std::uint8_t LAN_DISCOVERY_VERSION = 2U;
+inline constexpr std::uint8_t LAN_DISCOVERY_LOBBY_OPEN = 1U;
+inline constexpr std::uint8_t LAN_DISCOVERY_LOBBY_CLOSED = 0U;
+inline constexpr std::uint8_t LAN_DISCOVERY_KIND_QUERY = 1U;
+inline constexpr std::uint8_t LAN_DISCOVERY_KIND_ANNOUNCE = 2U;
+inline constexpr std::uint8_t LAN_DISCOVERY_SOURCE_LAN = 0U;
+inline constexpr std::uint8_t LAN_DISCOVERY_SOURCE_PUBLIC = 1U;
+inline constexpr std::uint32_t LAN_DISCOVERY_ANNOUNCE_INTERVAL_MS = 1000U;
+inline constexpr std::uint32_t LAN_DISCOVERY_STALE_MS = 4000U;
+inline constexpr std::size_t LAN_DISCOVERY_NAME_CHARS = 32U;
+inline constexpr int LAN_DISCOVERY_RECV_BUFFER_BYTES = 256;
 inline constexpr std::uint32_t MAX_PORT_NUMBER = 65535U;
 inline constexpr std::size_t MAX_PEERS = 8U;
 inline constexpr int LOCKSTEP_MAX_PLAYER_SLOTS = 8;
@@ -48,11 +61,16 @@ inline constexpr int LOCKSTEP_DUE_WAIT_SPIN_ITERS = 12;
 inline constexpr int LOCKSTEP_PING_DISPLAY_WINDOW = 8;
 inline constexpr int LOCKSTEP_HASH_VERIFY_WARMUP_TICKS = 30;
 inline constexpr std::uint32_t LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS = 10000U;
-inline constexpr std::uint32_t LOCKSTEP_RECONNECT_INTERVAL_MS = 500U;
+// Keep reconnect attempts spaced; teardown is non-blocking but connect still costs.
+inline constexpr std::uint32_t LOCKSTEP_RECONNECT_INTERVAL_MS = 1500U;
+// Abandon an in-flight client connect that never reaches CONNECTED.
+inline constexpr std::uint32_t LOCKSTEP_RECONNECT_CONNECT_TIMEOUT_MS = 5000U;
 inline constexpr std::uint32_t LOCKSTEP_RECONNECT_REQUEST_RETRY_MS = 2000U;
 inline constexpr std::uint32_t LOCKSTEP_RECONNECT_SNAPSHOT_DEBOUNCE_MS = 500U;
 inline constexpr std::uint32_t LOCKSTEP_RESYNC_READY_RETRY_MS = 500U;
 inline constexpr std::uint32_t LOCKSTEP_RESYNC_READY_RETRY_WINDOW_MS = 10000U;
+// If ResyncReady never lands, abort the handshake so host/peers are not stuck forever.
+inline constexpr std::uint32_t LOCKSTEP_RESYNC_HANDSHAKE_TIMEOUT_MS = 15000U;
 inline constexpr int LOCKSTEP_RECONNECT_MAX_ATTEMPTS = 20;
 inline constexpr int LOCKSTEP_COMMAND_DELAY_TICKS = 2;
 inline constexpr float LOCKSTEP_RTT_SMOOTHING_ALPHA = 0.35F;
@@ -79,5 +97,7 @@ inline constexpr std::uint16_t LOCKSTEP_4_RECONNECT_SMOKE_PORT = 27204U;
 inline constexpr std::uint64_t LOCKSTEP_4_RECONNECT_WARMUP_TICKS = 25U;
 inline constexpr std::uint64_t LOCKSTEP_4_RECONNECT_AI_TICKS = 20U;
 inline constexpr std::uint64_t LOCKSTEP_4_RECONNECT_LIVE_TICKS = 25U;
+inline constexpr std::uint16_t LOCKSTEP_2H2AI_SMOKE_PORT = 27205U;
+inline constexpr std::uint64_t LOCKSTEP_2H2AI_SMOKE_TICKS = 40U;
 
 } // namespace aoa::net::constants

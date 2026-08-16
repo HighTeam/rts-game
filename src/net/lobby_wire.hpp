@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/constants.hpp"
 #include "net/net_constants.hpp"
 
 #include <array>
@@ -11,11 +12,36 @@
 
 namespace aoa::net {
 
+enum class LobbySlotKind : std::uint8_t {
+    Host = 0,
+    Ai = 1,
+    Disabled = 2,
+    Spectator = 3,
+    Enabled = 4,
+};
+
 // Match configuration chosen by the host before the lockstep match starts.
 struct LobbySettings {
     std::uint8_t player_count{2U};
     std::uint8_t civil_population_map_cap{15U};
     bool fog_of_war_enabled{true};
+    std::uint8_t fog_mode{0U};
+    bool cheats_enabled{false};
+    std::uint8_t map_pattern{static_cast<std::uint8_t>(aoa::constants::MAP_PATTERN_COMMONS_INDEX)};
+    std::uint8_t game_style{0U};
+    std::uint8_t required_player_count{0U};
+    std::uint8_t victory_condition{0U};
+    std::string scenario_name{};
+    std::uint64_t map_seed{0U};
+    std::string pattern_name{};
+    std::string pattern_payload{};
+    std::uint8_t pattern_min_players{
+        static_cast<std::uint8_t>(aoa::constants::PATTERN_DEFAULT_MIN_PLAYERS)};
+    std::uint8_t pattern_max_players{
+        static_cast<std::uint8_t>(aoa::constants::PATTERN_DEFAULT_MAX_PLAYERS)};
+    std::int16_t map_width{static_cast<std::int16_t>(aoa::constants::MAP_TEST_WIDTH)};
+    std::int16_t map_height{static_cast<std::int16_t>(aoa::constants::MAP_TEST_HEIGHT)};
+    bool map_size_locked{false};
 };
 
 struct LobbySlotInfo {
@@ -23,6 +49,8 @@ struct LobbySlotInfo {
     bool ready{false};
     std::uint16_t ping_ms{0U};
     std::string name{};
+    LobbySlotKind kind{LobbySlotKind::Disabled};
+    std::uint8_t color{0U};
 };
 
 struct LobbyStateMessage {
@@ -41,6 +69,11 @@ struct LobbyReadyMessage {
     bool ready{false};
 };
 
+struct LobbyColorMessage {
+    std::uint8_t player_slot{0U};
+    std::uint8_t color{0U};
+};
+
 [[nodiscard]] std::vector<std::byte> encode_lobby_join(const LobbyJoinMessage& message);
 [[nodiscard]] std::optional<LobbyJoinMessage> decode_lobby_join(std::span<const std::byte> bytes);
 
@@ -50,7 +83,25 @@ struct LobbyReadyMessage {
 [[nodiscard]] std::vector<std::byte> encode_lobby_ready(const LobbyReadyMessage& message);
 [[nodiscard]] std::optional<LobbyReadyMessage> decode_lobby_ready(std::span<const std::byte> bytes);
 
+[[nodiscard]] std::vector<std::byte> encode_lobby_color(const LobbyColorMessage& message);
+[[nodiscard]] std::optional<LobbyColorMessage> decode_lobby_color(std::span<const std::byte> bytes);
+
 [[nodiscard]] std::vector<std::byte> encode_lobby_settings(const LobbySettings& settings);
 [[nodiscard]] std::optional<LobbySettings> decode_lobby_settings(std::span<const std::byte> bytes);
+
+[[nodiscard]] bool lobby_slot_is_playing(LobbySlotKind kind);
+[[nodiscard]] bool lobby_slot_accepts_join(const LobbySlotInfo& slot);
+[[nodiscard]] std::uint8_t lobby_playing_slot_count(const LobbyStateMessage& state);
+[[nodiscard]] std::uint8_t lobby_configured_slot_count(const LobbyStateMessage& state);
+[[nodiscard]] std::uint8_t lobby_connected_human_count(const LobbyStateMessage& state);
+[[nodiscard]] std::optional<std::uint8_t> first_joinable_lobby_slot(const LobbyStateMessage& state);
+[[nodiscard]] bool lobby_color_taken(
+    const LobbyStateMessage& state,
+    std::uint8_t color,
+    std::uint8_t except_slot);
+[[nodiscard]] std::uint8_t next_free_lobby_color(
+    const LobbyStateMessage& state,
+    std::uint8_t preferred,
+    std::uint8_t except_slot);
 
 } // namespace aoa::net

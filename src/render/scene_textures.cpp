@@ -9,6 +9,7 @@
 
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <utility>
 
 namespace aoa::render {
 
@@ -54,7 +55,11 @@ void SceneTextureCatalog::destroy_gl_resources()
 bool SceneTextureCatalog::load_texture_file(
     const std::filesystem::path& /*assets_directory*/,
     const std::string& relative_path,
-    TextureEntry& entry)
+    TextureEntry& entry,
+    const int crop_x,
+    const int crop_y,
+    const int crop_width,
+    const int crop_height)
 {
     if (relative_path.empty()) {
         return false;
@@ -64,6 +69,30 @@ bool SceneTextureCatalog::load_texture_file(
     if (!core::load_image_asset(image, relative_path)) {
         std::cerr << "scene textures: failed to load " << relative_path << '\n';
         return false;
+    }
+
+    if (crop_width > 0 && crop_height > 0) {
+        const sf::Vector2u source_size = image.getSize();
+        const unsigned int crop_left = static_cast<unsigned int>(crop_x);
+        const unsigned int crop_top = static_cast<unsigned int>(crop_y);
+        const unsigned int crop_w = static_cast<unsigned int>(crop_width);
+        const unsigned int crop_h = static_cast<unsigned int>(crop_height);
+        if (crop_left + crop_w > source_size.x || crop_top + crop_h > source_size.y) {
+            std::cerr << "scene textures: crop out of range for " << relative_path << '\n';
+            return false;
+        }
+
+        sf::Image cropped(sf::Vector2u{crop_w, crop_h}, sf::Color::Transparent);
+        if (!cropped.copy(
+                image,
+                {0U, 0U},
+                sf::IntRect(
+                    {crop_x, crop_y},
+                    {crop_width, crop_height}))) {
+            std::cerr << "scene textures: crop copy failed for " << relative_path << '\n';
+            return false;
+        }
+        image = std::move(cropped);
     }
 
     const sf::Vector2u size = image.getSize();
@@ -123,26 +152,47 @@ void SceneTextureCatalog::load(const std::filesystem::path& assets_directory)
         SceneTextureKind kind;
         const char* section;
         const char* key;
+        int crop_x;
+        int crop_y;
+        int crop_width;
+        int crop_height;
     };
 
     const Mapping mappings[] = {
-        {SceneTextureKind::Grass, "tiles", "grass"},
-        {SceneTextureKind::GrassVariant, "tiles", "grass_variant"},
-        {SceneTextureKind::Dirt, "tiles", "dirt"},
-        {SceneTextureKind::DirtVariant, "tiles", "dirt_variant"},
-        {SceneTextureKind::ForestTree, "tiles", "forest_tree"},
-        {SceneTextureKind::ForestTreeAlt, "tiles", "forest_tree_alt"},
-        {SceneTextureKind::ForestStump, "tiles", "forest_stump"},
-        {SceneTextureKind::Berries, "tiles", "berries"},
-        {SceneTextureKind::Blueberries, "tiles", "blueberries"},
-        {SceneTextureKind::GoldMine0, "tiles", "gold_mine_0"},
-        {SceneTextureKind::GoldMine1, "tiles", "gold_mine_1"},
-        {SceneTextureKind::GoldMine2, "tiles", "gold_mine_2"},
-        {SceneTextureKind::GoldMine3, "tiles", "gold_mine_3"},
-        {SceneTextureKind::TownCenterFriendly, "buildings", "town_center_friendly"},
-        {SceneTextureKind::TownCenterEnemy, "buildings", "town_center_enemy"},
-        {SceneTextureKind::HouseFriendly, "buildings", "house_friendly"},
-        {SceneTextureKind::HouseEnemy, "buildings", "house_enemy"},
+        {SceneTextureKind::Grass, "tiles", "grass", 0, 0, 0, 0},
+        {SceneTextureKind::GrassVariant, "tiles", "grass_variant", 0, 0, 0, 0},
+        {SceneTextureKind::Dirt, "tiles", "dirt", 0, 0, 0, 0},
+        {SceneTextureKind::DirtVariant, "tiles", "dirt_variant", 0, 0, 0, 0},
+        {SceneTextureKind::Snow, "tiles", "snow", 0, 0, 0, 0},
+        {SceneTextureKind::Sand, "tiles", "sand", 0, 0, 0, 0},
+        {SceneTextureKind::OakForestSmall, "tiles", "oak_forest_small", 0, 0, 0, 0},
+        {SceneTextureKind::OakForestMedium, "tiles", "oak_forest_medium", 0, 0, 0, 0},
+        {SceneTextureKind::OakForestLarge, "tiles", "oak_forest_large", 0, 0, 0, 0},
+        {SceneTextureKind::DarkenedOakForestSmall, "tiles", "darkened_oak_forest_small", 0, 0, 0, 0},
+        {SceneTextureKind::DarkenedOakForestMedium, "tiles", "darkened_oak_forest_medium", 0, 0, 0, 0},
+        {SceneTextureKind::DarkenedOakForestLarge, "tiles", "darkened_oak_forest_large", 0, 0, 0, 0},
+        {SceneTextureKind::PinesForestSmall, "tiles", "pines_forest_small", 0, 0, 0, 0},
+        {SceneTextureKind::PinesForestMedium, "tiles", "pines_forest_medium", 0, 0, 0, 0},
+        {SceneTextureKind::PinesForestLarge, "tiles", "pines_forest_large", 0, 0, 0, 0},
+        {SceneTextureKind::DarkenedPinesForestSmall, "tiles", "darkened_pines_forest_small", 0, 0, 0, 0},
+        {SceneTextureKind::DarkenedPinesForestMedium, "tiles", "darkened_pines_forest_medium", 0, 0, 0, 0},
+        {SceneTextureKind::DarkenedPinesForestLarge, "tiles", "darkened_pines_forest_large", 0, 0, 0, 0},
+        {SceneTextureKind::ForestStump, "tiles", "forest_stump", 0, 0, 0, 0},
+        {SceneTextureKind::Berries, "tiles", "berries", 0, 0, 0, 0},
+        {SceneTextureKind::Blueberries, "tiles", "blueberries", 0, 0, 0, 0},
+        {SceneTextureKind::GoldMine0, "tiles", "gold_mine_0", 0, 0, 0, 0},
+        {SceneTextureKind::GoldMine1, "tiles", "gold_mine_1", 0, 0, 0, 0},
+        {SceneTextureKind::GoldMine2, "tiles", "gold_mine_2", 0, 0, 0, 0},
+        {SceneTextureKind::GoldMine3, "tiles", "gold_mine_3", 0, 0, 0, 0},
+        {SceneTextureKind::TownCenterFriendly, "buildings", "town_center_friendly", 0, 0, 0, 0},
+        {SceneTextureKind::TownCenterEnemy, "buildings", "town_center_enemy", 0, 0, 0, 0},
+        {SceneTextureKind::HouseFriendly, "buildings", "house_friendly", 0, 0, 0, 0},
+        {SceneTextureKind::HouseEnemy, "buildings", "house_enemy", 0, 0, 0, 0},
+        {SceneTextureKind::LumberjackFriendly, "buildings", "lumberjack_friendly", 0, 0, 0, 0},
+        {SceneTextureKind::LumberjackEnemy, "buildings", "lumberjack_enemy", 0, 0, 0, 0},
+        {SceneTextureKind::ExtractorFriendly, "buildings", "extractor_friendly", 0, 0, 0, 0},
+        {SceneTextureKind::ExtractorEnemy, "buildings", "extractor_enemy", 0, 0, 0, 0},
+        {SceneTextureKind::ManaLake, "nature", "mana_lake", 0, 0, 0, 0},
     };
 
     int loaded_count = 0;
@@ -151,7 +201,11 @@ void SceneTextureCatalog::load(const std::filesystem::path& assets_directory)
         if (load_texture_file(
                 assets_directory,
                 relative_path,
-                textures_[static_cast<std::size_t>(mapping.kind)])) {
+                textures_[static_cast<std::size_t>(mapping.kind)],
+                mapping.crop_x,
+                mapping.crop_y,
+                mapping.crop_width,
+                mapping.crop_height)) {
             ++loaded_count;
         }
     }

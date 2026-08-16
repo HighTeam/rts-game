@@ -1,6 +1,7 @@
 #include "net/reconnect_wire.hpp"
 
 #include <cstring>
+#include <type_traits>
 
 namespace aoa::net {
 
@@ -32,6 +33,7 @@ std::vector<std::byte> encode_reconnect_request(const ReconnectRequestMessage& m
 {
     std::vector<std::byte> out{};
     append_pod(out, message.player_slot);
+    append_pod(out, message.claim_token);
     return out;
 }
 
@@ -40,6 +42,16 @@ std::optional<ReconnectRequestMessage> decode_reconnect_request(const std::span<
     std::span<const std::byte> cursor = bytes;
     ReconnectRequestMessage message{};
     if (!read_pod(cursor, message.player_slot)) {
+        return std::nullopt;
+    }
+
+    // Backward-compatible: old peers sent only the slot byte.
+    if (cursor.empty()) {
+        message.claim_token = 0U;
+        return message;
+    }
+
+    if (!read_pod(cursor, message.claim_token)) {
         return std::nullopt;
     }
 

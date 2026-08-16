@@ -16,6 +16,8 @@ struct FogOfWarState {
     std::vector<int> memory_forest_wood{};
     std::vector<int> memory_bush_food{};
     std::vector<int> memory_mine_money{};
+    std::uint64_t cached_hash{0U};
+    bool hash_valid{false};
 };
 
 [[nodiscard]] inline TileType fog_memory_tile_type(

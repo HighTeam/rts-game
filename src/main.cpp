@@ -1,6 +1,7 @@
 #include "app/application.hpp"
 
 #include "core/asset_store.hpp"
+#include "core/constants.hpp"
 #include "harness/regression_harness.hpp"
 #include "net/lockstep_runner.hpp"
 #include "net/net_smoke.hpp"
@@ -15,6 +16,8 @@
 #endif
 #include <windows.h>
 #include <timeapi.h>
+#include <cstdio>
+#include <string_view>
 
 namespace {
 
@@ -39,6 +42,32 @@ int main(int argc, char** argv)
 #if defined(_WIN32)
     // 1ms timer resolution so lockstep idle waits are not quantized to ~15ms.
     const MultimediaTimerPeriod multimedia_timer_period{};
+
+    bool want_console = false;
+    for (int arg_index = 1; arg_index < argc; ++arg_index) {
+        const std::string_view arg = argv[arg_index];
+        if (arg == aoa::constants::CONSOLE_DEBUG_ARG || arg == "--headless" || arg == "--harness"
+            || arg == "--net-smoke" || arg == "--lockstep-smoke"
+            || arg == "--lockstep-disconnect-smoke" || arg == "--lockstep-reconnect-smoke"
+            || arg == "--lockstep-4-smoke" || arg == "--lockstep-2h2ai-smoke"
+            || arg == "--sim-8ai-bench" || arg == "--lockstep-4-stress-smoke"
+            || arg == "--lockstep-4-reconnect-smoke" || arg == "--snapshot-smoke"
+            || arg == "--snapshot-double-spawn-smoke" || arg == "--snapshot-reconnect-smoke"
+            || arg == "--snapshot-heavy-smoke" || arg == "--print-hash" || arg == "--help"
+            || arg == "-h") {
+            want_console = true;
+            break;
+        }
+    }
+    if (want_console) {
+        if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+            AllocConsole();
+        }
+        FILE* stream = nullptr;
+        (void)freopen_s(&stream, "CONOUT$", "w", stdout);
+        (void)freopen_s(&stream, "CONOUT$", "w", stderr);
+        (void)freopen_s(&stream, "CONIN$", "r", stdin);
+    }
 #endif
 
     try {
@@ -73,6 +102,14 @@ int main(int argc, char** argv)
 
         if (options.run_lockstep_4_smoke) {
             return aoa::net::run_lockstep_4_smoke();
+        }
+
+        if (options.run_lockstep_2h2ai_smoke) {
+            return aoa::net::run_lockstep_2h2ai_smoke();
+        }
+
+        if (options.run_sim_8ai_bench) {
+            return aoa::net::run_sim_8ai_bench();
         }
 
         if (options.run_lockstep_4_stress_smoke) {

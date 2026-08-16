@@ -99,6 +99,28 @@ bool issue_build_house_order(
     const std::vector<entt::entity>& workers,
     core::GridPos anchor_cell);
 
+bool issue_build_lumberjack_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+bool issue_build_extractor_order(
+    entt::registry& registry,
+    const std::vector<entt::entity>& workers,
+    core::GridPos anchor_cell);
+
+// Extractors may only be raised on a free mana lake with an exact footprint match.
+[[nodiscard]] bool can_build_extractor_at(
+    entt::registry& registry,
+    core::GridPos anchor_cell,
+    std::uint8_t player_slot);
+
+[[nodiscard]] entt::entity pick_mana_lake_at_screen(
+    entt::registry& registry,
+    const render::GameRenderer& renderer,
+    sf::Vector2f screen_position,
+    std::uint8_t local_player_slot);
+
 bool issue_resume_build_order(
     entt::registry& registry,
     const std::vector<entt::entity>& workers,

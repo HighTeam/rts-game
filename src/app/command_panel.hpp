@@ -24,6 +24,11 @@ enum class CommandPanelMode : std::uint8_t {
     MilitiaActions = 5,
     PlaceHouse = 6,
     HouseActions = 7,
+    PlaceLumberjack = 8,
+    LumberjackActions = 9,
+    PlaceExtractor = 10,
+    ExtractorActions = 11,
+    ManaLakeInfo = 12,
 };
 
 enum class CommandPanelAction : std::uint8_t {
@@ -39,6 +44,8 @@ enum class CommandPanelAction : std::uint8_t {
     Attack = 9,
     Stop = 10,
     BuildHouse = 11,
+    BuildLumberjack = 12,
+    BuildExtractor = 13,
 };
 
 struct CommandPanelFrame {
@@ -58,6 +65,7 @@ struct CommandPanelButton {
     bool disabled{false};
     int cost_wood{0};
     int cost_food{0};
+    int cost_money{0};
     int slot{-1};
 };
 
@@ -66,9 +74,15 @@ struct CommandPanelBuildOptions {
     bool can_afford_town_center{true};
     int house_wood_cost{constants::HOUSE_BUILD_WOOD_COST};
     bool can_afford_house{true};
+    int lumberjack_wood_cost{constants::LUMBERJACK_BUILD_WOOD_COST};
+    bool can_afford_lumberjack{true};
+    int extractor_wood_cost{constants::EXTRACTOR_BUILD_WOOD_COST};
+    int extractor_money_cost{constants::EXTRACTOR_BUILD_MONEY_COST};
+    bool can_afford_extractor{true};
     int worker_food_cost{constants::WORKER_FOOD_COST};
     bool can_afford_worker{true};
     int militia_food_cost{constants::MILITIA_FOOD_COST};
+    int militia_money_cost{constants::MILITIA_MONEY_COST};
     bool can_afford_militia{true};
 };
 
@@ -130,6 +144,10 @@ struct CommandPanelBuildOptions {
         return "TC";
     case CommandPanelAction::BuildHouse:
         return "Ho";
+    case CommandPanelAction::BuildLumberjack:
+        return "Lu";
+    case CommandPanelAction::BuildExtractor:
+        return "Ex";
     case CommandPanelAction::Back:
         return "Ba";
     case CommandPanelAction::SpawnWorker:
@@ -213,6 +231,8 @@ struct CommandPanelBuildOptions {
     case CommandPanelMode::BuildMenu:
         return {
             {0, CommandPanelAction::BuildHouse},
+            {1, CommandPanelAction::BuildLumberjack},
+            {2, CommandPanelAction::BuildExtractor},
             {4, CommandPanelAction::BuildTownCenter},
             {13, CommandPanelAction::Back},
         };
@@ -224,13 +244,24 @@ struct CommandPanelBuildOptions {
             {14, CommandPanelAction::Destroy},
         };
     case CommandPanelMode::HouseActions:
+    case CommandPanelMode::LumberjackActions:
+    case CommandPanelMode::ExtractorActions:
         return {
             {4, CommandPanelAction::Deselect},
             {14, CommandPanelAction::Destroy},
         };
-    case CommandPanelMode::Empty:
+    case CommandPanelMode::ManaLakeInfo:
+        return {
+            {4, CommandPanelAction::Deselect},
+        };
     case CommandPanelMode::PlaceTownCenter:
     case CommandPanelMode::PlaceHouse:
+    case CommandPanelMode::PlaceLumberjack:
+    case CommandPanelMode::PlaceExtractor:
+        return {
+            {4, CommandPanelAction::Deselect},
+        };
+    case CommandPanelMode::Empty:
         break;
     }
 
@@ -285,12 +316,22 @@ struct CommandPanelBuildOptions {
             button.cost_wood = build_options.house_wood_cost;
             button.disabled = !build_options.can_afford_house;
         }
+        if (button.action == CommandPanelAction::BuildLumberjack) {
+            button.cost_wood = build_options.lumberjack_wood_cost;
+            button.disabled = !build_options.can_afford_lumberjack;
+        }
+        if (button.action == CommandPanelAction::BuildExtractor) {
+            button.cost_wood = build_options.extractor_wood_cost;
+            button.cost_money = build_options.extractor_money_cost;
+            button.disabled = !build_options.can_afford_extractor;
+        }
         if (button.action == CommandPanelAction::SpawnWorker) {
             button.cost_food = build_options.worker_food_cost;
             button.disabled = !build_options.can_afford_worker;
         }
         if (button.action == CommandPanelAction::SpawnMilitia) {
             button.cost_food = build_options.militia_food_cost;
+            button.cost_money = build_options.militia_money_cost;
             button.disabled = !build_options.can_afford_militia;
         }
         buttons.push_back(button);
@@ -313,6 +354,12 @@ struct CommandPanelBuildOptions {
             return CommandPanelAction::None;
         }
         if (action == CommandPanelAction::BuildHouse && !build_options.can_afford_house) {
+            return CommandPanelAction::None;
+        }
+        if (action == CommandPanelAction::BuildLumberjack && !build_options.can_afford_lumberjack) {
+            return CommandPanelAction::None;
+        }
+        if (action == CommandPanelAction::BuildExtractor && !build_options.can_afford_extractor) {
             return CommandPanelAction::None;
         }
         if (action == CommandPanelAction::SpawnWorker && !build_options.can_afford_worker) {
@@ -354,6 +401,44 @@ struct CommandPanelBuildOptions {
     const float mouse_y)
 {
     const CommandPanelFrame frame = command_panel_frame_rect(window_size);
+    return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
+        && mouse_y <= frame.y + frame.height;
+}
+
+[[nodiscard]] inline bool hit_test_status_panel_frame(
+    const sf::Vector2u window_size,
+    const float mouse_x,
+    const float mouse_y)
+{
+    const CommandPanelFrame frame = status_panel_frame_rect(window_size);
+    return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
+        && mouse_y <= frame.y + frame.height;
+}
+
+[[nodiscard]] inline CommandPanelFrame resource_bar_frame_rect(const sf::Vector2u)
+{
+    const float icon_size = static_cast<float>(constants::HUD_ICON_DRAW_SIZE_PX);
+    const float gap = static_cast<float>(constants::HUD_ICON_TEXT_GAP_PX);
+    const float char_step = static_cast<float>(
+        (constants::HUD_GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
+    const float group_width = icon_size + gap
+        + static_cast<float>(constants::HUD_RESOURCE_BAR_VALUE_MAX_CHARS) * char_step
+        + icon_size;
+    return CommandPanelFrame{
+        .x = 0.0F,
+        .y = 0.0F,
+        .width = constants::HUD_MARGIN_X
+            + group_width * static_cast<float>(constants::HUD_RESOURCE_BAR_GROUP_COUNT),
+        .height = constants::HUD_MARGIN_Y + icon_size + constants::HUD_MARGIN_Y,
+    };
+}
+
+[[nodiscard]] inline bool hit_test_resource_bar_frame(
+    const sf::Vector2u window_size,
+    const float mouse_x,
+    const float mouse_y)
+{
+    const CommandPanelFrame frame = resource_bar_frame_rect(window_size);
     return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
         && mouse_y <= frame.y + frame.height;
 }
@@ -436,6 +521,18 @@ struct CommandPanelBuildOptions {
 [[nodiscard]] inline core::GridPos house_anchor_from_center_cell(const core::GridPos center_cell)
 {
     const int half = constants::HOUSE_FOOTPRINT_TILES / 2;
+    return core::GridPos{center_cell.x - half, center_cell.y - half};
+}
+
+[[nodiscard]] inline core::GridPos lumberjack_anchor_from_center_cell(const core::GridPos center_cell)
+{
+    const int half = constants::LUMBERJACK_FOOTPRINT_TILES / 2;
+    return core::GridPos{center_cell.x - half, center_cell.y - half};
+}
+
+[[nodiscard]] inline core::GridPos extractor_anchor_from_center_cell(const core::GridPos center_cell)
+{
+    const int half = constants::EXTRACTOR_FOOTPRINT_TILES / 2;
     return core::GridPos{center_cell.x - half, center_cell.y - half};
 }
 

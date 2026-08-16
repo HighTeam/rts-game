@@ -147,6 +147,18 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
             filter_command_units(registry, command.unit_ids, command.player_slot),
             command.cell);
         break;
+    case PlayerCommandType::BuildLumberjack:
+        issue_build_lumberjack_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
+    case PlayerCommandType::BuildExtractor:
+        issue_build_extractor_order(
+            registry,
+            filter_command_units(registry, command.unit_ids, command.player_slot),
+            command.cell);
+        break;
     case PlayerCommandType::ResumeBuild:
         if (registry.valid(command.target_entity)
             && registry.all_of<components::BuildingTag, components::PlayerOwnedTag>(

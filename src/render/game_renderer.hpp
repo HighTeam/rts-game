@@ -5,10 +5,12 @@
 #include "net/lockstep_network_hud.hpp"
 #include "render/hud_overlay.hpp"
 #include "render/scene_textures.hpp"
+#include "render/building_sight_memory.hpp"
 #include "render/sim_render_snapshot.hpp"
 #include "sim/simulation.hpp"
 #include "sim/components/building_footprint.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/systems/visibility_system.hpp"
 
 #include "core/grid.hpp"
 
@@ -48,6 +50,8 @@ public:
 
     void resize(sf::Vector2u window_size, bool preserve_camera_view = false);
     void set_local_player_slot(std::uint8_t player_slot);
+    [[nodiscard]] std::uint8_t local_player_slot() const { return local_player_slot_; }
+    [[nodiscard]] sf::Vector2u window_size() const { return window_size_; }
     void update_camera(float delta_seconds);
     void toggle_grid_lines();
     void toggle_fog_of_war();
@@ -56,7 +60,12 @@ public:
     void toggle_perf_hud();
     [[nodiscard]] bool show_perf_hud() const { return show_perf_hud_; }
     void set_show_perf_hud(const bool enabled) { show_perf_hud_ = enabled; }
+    void toggle_selection_debug();
+    [[nodiscard]] bool show_selection_debug() const { return show_selection_debug_; }
+    void toggle_hitboxes();
+    [[nodiscard]] bool show_hitboxes() const { return show_hitboxes_; }
     void reset_graphics_context(sf::Vector2u window_size);
+    [[nodiscard]] bool local_player_has_seen_building(entt::entity entity) const;
     void draw(
         const sim::Simulation& simulation,
         const std::vector<entt::entity>& selected_entities,
@@ -153,7 +162,9 @@ private:
         float tint_r,
         float tint_g,
         float tint_b,
-        float tint_a) const;
+        float tint_a,
+        float uv_left = 0.0F,
+        float uv_right = 1.0F) const;
     void draw_textured_quad(
         const sf::Vector2f& top,
         const sf::Vector2f& right,
@@ -171,7 +182,8 @@ private:
         float brightness_top,
         float brightness_right,
         float brightness_bottom,
-        float brightness_left) const;
+        float brightness_left,
+        float alpha = 1.0F) const;
     void draw_textured_iso_diamond_fog(
         const sf::Vector2f& top,
         const sf::Vector2f& right,
@@ -191,7 +203,11 @@ private:
         float corner_right,
         float corner_bottom,
         float corner_left,
-        bool use_corner_fade) const;
+        bool use_corner_fade,
+        float alpha_top = 1.0F,
+        float alpha_right = 1.0F,
+        float alpha_bottom = 1.0F,
+        float alpha_left = 1.0F) const;
     void draw_iso_diamond_sprite(
         int grid_x,
         int grid_y,
@@ -199,7 +215,30 @@ private:
         float brightness,
         const std::vector<float>* fog_vertex_brightness = nullptr,
         int map_width = 0,
-        int map_height = 0) const;
+        int map_height = 0,
+        float alpha = 1.0F,
+        const float* corner_alphas = nullptr) const;
+    void ensure_biome_vertex_weights(
+        const std::vector<sim::components::GroundType>& ground,
+        int map_width,
+        int map_height) const;
+    [[nodiscard]] const std::vector<float>& ensure_fog_vertex_brightness(
+        std::uint64_t tick_count,
+        const std::vector<std::uint8_t>& fog_explored,
+        int map_width,
+        int map_height,
+        std::uint8_t player_slot,
+        const std::vector<sim::systems::VisionSource>& vision_sources) const;
+    [[nodiscard]] bool iso_tile_intersects_window(int grid_x, int grid_y, int pad_tiles) const;
+    void draw_batched_ground_tiles(
+        int map_width,
+        int map_height,
+        const std::vector<sim::components::GroundType>& ground,
+        const std::vector<std::uint8_t>& fog_visible,
+        const std::vector<std::uint8_t>& fog_explored,
+        bool fog_enabled,
+        const std::vector<float>* fog_vertex_brightness,
+        std::uint64_t tick_count) const;
     void draw_iso_object_sprite(
         int grid_x,
         int grid_y,
@@ -208,7 +247,9 @@ private:
         float sort_y,
         float brightness,
         float offset_x_tiles = 0.0F,
-        float offset_y_tiles = 0.0F) const;
+        float offset_y_tiles = 0.0F,
+        int frame_index = 0,
+        int frame_count = 1) const;
     struct PendingIsoSpriteDraw {
         float sort_key{0.0F};
         int grid_x{0};
@@ -218,6 +259,9 @@ private:
         float brightness{1.0F};
         float offset_x_tiles{0.0F};
         float offset_y_tiles{0.0F};
+        // Horizontal strip animation: frame_count > 1 selects a column of the atlas.
+        int frame_index{0};
+        int frame_count{1};
     };
 
     struct PendingUnitDraw {
@@ -240,7 +284,9 @@ private:
         float brightness,
         float sort_key,
         float offset_x_tiles = 0.0F,
-        float offset_y_tiles = 0.0F) const;
+        float offset_y_tiles = 0.0F,
+        int frame_index = 0,
+        int frame_count = 1) const;
     void queue_unit_draw(const PendingUnitDraw& draw) const;
     void flush_pending_depth_sorted_draws(unsigned int& active_textured_batch) const;
     [[nodiscard]] std::vector<core::GridPos> collect_unit_front_occluder_tiles(
@@ -253,7 +299,7 @@ private:
         int grid_x,
         int grid_y,
         float vertical_extent_scale,
-        SceneTextureKind aspect_kind = SceneTextureKind::ForestTree) const;
+        SceneTextureKind aspect_kind = SceneTextureKind::OakForestLarge) const;
     void clear_screen_scissor() const;
     void draw_unit_occlusion_silhouette(
         float world_x,
@@ -264,13 +310,13 @@ private:
         const std::vector<core::GridPos>& occluder_tiles,
         const std::vector<core::GridPos>& building_anchors,
         const std::vector<sim::components::BuildingFootprint>& building_footprints) const;
-    [[nodiscard]] SceneTextureKind grass_texture_for_cell(int grid_x, int grid_y) const;
-    [[nodiscard]] SceneTextureKind dirt_texture_for_cell(int grid_x, int grid_y) const;
-    [[nodiscard]] SceneTextureKind ground_texture_for_tile(
-        sim::components::TileType tile,
+    [[nodiscard]] SceneTextureKind ground_texture_for_ground(
+        sim::components::GroundType ground) const;
+    [[nodiscard]] SceneTextureKind forest_tree_texture_for_cell(
         int grid_x,
-        int grid_y) const;
-    [[nodiscard]] SceneTextureKind forest_tree_texture_for_cell(int grid_x, int grid_y) const;
+        int grid_y,
+        sim::components::GroundType ground) const;
+    [[nodiscard]] float tree_sprite_width_scale(SceneTextureKind kind) const;
     [[nodiscard]] SceneTextureKind gold_mine_texture_for_cell(int grid_x, int grid_y) const;
     [[nodiscard]] SceneVertex make_scene_vertex(
         float world_x,
@@ -406,6 +452,23 @@ private:
         float height_end = 1.0F) const;
     void draw_ground_highlight(const SceneHighlight& highlight) const;
     void draw_unit_ground_highlight(const SceneHighlight& highlight) const;
+    void draw_hitbox_overlays(
+        const sim::Simulation& simulation,
+        float interpolation_alpha) const;
+    void draw_hitbox_overlays_snapshot(
+        const SimRenderSnapshot& snapshot,
+        float interpolation_alpha) const;
+    void draw_debug_path_for_unit(
+        float world_x,
+        float world_z,
+        const std::vector<core::GridPos>& cells,
+        int next_index) const;
+    void draw_debug_path_overlays(
+        const sim::Simulation& simulation,
+        float interpolation_alpha) const;
+    void draw_debug_path_overlays_snapshot(
+        const SimRenderSnapshot& snapshot,
+        float interpolation_alpha) const;
     void draw_selection_outline(float world_x, float world_z) const;
     void draw_unit_selection_outline(float world_x, float world_z) const;
     void draw_footprint_highlight(
@@ -441,6 +504,9 @@ private:
         const entt::registry& registry,
         entt::entity entity,
         float interpolation_alpha) const;
+    void destroy_present_target() const;
+    [[nodiscard]] bool ensure_present_target() const;
+    void present_target_to_window() const;
     void try_frame_player_start(
         int map_width,
         int map_height,
@@ -473,7 +539,31 @@ private:
     bool show_grid_lines_{false};
     bool fog_of_war_enabled_{true};
     bool show_perf_hud_{false};
+    bool show_selection_debug_{false};
+    bool show_hitboxes_{false};
     std::uint8_t local_player_slot_{0U};
+    BuildingSightMemory building_sight_memory_{};
+    mutable int biome_blend_map_width_{0};
+    mutable int biome_blend_map_height_{0};
+    mutable std::uint64_t biome_blend_ground_hash_{0U};
+    mutable std::vector<float> biome_vertex_weight_{};
+    mutable std::uint64_t fog_vertex_tick_{~0ULL};
+    mutable std::uint8_t fog_vertex_player_slot_{255U};
+    mutable int fog_vertex_map_width_{0};
+    mutable int fog_vertex_map_height_{0};
+    mutable std::vector<float> fog_vertex_cache_{};
+    mutable std::vector<int> ground_draw_indices_{};
+    mutable std::uint64_t ground_draw_tick_{~0ULL};
+    mutable std::uint8_t ground_draw_player_slot_{255U};
+    mutable int ground_draw_map_width_{0};
+    mutable int ground_draw_map_height_{0};
+    std::uint64_t cached_hud_snapshot_tick_{~0ULL};
+    SimRenderSnapshot cached_hud_snapshot_{};
+    mutable unsigned int present_fbo_{0U};
+    mutable unsigned int present_color_{0U};
+    mutable unsigned int present_depth_{0U};
+    mutable int present_width_{0};
+    mutable int present_height_{0};
 };
 
 bool init_gl_loader();
