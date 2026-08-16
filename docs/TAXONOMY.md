@@ -57,15 +57,18 @@ Example (`militia.json`):
   "melee_armor": 0,
   "pierce_attack": 0,
   "pierce_armor": 0,
-  "attack_cooldown_ticks": 12
+  "attack_cooldown_ticks": 12,
+  "vision_range": 4
 }
 ```
+
+Optional `vision_range` feeds fog of war for non-worker archetypes. `0` or omitted uses kind defaults in `src/core/constants.hpp`. Entities with `WorkerUnitTag` always use `DEFAULT_WORKER_VISION_RANGE` and ignore this JSON field. See [ECS.md](ECS.md).
 
 Constraints verified in the loader:
 
 - `kind` must be `unit` \| `structure` \| `resource_node` \| `prop`
 - Civ manifest lists must resolve to archetypes of the matching kind
-- Owner is **not** in the JSON row; spawn code assigns `PlayerOwnedTag` / `EnemyTag` (and later player slots)
+- Owner is **not** in the JSON row; spawn code assigns `PlayerOwnedTag` / `EnemyTag` and `PlayerSlot`
 
 ## Naming debt
 
