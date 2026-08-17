@@ -195,6 +195,8 @@ Mid-match reconnect:
 3. Client applies the snapshot, then sends `ResyncReady`
 4. Host clears AI for that slot, resets sync state, and resumes live batches
 
+On `main`, step 1/4 currently wipe `local_outbox_` via `reset_tick_sync_state()` without flushing first, and some mid-match `ReconnectRequest` retries are ignored after live resume — see Host local outbox cleared during reconnect/resync. Open fix #64.
+
 `JoinAccepted` is not part of the normal mid-match snapshot path.
 
 ### Snapshot blob (public API)
@@ -213,7 +215,7 @@ Encode order after magic/version: `tick_count`, `state_hash`, `next_command_sequ
 
 `apply_sim_snapshot` does **not** replay the input log to rebuild the world. It wipes to `load_test_scenario`, then writes captured map/fog/entity bytes on top. Entity `entt::entity` ids are not stable across restore. Commands and attack targets must use `EntitySnapshotKey` (`player_slot`, category Worker/Militia/TownCenter, ordinal). Prefer `EntitySnapshotIdentity` when present; otherwise keys fall back to living `PlayerOwnedTag` entities sorted by EnTT id. See [ECS.md](ECS.md) § Entity snapshot identity.
 
-Before the host sends `ReconnectSnapshot` it:
+Inside `send_reconnect_snapshot()` the host:
 
 1. Flushes pending local commands into the input log
 2. Encodes the blob
@@ -221,9 +223,23 @@ Before the host sends `ReconnectSnapshot` it:
 4. Self-applies the same bytes (`apply_reconnect_snapshot_locally`) so host and client share one checkpoint
 5. Sends `ReconnectSnapshot` reliably
 
+That flush is local to `send_reconnect_snapshot()`. Callers that clear the outbox first still drop host input — see Host local outbox cleared during reconnect/resync.
+
 **Version discipline:** any change to the binary layout in encode/decode must bump `SNAPSHOT_VERSION`. Decode rejects mismatched magic or version, so a host and client on different builds cannot reconnect mid-match. Run `--snapshot-smoke` (and the local `--snapshot-*-smoke` suite after large layout edits) before LAN reconnect tests.
 
 Client reconnect pacing: every `LOCKSTEP_RECONNECT_INTERVAL_MS` (500), up to `LOCKSTEP_RECONNECT_MAX_ATTEMPTS` (20).
+
+### Host local outbox cleared during reconnect/resync
+
+`submit_local_command` buffers host orders in `local_outbox_` until the session flushes them into the shared input log / batch path. `reset_tick_sync_state()` clears that outbox (along with ready-bit maps) without flushing.
+
+On `main` today:
+
+- `handle_peer_connected()` calls `reset_tick_sync_state()` **before** `send_reconnect_snapshot()`. Any host commands still sitting in `local_outbox_` are discarded, then the snapshot encode flushes an empty outbox.
+- `handle_resync_ready()` calls `reset_tick_sync_state()` with no flush at all. Host orders issued while waiting for `ResyncReady` never reach `enqueue_network_command` or a `TickInputBatch`.
+- Mid-match `handle_reconnect_request()` can early-return when `client_resync_ready_` is already true and no snapshot/AI/handshake flags are set. A client retry then gets neither a fresh `ReconnectSnapshot` nor another `ResyncReady` handshake.
+
+Symptom: host move/attack/spawn issued during a client reconnect or right before resync completes never appear for the host (and never for the rejoining client). `--lockstep-reconnect-smoke` can stay green if it does not spam host commands through those windows. Open fix PR #64 flushes the outbox before both resets and re-arms snapshot send on that mid-match retry path. Until it merges, treat "host order vanished around reconnect" as this bug, not as player error.
 
 ### Duplicate ResyncReady after live resume
 
@@ -339,6 +355,7 @@ In sessions with `session_player_count_ > 2`, host hash fan-out is incomplete to
 | Client disconnect freezes the match | Should not happen on host; host must enter AI fallback immediately |
 | Reconnect fails after ~30s | Host grace expired (`LOCKSTEP_RECONNECT_GRACE_MS`) |
 | Match freezes a few seconds after a successful reconnect | Late duplicate `ResyncReady` retries call `reset_tick_sync_state()` after live resume; see Duplicate ResyncReady after live resume |
+| Host orders vanish during client reconnect/resync | `reset_tick_sync_state()` clears `local_outbox_` before flush; mid-match retry may early-return; see Host local outbox cleared during reconnect/resync (open fix #64) |
 | Host workers stop obeying micro after opponent disconnect | `set_player_ai_controlled` strips `ManualControlTag` from all workers, not only the AI slot |
 | Expecting 4 graphical clients via `--lockstep-host` | Not yet. Host still uses 2-player session; use `--lockstep-4-smoke` for N-way gating |
 | `--player-slot` rejected | Flag not implemented; only slots 0/1 via host/join |
