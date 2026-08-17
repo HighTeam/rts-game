@@ -45,10 +45,12 @@ Same binary, no window — for desync/regression runs:
 ```powershell
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x7982a0643f3bcb76
 .\build\x64-debug\Debug\aoa.exe --harness
 .\build\x64-debug\Debug\aoa.exe --net-smoke
 ```
+
+The `--expect-hash` example matches `data/scenarios/earth_default.json` on this tree. Refresh it after intentional sim changes.
 
 | Mode | Use |
 |------|-----|
@@ -58,16 +60,32 @@ Same binary, no window — for desync/regression runs:
 | `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
 | `--lockstep-disconnect-smoke` | Client disconnect mid-match; host enters AI immediately and sim keeps advancing |
 | `--lockstep-reconnect-smoke` | Three disconnect → AI → reconnect → live lockstep cycles in-process; verifies hash match each time |
-| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks |
-| `--snapshot-smoke` | Encode sim snapshot + input log, restore via replay, verify hash match |
+| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; local hash match after 40 ticks |
+| `--snapshot-smoke` | Encode sim snapshot + input log, restore, verify hash match (in CI) |
+| `--snapshot-double-spawn-smoke` | Snapshot roundtrip, then two wire `SpawnWorker`s stay in sync (local) |
+| `--snapshot-reconnect-smoke` | Long AI/spawn run, then encode/restore (local) |
+| `--snapshot-heavy-smoke` | Busy two-slot workload, then encode/restore (local) |
 | `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
 | `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
+| `--lockstep-debug` | Write `logs/lockstep_*.log` next to the binary (host/join and LAN soaks) |
 
 For lockstep, `--ticks N` applies only with `--headless` (graphical sessions run until you close the window or the opponent disconnects). Headless lockstep defaults to 100 ticks without `--ticks`.
 
 Default tick count for `--headless` (non-lockstep): `HEADLESS_DEFAULT_TICK_COUNT` in `src/core/constants.hpp` (100).
 
-Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNESS.md).
+`main.cpp` treats these as exclusive modes. First match wins: harness → net/lockstep/snapshot smokes → lockstep host/join → headless → graphical. Unknown flags throw (`parse_launch_options` in `src/app/application.cpp`); there is no `--player-slot` yet. `--help` / `-h` lists the CI smokes and shows `--lockstep-debug` on the host/join lines, but omits the local `--snapshot-double-spawn-smoke` / `--snapshot-reconnect-smoke` / `--snapshot-heavy-smoke` stress flags — prefer this table and [LOCKSTEP.md](LOCKSTEP.md) as the full CLI catalog.
+
+Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNESS.md). Lockstep/reconnect/snapshot details: [LOCKSTEP.md](LOCKSTEP.md).
+
+## Runtime data paths
+
+There is **no** `AOA_DATA_DIR` environment variable. Paths resolve in `src/core/runtime_paths.cpp`:
+
+1. Compile-time `AOA_RUNTIME_ROOT` — set in `CMakeLists.txt` to `${CMAKE_SOURCE_DIR}` so a binary built from this tree can open the source `data/` and `assets/` even when cwd is elsewhere.
+2. POST_BUILD — `cmake` copies `${CMAKE_SOURCE_DIR}/data` and `.../assets` next to `aoa.exe` (`$<TARGET_FILE_DIR:aoa>/…`).
+3. Search order for `default_data_directory()`: `<exe>/data` (must contain `archetypes/`), then `AOA_RUNTIME_ROOT/data`, then cwd `data/`. Logs go under `<exe>/logs` when the exe path is known (`default_logs_directory()`).
+
+If harness/smokes fail with missing scenarios or archetypes, rebuild (to refresh the POST_BUILD copy) or run a binary whose `AOA_RUNTIME_ROOT` still points at this checkout.
 
 ## Assets
 
@@ -75,6 +93,7 @@ Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNE
 |--------|------|
 | `raw-assets/` | Gitignored source art (local only) |
 | `assets/` | Shipped runtime copies (POST_BUILD copy next to `aoa.exe`) |
+| `data/` | Archetypes, civ JSON, harness scenarios (also POST_BUILD-copied next to the binary) |
 
 See [assets/README.md](../assets/README.md) and [DECISIONS.md](DECISIONS.md).
 
@@ -86,9 +105,9 @@ After `cmake --preset x64-debug`, open `build/x64-debug/age-of-affinities.sln` (
 
 GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) because hosted runners do not expose the Visual Studio generator the same way as a local VS install. Local development keeps **Visual Studio 2022** presets (`x64-debug`, `x64-release`).
 
-Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5`, `--net-smoke`, `--lockstep-smoke`, `--lockstep-disconnect-smoke`, and `--lockstep-reconnect-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
+Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5`, `--net-smoke`, `--lockstep-smoke`, `--lockstep-disconnect-smoke`, `--lockstep-reconnect-smoke`, `--lockstep-4-smoke`, and `--snapshot-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
 
-Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): commands are buffered, sent in `TickInputBatch`, then applied on both peers at the same execute tick. Do not enqueue locally before the batch is sent — that caused desync when moving units.
+Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): commands are buffered, sent in `TickInputBatch`, then applied on both peers at the same execute tick. Do not enqueue locally before the batch is sent — that caused desync when moving units. Architecture, reconnect, wire kinds, and pitfalls: [LOCKSTEP.md](LOCKSTEP.md).
 
 ```powershell
 # Terminal 1 — graphical (default)
