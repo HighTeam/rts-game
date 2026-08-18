@@ -43,7 +43,7 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`.
 - [x] One military unit: move, attack, die
 - [x] A* pathfinding on the grid (16-way, forest blocked, enemy AI)
 - [x] Per-tick state hash function (hash all sim-relevant component data every tick) — desync detector for M2
-- [x] Combat same-tick tie-break (sorted entity id; no mutual kill same tick)
+- [x] Combat same-tick tie-break (sorted by `EntitySnapshotKey`; no mutual kill same tick)
 
 ### Data-driven civ definitions [BLOCKING for M4]
 
