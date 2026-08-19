@@ -8,7 +8,7 @@ Catch sim regressions (movement, gather, combat, command timing) before they bec
 
 ## CLI
 
-Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves (CI and local presets define `AOA_DATA_DIR`):
+Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves (`AOA_RUNTIME_ROOT` + POST_BUILD copy; see [BUILD.md](BUILD.md) § Runtime data paths):
 
 ```powershell
 # All scenarios under data/scenarios/*.json
@@ -16,7 +16,7 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 # Ad-hoc: default Earth scenario, no scripted commands
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x7982a0643f3bcb76
 ```
 
 | Flag | Effect |
@@ -29,6 +29,8 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 `--harness` and `--headless` are separate modes. Harness ignores `--ticks` / `--expect-hash`; those belong on the scenario JSON.
 
+Example hashes above match `data/scenarios/*.json` on this tree. After intentional sim changes, refresh them with `--print-hash` / `--harness` output; do not copy older docs blindly.
+
 ## Scenario JSON
 
 Files live in `data/scenarios/`. Minimal shape:
@@ -37,7 +39,7 @@ Files live in `data/scenarios/`. Minimal shape:
 {
   "scenario_id": "earth_default",
   "ticks": 200,
-  "expected_state_hash": "0xc59dd1cc68525745"
+  "expected_state_hash": "0x7982a0643f3bcb76"
 }
 ```
 
@@ -47,7 +49,7 @@ Optional `commands` array (command replay):
 {
   "scenario_id": "earth_player_commands",
   "ticks": 150,
-  "expected_state_hash": "0xb0c1f568cc7d28cd",
+  "expected_state_hash": "0x4e8703cf1988f556",
   "commands": [
     {
       "execute_tick": 5,
@@ -79,21 +81,23 @@ Optional `commands` array (command replay):
 
 Hard-coded in `run_scenario()` today:
 
-- `earth_default` — auto AI + default combat chase; no commands
+- `earth_default` — default Earth spawn; hard-coded `AttackOrder` pairs drive combat chase; no scripted commands. Slot-1 militia is `PlayerOwnedTag` only (no `EnemyTag`), so `run_enemy_militia_ai` does not run on this setup.
 - `earth_player_commands` — same spawn; replay gather/deposit via `PlayerCommand`
 
 Adding a new id requires a code change in `src/harness/regression_harness.cpp` until the harness maps ids to loaders generically.
 
 ### Scenario roles
 
-Resolved by `sim::scenario::find_scenario_entity`:
+Resolved by `sim::scenario::find_scenario_entity` (slot-aware):
 
 | Role | Lookup |
 |------|--------|
-| `player_worker` | `WorkerUnitTag` + `PlayerOwnedTag` |
-| `player_militia` | `MilitiaUnitTag` + `PlayerOwnedTag` |
-| `enemy_militia` | `MilitiaUnitTag` + `EnemyTag` |
-| `town_center` | `TownCenterTag` |
+| `player_worker` | `WorkerUnitTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_worker` | `WorkerUnitTag` + `PlayerOwnedTag`, slot 1 |
+| `player_militia` | `MilitiaUnitTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_militia` / `enemy_militia` | `MilitiaUnitTag` + `PlayerOwnedTag`, slot 1 |
+| `town_center` / `player1_town_center` | `TownCenterTag` + `PlayerOwnedTag`, slot 0 |
+| `player2_town_center` | `TownCenterTag` + `PlayerOwnedTag`, slot 1 |
 
 ## How a harness tick works
 
@@ -118,9 +122,9 @@ Never “fix” a hash without understanding the gameplay delta. Hash churn is a
 
 ## What the hash covers
 
-`compute_state_hash` mixes map tiles / forest wood, then every non-world entity with `GridPosition`, sorted by stable snapshot key (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
+`compute_state_hash` mixes map tiles / forest wood, fog explored/memory planes (not the per-tick `visible` plane), then every non-world entity with `GridPosition`, sorted by stable `EntitySnapshotKey` (player slot, category, ordinal). Per entity it includes (when present): grid + world position, health, carried wood, stockpile, attack order target key, attack cooldown, gather target, worker brain state, `ManualControlTag`, move path, move segment.
 
-Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
+Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`. Fog layout and key rules: [ECS.md](ECS.md). Snapshot encode/restore uses the same keys so Attack/SpawnWorker targets survive `entt::entity` recycle ([LOCKSTEP.md](LOCKSTEP.md) § Snapshot blob).
 
 ## Common pitfalls
 
@@ -131,10 +135,13 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 | Unsupported `scenario_id` | New JSON id without harness allow-list update |
 | Command seems one tick late/early | `execute_tick` is absolute sim tick, not “ticks from now” |
 | Player militia won’t auto-attack in replay | By design — player militia auto-AI was removed; issue an `attack` command |
-| Scenarios directory not found | Binary run without `AOA_DATA_DIR` / cwd that reaches `data/` |
+| Scenarios directory not found | `default_data_directory()` could not find `data/archetypes` — rebuild so POST_BUILD copies `data/`, or run with repo-root `AOA_RUNTIME_ROOT` (see [BUILD.md](BUILD.md)) |
+| Snapshot / reconnect smoke fails after spawn-order tweak | Entity snapshot ordinals or missing `EntitySnapshotIdentity` on new spawns; see [ECS.md](ECS.md) § Entity snapshot identity |
+| Hash churn after melee-only constant edit | `run_melee_contact_system` writes `WorldPosition` before combat; contact/slide constants are hash-sensitive |
 
 ## Related
 
 - [BUILD.md](BUILD.md) — presets and daily build commands
+- [LOCKSTEP.md](LOCKSTEP.md) — multiplayer smokes, reconnect, desync runbook
 - [ECS.md](ECS.md) — tick pipeline and system order
 - [DECISIONS.md](DECISIONS.md) — command delay, combat tie-break, disconnect policy
