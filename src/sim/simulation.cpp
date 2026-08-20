@@ -4,6 +4,7 @@
 #include "data/content_loader.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/scenario/test_scenario.hpp"
 #include "sim/systems/gameplay_systems.hpp"
@@ -69,6 +70,10 @@ void Simulation::set_player_ai_controlled(const std::uint8_t player_slot, const 
 
     const auto worker_view = registry_.view<components::WorkerUnitTag, components::PlayerOwnedTag>();
     for (const entt::entity worker : worker_view) {
+        if (components::entity_player_slot(registry_, worker) != player_slot) {
+            continue;
+        }
+
         registry_.remove<components::ManualControlTag>(worker);
     }
 }
