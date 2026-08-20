@@ -16,6 +16,8 @@ struct LaunchOptions {
     bool run_lockstep_disconnect_smoke{false};
     bool run_lockstep_reconnect_smoke{false};
     bool run_lockstep_4_smoke{false};
+    bool run_lockstep_4_disconnect_smoke{false};
+    bool run_lockstep_peer_silence_smoke{false};
     bool run_snapshot_smoke{false};
     bool run_snapshot_double_spawn_smoke{false};
     bool run_snapshot_reconnect_smoke{false};
