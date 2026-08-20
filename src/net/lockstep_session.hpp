@@ -102,6 +102,12 @@ private:
     void handle_join_accepted();
     void handle_opponent_lost();
     void enter_ai_fallback();
+    void enable_slot_ai_control(std::uint8_t player_slot);
+    void note_player_slot_transport_down(std::uint8_t player_slot);
+    void prepare_ai_controlled_slots_for_tick(std::uint64_t execute_tick);
+    void flush_pending_ai_input_batches(std::uint64_t execute_tick);
+    void inject_ai_commands_for_slot(std::uint64_t execute_tick, std::uint8_t player_slot);
+    [[nodiscard]] std::uint8_t missing_live_remote_slots_mask(std::uint64_t execute_tick) const;
     void enter_host_lost();
     void try_reconnect();
     void resume_player_control(std::uint8_t player_slot);
@@ -132,6 +138,11 @@ private:
     [[nodiscard]] bool send_input_batch(
         std::uint64_t execute_tick,
         const std::vector<sim::player::PlayerCommand>& commands);
+    [[nodiscard]] bool send_slot_input_batch(
+        std::uint64_t execute_tick,
+        std::uint8_t batch_player_slot,
+        const std::vector<sim::player::PlayerCommand>& commands);
+    void apply_remote_input_batch(const TickInputBatch& batch);
     void send_state_hash(std::uint64_t execute_tick, std::uint64_t state_hash);
     void ensure_local_batch_sent(std::uint64_t execute_tick);
     void maybe_resend_local_batch(std::uint64_t execute_tick);
@@ -211,6 +222,9 @@ private:
     std::chrono::steady_clock::time_point last_resync_ready_sent_{};
     std::chrono::steady_clock::time_point snapshot_restored_at_{};
     std::uint8_t ai_controlled_slot_{0U};
+    std::uint8_t ai_controlled_slots_mask_{0U};
+    std::unordered_set<std::uint64_t> ai_input_batches_sent_{};
+    std::vector<TickInputBatch> pending_ai_input_batches_{};
     int reconnect_attempts_{0};
     std::chrono::steady_clock::time_point last_reconnect_try_{};
 
