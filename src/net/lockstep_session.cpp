@@ -1419,6 +1419,7 @@ void LockstepSession::handle_peer_connected(const std::uint8_t connected_enet_sl
     }
 
     note_peer_activity();
+    flush_pending_local_commands_to_input_log();
     reset_tick_sync_state();
     desynced_ = false;
     desync_tick_ = 0U;
@@ -1480,6 +1481,7 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
     desync_tick_ = 0U;
     resync_strict_batch_gate_ = true;
     hash_verify_warmup_ticks_remaining_ = constants::LOCKSTEP_HASH_VERIFY_WARMUP_TICKS;
+    flush_pending_local_commands_to_input_log();
     reset_tick_sync_state();
     resume_player_control(player_slot);
     begin_opponent_reconnect_grace();
@@ -1535,7 +1537,8 @@ void LockstepSession::handle_reconnect_request(
     }
     else if (mid_match_reconnect && client_resync_ready_ && !awaiting_reconnect_handshake_
         && !opponent_needs_snapshot_ && !ai_fallback_) {
-        return;
+        opponent_needs_snapshot_ = true;
+        client_resync_ready_ = false;
     }
 
     if (awaiting_reconnect_handshake_ && !client_resync_ready_) {
