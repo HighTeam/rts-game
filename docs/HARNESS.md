@@ -16,7 +16,7 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 # Ad-hoc: default Earth scenario, no scripted commands
 .\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0x7982a0643f3bcb76
 ```
 
 | Flag | Effect |
@@ -29,6 +29,8 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 `--harness` and `--headless` are separate modes. Harness ignores `--ticks` / `--expect-hash`; those belong on the scenario JSON.
 
+Hashes below match `data/scenarios/*.json` on current `main`. After intentional sim changes, update the JSON (see Updating an expected hash) — do not copy stale numbers from older docs.
+
 ## Scenario JSON
 
 Files live in `data/scenarios/`. Minimal shape:
@@ -37,7 +39,7 @@ Files live in `data/scenarios/`. Minimal shape:
 {
   "scenario_id": "earth_default",
   "ticks": 200,
-  "expected_state_hash": "0xc59dd1cc68525745"
+  "expected_state_hash": "0x7982a0643f3bcb76"
 }
 ```
 
@@ -47,7 +49,7 @@ Optional `commands` array (command replay):
 {
   "scenario_id": "earth_player_commands",
   "ticks": 150,
-  "expected_state_hash": "0xb0c1f568cc7d28cd",
+  "expected_state_hash": "0x4e8703cf1988f556",
   "commands": [
     {
       "execute_tick": 5,

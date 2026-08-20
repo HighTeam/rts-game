@@ -190,7 +190,9 @@ role == Host && transport_.is_connected()
   && session_player_count_ == 2
 ```
 
-**Verified caveat:** the 2p transport-down path arms reconnect grace *before* `enter_ai_fallback`, so the grace guard still skips `disconnect_peer()` on that call. `#67` removed the old `!opponent_reconnect_pending_` guard but left the grace guard. Smoke `--lockstep-peer-silence-smoke` (port `27204`) asserts host AI + host disconnect + client reconnect; treat CI results for that smoke as the runtime check of whether another path eventually drops the peer.
+**Verified caveat:** the 2p transport-down path arms reconnect grace *before* `enter_ai_fallback`, so the grace guard still skips `disconnect_peer()` on that call. `#67` removed the old `!opponent_reconnect_pending_` guard but left the grace guard.
+
+`--lockstep-peer-silence-smoke` (port `27204`) asserts host AI + host disconnect + client reconnect. On `main` after #69, CI logs still show that smoke failing with `host did not enter AI fallback after peer silence` while the workflow job stays green — the Headless smoke step in `.github/workflows/build.yml` runs under PowerShell and does not fail the job on native non-zero exit codes. Treat a green Build check as “binary ran,” not as proof that silence AI/disconnect works.
 
 ## Reconnect flow
 
@@ -262,10 +264,10 @@ Compile definition `AOA_RUNTIME_ROOT="${CMAKE_SOURCE_DIR}"` (`CMakeLists.txt`). 
 | `--lockstep-8-smoke` | Not present |
 | Client↔client `TickStateHash` relay | Missing; host fan-out only (#48) |
 | Host migration | Policy only ([DECISIONS.md](DECISIONS.md) / [BACKLOG.md](BACKLOG.md)) |
-| Silence → `disconnect_peer` while connected | Intended in `enter_ai_fallback`; grace armed first on 2p transport-down may still skip drop (see above) |
+| Silence → AI + `disconnect_peer` while connected | Intended path exists; 2p transport-down arms grace first so `disconnect_peer` is skipped; `--lockstep-peer-silence-smoke` still fails AI entry in CI logs after #69 |
+| CI smoke exit codes | Build workflow PowerShell step does not fail the job when a smoke returns non-zero |
 | `enter_ai_fallback` / client snapshot restore outbox flush | Still clear `local_outbox_` without flush |
 | `peer_latency_ms` HUD | Unused |
-| HARNESS.md `AOA_DATA_DIR` wording | Stale vs `AOA_RUNTIME_ROOT` |
 
 ## Related
 
