@@ -58,10 +58,14 @@ Same binary, no window — for desync/regression runs:
 | `--lockstep-smoke` | Two lockstep sessions in-process; host issues gather at tick 5; verifies hash match |
 | `--lockstep-disconnect-smoke` | Client disconnect mid-match; host enters AI immediately and sim keeps advancing |
 | `--lockstep-reconnect-smoke` | Three disconnect → AI → reconnect → live lockstep cycles in-process; verifies hash match each time |
-| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks |
+| `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks (`27202`) |
+| `--lockstep-4-disconnect-smoke` | Four peers; one client drops; host AI for that slot only; remaining peers stay in lockstep (`27203`) |
+| `--lockstep-peer-silence-smoke` | Two peers; client stops advancing; host silence AI + disconnect path (`27204`) |
 | `--snapshot-smoke` | Encode sim snapshot + input log, restore via replay, verify hash match |
 | `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
 | `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
+
+Full lockstep runbook (ports, reconnect, multi-peer caveats): [LOCKSTEP.md](LOCKSTEP.md).
 
 For lockstep, `--ticks N` applies only with `--headless` (graphical sessions run until you close the window or the opponent disconnects). Headless lockstep defaults to 100 ticks without `--ticks`.
 
@@ -86,7 +90,7 @@ After `cmake --preset x64-debug`, open `build/x64-debug/age-of-affinities.sln` (
 
 GitHub Actions uses **Ninja + MSVC** presets (`ci-x64-debug`, `ci-x64-release`) because hosted runners do not expose the Visual Studio generator the same way as a local VS install. Local development keeps **Visual Studio 2022** presets (`x64-debug`, `x64-release`).
 
-Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5`, `--net-smoke`, `--lockstep-smoke`, `--lockstep-disconnect-smoke`, and `--lockstep-reconnect-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
+Workflow: `.github/workflows/build.yml` — runs on every push to `main` and on pull requests. After build it smokes `--headless --ticks 5`, `--net-smoke`, `--lockstep-smoke`, `--lockstep-disconnect-smoke`, `--lockstep-reconnect-smoke`, `--lockstep-4-smoke`, `--lockstep-4-disconnect-smoke`, `--lockstep-peer-silence-smoke`, and `--snapshot-smoke` on both CI presets and runs `--harness` on `ci-x64-debug`. Keep scenario hashes green before merging sim changes.
 
 Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): commands are buffered, sent in `TickInputBatch`, then applied on both peers at the same execute tick. Do not enqueue locally before the batch is sent — that caused desync when moving units.
 

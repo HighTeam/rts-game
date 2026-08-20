@@ -30,7 +30,7 @@ Gameplay order in `run_gameplay_systems()` (do not reorder casually — hashes a
 3. `run_enemy_militia_ai` — enemy militia only; player militia has no auto-attack AI
 4. `run_attack_chase_system`
 5. `run_movement_system`
-6. `run_combat_system` — same-tick damage sorted by entity id (see [DECISIONS.md](DECISIONS.md))
+6. `run_combat_system` — same-tick damage sorted by `EntitySnapshotKey` (see [DECISIONS.md](DECISIONS.md))
 7. `run_death_cleanup`
 
 Constraints:

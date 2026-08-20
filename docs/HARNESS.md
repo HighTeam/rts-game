@@ -8,7 +8,7 @@ Catch sim regressions (movement, gather, combat, command timing) before they bec
 
 ## CLI
 
-Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves (CI and local presets define `AOA_DATA_DIR`):
+Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves (`AOA_RUNTIME_ROOT` compile definition + POST_BUILD copy next to the exe; see [LOCKSTEP.md](LOCKSTEP.md) runtime paths):
 
 ```powershell
 # All scenarios under data/scenarios/*.json
@@ -131,7 +131,7 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 | Unsupported `scenario_id` | New JSON id without harness allow-list update |
 | Command seems one tick late/early | `execute_tick` is absolute sim tick, not “ticks from now” |
 | Player militia won’t auto-attack in replay | By design — player militia auto-AI was removed; issue an `attack` command |
-| Scenarios directory not found | Binary run without `AOA_DATA_DIR` / cwd that reaches `data/` |
+| Scenarios directory not found | Binary run without resolvable `data/` (`AOA_RUNTIME_ROOT` / exe-adjacent copy / cwd) |
 
 ## Related
 

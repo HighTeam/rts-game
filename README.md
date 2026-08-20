@@ -43,6 +43,7 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 - [ECS.md](docs/ECS.md) — EnTT components, tick pipeline, systems, data-driven hooks
 - [TAXONOMY.md](docs/TAXONOMY.md) — world object terms and live archetype JSON
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
+- [LOCKSTEP.md](docs/LOCKSTEP.md) — ENet lockstep runbook (ports, reconnect, multi-peer)
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)
 - [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, **PR workflow (required)**
 - [ORG.md](docs/ORG.md) — repos, licensing, distribution
@@ -50,4 +51,4 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 ## Status
 
-M1 landed on `main` (PR #27 + follow-up). M2 prep: tick-scoped player commands, binary command format, extended state hash, disconnect policy documented. Next: **M2 lockstep** (#7).
+M1 and M2 lockstep (2p + reconnect + CI smokes) are on `main`. M3 multi-peer transport and 4-peer smokes landed; graphical host/join is still 2-player. Next: scale/soak and remaining multi-peer gaps in [LOCKSTEP.md](docs/LOCKSTEP.md) / [M3_SCALE_TESTING.md](docs/M3_SCALE_TESTING.md).

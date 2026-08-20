@@ -77,7 +77,7 @@ See [assets/README.md](../assets/README.md).
 
 When multiple units attack on the **same sim tick**:
 
-1. Collect attackers, sort by **`entt::entity` id** (stable, lockstep-safe).
+1. Collect attackers, sort by **`EntitySnapshotKey`** via `sort_entities_by_snapshot_key` (player slot, category, ordinal — stable across reconnect; not raw `entt::entity` id).
 2. Apply damage **in that order**.
 3. **Skip** attacks against targets already at `health <= 0` this tick (before `run_death_cleanup`).
 
@@ -102,7 +102,7 @@ AoE-style free movement on a tile means sub-tile fixed-point coordinates, not fl
 | Topic | Choice |
 |-------|--------|
 | Application timing | Commands are **queued** with an `execute_tick` and applied at the **start** of that sim tick — never from the render/input loop directly |
-| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (command issued during tick *N* runs at tick *N+1*); network input delay buffer stacks on this in M2 |
+| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (singleplayer/harness). Lockstep uses separate `LOCKSTEP_COMMAND_DELAY_TICKS = 2` — they do not stack. See [LOCKSTEP.md](LOCKSTEP.md). |
 | Wire format | Compact binary: sequence, execute tick, player slot, type, unit id list, payload (grid cell or attack target entity id) — see `src/sim/player/player_command.hpp` |
 | Pick → command | Screen pick runs locally; the **semantic result** (cell, entity id) is stored in the command payload for lockstep |
 | Input log | `CommandQueue::input_log()` retains every command from game start (M2 reconnect / save-load reuse) |

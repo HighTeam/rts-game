@@ -67,6 +67,9 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 .\build\x64-release\Release\aoa.exe --lockstep-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-disconnect-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-reconnect-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-4-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-4-disconnect-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-peer-silence-smoke
 ```
 
 Pass these before spending time on the LAN soak.
