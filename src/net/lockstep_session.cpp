@@ -573,20 +573,20 @@ void LockstepSession::enqueue_inbound_packets(std::vector<ReceivedPacket> packet
     std::lock_guard lock(inbound_packet_mutex_);
     inbound_packet_queue_.reserve(inbound_packet_queue_.size() + packets.size());
     for (ReceivedPacket& packet : packets) {
-        inbound_packet_queue_.push_back(std::move(packet.data));
+        inbound_packet_queue_.push_back(std::move(packet));
     }
 }
 
 void LockstepSession::drain_inbound_packet_queue_locked()
 {
-    std::vector<std::vector<std::byte>> packets{};
+    std::vector<ReceivedPacket> packets{};
     {
         std::lock_guard lock(inbound_packet_mutex_);
         packets = std::move(inbound_packet_queue_);
         inbound_packet_queue_.clear();
     }
 
-    for (const std::vector<std::byte>& packet : packets) {
+    for (const ReceivedPacket& packet : packets) {
         process_received_packet(packet);
     }
 }
@@ -683,7 +683,7 @@ bool LockstepSession::try_process_latency_packet(const std::vector<std::byte>& p
 
 void LockstepSession::process_inbound_latency_packets()
 {
-    std::vector<std::vector<std::byte>> packets{};
+    std::vector<ReceivedPacket> packets{};
     {
         std::lock_guard lock(inbound_packet_mutex_);
         packets = std::move(inbound_packet_queue_);
@@ -694,11 +694,11 @@ void LockstepSession::process_inbound_latency_packets()
         return;
     }
 
-    std::vector<std::vector<std::byte>> game_packets{};
+    std::vector<ReceivedPacket> game_packets{};
     game_packets.reserve(packets.size());
 
-    for (std::vector<std::byte>& packet : packets) {
-        if (try_process_latency_packet(packet)) {
+    for (ReceivedPacket& packet : packets) {
+        if (try_process_latency_packet(packet.data)) {
             continue;
         }
 
@@ -814,11 +814,13 @@ void LockstepSession::poll()
 void LockstepSession::process_polled_messages_locked()
 {
     if (role_ == LockstepRole::Host) {
-        while (transport_.consume_peer_connected()) {
-            handle_peer_connected();
+        std::uint8_t connected_enet_slot = 0U;
+        while (transport_.consume_peer_connected_slot(connected_enet_slot)) {
+            handle_peer_connected(connected_enet_slot);
             LockstepDebugLog::log_event(
                 "peer_connected",
-                "tick=" + std::to_string(simulation_.tick_count()));
+                "tick=" + std::to_string(simulation_.tick_count())
+                + " enet_slot=" + std::to_string(connected_enet_slot));
         }
     }
 
@@ -842,8 +844,10 @@ void LockstepSession::process_polled_messages_locked()
         note_opponent_transport_down();
     }
 
-    if (transport_.consume_peer_lost() && match_started_ && !host_lost_) {
+    std::uint8_t lost_enet_slot = 0U;
+    if (transport_.consume_peer_lost_slot(lost_enet_slot) && match_started_ && !host_lost_) {
         if (role_ == LockstepRole::Host) {
+            clear_enet_slot_mapping(lost_enet_slot);
             if (awaiting_reconnect_handshake_) {
                 awaiting_reconnect_handshake_ = false;
                 client_resync_ready_ = false;
@@ -1117,7 +1121,7 @@ void LockstepSession::maybe_retry_host_resync_handshake()
         return;
     }
 
-    send_reconnect_snapshot();
+    send_reconnect_snapshot(pending_reconnect_enet_slot_);
     LockstepDebugLog::log_event(
         "snapshot_retry",
         "tick=" + std::to_string(simulation_.tick_count()));
@@ -1173,20 +1177,67 @@ void LockstepSession::maybe_send_pending_reconnect_snapshot()
         return;
     }
 
-    send_reconnect_snapshot();
+    send_reconnect_snapshot(pending_reconnect_enet_slot_);
     LockstepDebugLog::log_event(
         "snapshot_pending_send",
         "tick=" + std::to_string(simulation_.tick_count()));
 }
 
-void LockstepSession::send_join_accepted(const std::uint8_t target_client_slot)
+void LockstepSession::bind_player_to_enet_slot(
+    const std::uint8_t player_slot,
+    const std::uint8_t enet_slot)
+{
+    if (player_slot >= player_slot_to_enet_slot_.size() || enet_slot == 0U) {
+        return;
+    }
+
+    player_slot_to_enet_slot_[player_slot] = enet_slot;
+}
+
+void LockstepSession::clear_enet_slot_mapping(const std::uint8_t enet_slot)
+{
+    if (enet_slot == 0U) {
+        return;
+    }
+
+    for (std::uint8_t player_slot = 0U; player_slot < player_slot_to_enet_slot_.size(); ++player_slot) {
+        if (player_slot_to_enet_slot_[player_slot] == enet_slot) {
+            player_slot_to_enet_slot_[player_slot] = 0U;
+        }
+    }
+}
+
+std::optional<std::uint8_t> LockstepSession::enet_slot_for_player(
+    const std::uint8_t player_slot) const
+{
+    if (player_slot >= player_slot_to_enet_slot_.size()) {
+        return std::nullopt;
+    }
+
+    const std::uint8_t enet_slot = player_slot_to_enet_slot_[player_slot];
+    if (enet_slot == 0U) {
+        return std::nullopt;
+    }
+
+    return enet_slot;
+}
+
+void LockstepSession::send_join_accepted(const std::uint8_t target_player_slot)
 {
     const std::vector<std::byte> wire_message =
         encode_net_message(NetMessageKind::JoinAccepted, {});
 
     if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
+        const std::optional<std::uint8_t> target_enet_slot = enet_slot_for_player(target_player_slot);
+        if (!target_enet_slot.has_value()) {
+            LockstepDebugLog::log_event(
+                "join_accept_send_failed",
+                "missing_enet_slot player_slot=" + std::to_string(target_player_slot));
+            return;
+        }
+
         (void)transport_.send_reliable_to_client(
-            target_client_slot,
+            *target_enet_slot,
             wire_message,
             constants::CHANNEL_RELIABLE);
     }
@@ -1204,7 +1255,7 @@ void LockstepSession::send_join_accepted(const std::uint8_t target_client_slot)
     publish_render_snapshot_locked();
 }
 
-void LockstepSession::send_reconnect_snapshot()
+void LockstepSession::send_reconnect_snapshot(const std::uint8_t target_enet_slot)
 {
     if (client_resync_ready_ && !awaiting_reconnect_handshake_) {
         opponent_needs_snapshot_ = false;
@@ -1244,7 +1295,24 @@ void LockstepSession::send_reconnect_snapshot()
 
     const std::vector<std::byte> wire_message =
         encode_net_message(NetMessageKind::ReconnectSnapshot, snapshot_bytes);
-    if (!transport_.send_reliable(wire_message, constants::CHANNEL_RELIABLE)) {
+    bool sent = false;
+    if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
+        if (target_enet_slot == 0U) {
+            std::cerr << "lockstep: reconnect snapshot missing target enet slot at tick "
+                      << simulation_.tick_count() << " — not sending to client\n";
+            return;
+        }
+
+        sent = transport_.send_reliable_to_client(
+            target_enet_slot,
+            wire_message,
+            constants::CHANNEL_RELIABLE);
+    }
+    else {
+        sent = transport_.send_reliable(wire_message, constants::CHANNEL_RELIABLE);
+    }
+
+    if (!sent) {
         std::cerr << "lockstep: snapshot send failed at tick " << simulation_.tick_count()
                   << " — will retry on next reconnect request\n";
         return;
@@ -1258,14 +1326,16 @@ void LockstepSession::send_reconnect_snapshot()
     resync_strict_batch_gate_ = true;
     desynced_ = false;
     desync_tick_ = 0U;
+    pending_reconnect_enet_slot_ = target_enet_slot;
     last_reconnect_snapshot_sent_ = std::chrono::steady_clock::now();
 
     LockstepDebugLog::log_event(
         "snapshot_sent",
-        "tick=" + std::to_string(simulation_.tick_count()));
+        "tick=" + std::to_string(simulation_.tick_count())
+        + " enet_slot=" + std::to_string(target_enet_slot));
 }
 
-void LockstepSession::handle_peer_connected()
+void LockstepSession::handle_peer_connected(const std::uint8_t connected_enet_slot)
 {
     if (role_ != LockstepRole::Host) {
         return;
@@ -1276,12 +1346,13 @@ void LockstepSession::handle_peer_connected()
     desynced_ = false;
     desync_tick_ = 0U;
     reset_latency_stats();
+    pending_reconnect_enet_slot_ = connected_enet_slot;
 
     if (match_started_ && simulation_.tick_count() > 0U) {
         opponent_needs_snapshot_ = true;
         client_resync_ready_ = false;
         awaiting_reconnect_handshake_ = false;
-        send_reconnect_snapshot();
+        send_reconnect_snapshot(connected_enet_slot);
     }
     else {
         awaiting_reconnect_handshake_ = false;
@@ -1298,7 +1369,8 @@ void LockstepSession::handle_peer_connected()
 
     LockstepDebugLog::log_event(
         "peer_connected_reset",
-        "tick=" + std::to_string(simulation_.tick_count()));
+        "tick=" + std::to_string(simulation_.tick_count())
+        + " enet_slot=" + std::to_string(connected_enet_slot));
 }
 
 void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
@@ -1338,7 +1410,9 @@ bool LockstepSession::should_send_reconnect_snapshot() const
     return ai_fallback_ || opponent_needs_snapshot_;
 }
 
-void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
+void LockstepSession::handle_reconnect_request(
+    const std::uint8_t player_slot,
+    const std::uint8_t sender_enet_slot)
 {
     if (role_ != LockstepRole::Host) {
         return;
@@ -1350,6 +1424,11 @@ void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
 
     if (session_player_count_ == 2U && player_slot != opponent_player_slot()) {
         return;
+    }
+
+    if (sender_enet_slot != 0U) {
+        bind_player_to_enet_slot(player_slot, sender_enet_slot);
+        pending_reconnect_enet_slot_ = sender_enet_slot;
     }
 
     const bool mid_match_reconnect =
@@ -1373,14 +1452,14 @@ void LockstepSession::handle_reconnect_request(const std::uint8_t player_slot)
     if (awaiting_reconnect_handshake_ && !client_resync_ready_) {
         if ((mid_match_reconnect || should_send_reconnect_snapshot())
             && should_send_reconnect_snapshot_now()) {
-            send_reconnect_snapshot();
+            send_reconnect_snapshot(pending_reconnect_enet_slot_);
         }
         return;
     }
 
     if (mid_match_reconnect || should_send_reconnect_snapshot()) {
         opponent_needs_snapshot_ = false;
-        send_reconnect_snapshot();
+        send_reconnect_snapshot(pending_reconnect_enet_slot_);
         return;
     }
 
@@ -1846,9 +1925,9 @@ void LockstepSession::flush_pending_local_commands_to_input_log()
     local_outbox_.clear();
 }
 
-void LockstepSession::process_received_packet(const std::vector<std::byte>& packet)
+void LockstepSession::process_received_packet(const ReceivedPacket& packet)
 {
-    const auto decoded_message = decode_net_message(packet);
+    const auto decoded_message = decode_net_message(packet.data);
     if (!decoded_message.has_value()) {
         return;
     }
@@ -1861,7 +1940,7 @@ void LockstepSession::process_received_packet(const std::vector<std::byte>& pack
             return;
         }
 
-        handle_reconnect_request(message->player_slot);
+        handle_reconnect_request(message->player_slot, packet.sender_slot);
         return;
     }
 
@@ -1949,12 +2028,16 @@ void LockstepSession::process_received_packet(const std::vector<std::byte>& pack
         remote_batch_received_ever_ = true;
         note_remote_slot_ready(batch.execute_tick, batch.player_slot);
 
+        if (role_ == LockstepRole::Host && packet.sender_slot != 0U) {
+            bind_player_to_enet_slot(batch.player_slot, packet.sender_slot);
+        }
+
         if (role_ == LockstepRole::Host && session_player_count_ > 2U
             && batch.player_slot != player_slot_) {
             (void)transport_.broadcast_reliable_except(
-                packet,
+                packet.data,
                 constants::CHANNEL_RELIABLE,
-                batch.player_slot);
+                enet_slot_for_player(batch.player_slot));
         }
 
         LockstepDebugLog::log_event(
