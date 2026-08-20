@@ -153,6 +153,8 @@ private:
     void clear_state_hash_tracking();
     [[nodiscard]] bool should_send_reconnect_snapshot() const;
     [[nodiscard]] bool is_remote_input_batch_current(const TickInputBatch& batch) const;
+    [[nodiscard]] bool is_valid_remote_player_slot(std::uint8_t player_slot) const;
+    [[nodiscard]] bool should_drop_batch_for_reconnect_handshake(std::uint8_t batch_player_slot) const;
     void inject_ai_commands(std::uint64_t execute_tick);
     void note_sim_tick_completed();
     void note_peer_activity();
@@ -201,6 +203,7 @@ private:
     bool awaiting_reconnect_handshake_{false};
     bool resync_strict_batch_gate_{false};
     bool client_resync_ready_{false};
+    std::uint8_t pending_reconnect_player_slot_{constants::LOCKSTEP_INVALID_PLAYER_SLOT};
     bool resync_ready_sent_{false};
     bool snapshot_restored_pending_{false};
     std::chrono::steady_clock::time_point last_reconnect_request_sent_{};

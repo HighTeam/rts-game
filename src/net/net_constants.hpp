@@ -46,6 +46,7 @@ inline constexpr float LOCKSTEP_MAX_RENDER_EXTRAPOLATION_ALPHA = 0.2F;
 inline constexpr int LOCKSTEP_PLAYER_COUNT = 2;
 inline constexpr std::uint8_t LOCKSTEP_HOST_PLAYER_SLOT = 0U;
 inline constexpr std::uint8_t LOCKSTEP_CLIENT_PLAYER_SLOT = 1U;
+inline constexpr std::uint8_t LOCKSTEP_INVALID_PLAYER_SLOT = 255U;
 inline constexpr int LOCKSTEP_CONNECT_ATTEMPTS = 10000;
 inline constexpr int LOCKSTEP_ADVANCE_ATTEMPTS = 100000;
 inline constexpr std::uint64_t LOCKSTEP_DEFAULT_TICK_COUNT = 100U;
