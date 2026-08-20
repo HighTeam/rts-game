@@ -478,6 +478,13 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
     while (window.isOpen()) {
         update_lockstep_window_title(window, session, player_slot);
 
+        session.service_network_latency();
+
+        if (session.consume_snapshot_restored()) {
+            game_input.clear_selection();
+            renderer.reset_camera_frame();
+        }
+
         const std::shared_ptr<const render::SimRenderSnapshot> input_frame = session.render_snapshot();
         const render::SimRenderSnapshot* input_snapshot = input_frame.get();
 
@@ -505,13 +512,6 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
         }
 
         fps_tracker.record_frame();
-
-        session.service_network_latency();
-
-        if (session.consume_snapshot_restored()) {
-            game_input.clear_selection();
-            renderer.reset_camera_frame();
-        }
 
         game_input.update_continuous(window, renderer, simulation, input_snapshot);
 
