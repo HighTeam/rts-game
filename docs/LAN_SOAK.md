@@ -51,6 +51,8 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 - [ ] Repeat disconnect/reconnect **3×** without desync
 - [ ] Alt-tab / drag window on both PCs — no permanent stall
 
+Known gap: if P2 stalls without a socket drop (silence), host AI + client reconnect is still flaky — see [LOCKSTEP.md](LOCKSTEP.md) Silence-based AI. Prefer hard-kill reconnect for this soak until `--lockstep-peer-silence-smoke` is green for the right reasons.
+
 ## If something fails
 
 | Symptom | Check |
@@ -59,6 +61,7 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 | Stuck after reconnect | Host/client `logs/lockstep_*.log` for `resync_ready_received`, `reconnect_bootstrap_complete` |
 | Desync | Both logs at desync tick; compare `tick=` and hash lines |
 | Movement stutter only | Usually render/interpolation; note if it happens only while waiting on opponent batches |
+| Host AI but client never reconnects (still “connected”) | Silence trip without `disconnect_peer`; see [LOCKSTEP.md](LOCKSTEP.md) |
 
 ## Automated smokes (same build, single machine)
 
@@ -67,6 +70,9 @@ With `--lockstep-debug`, logs are written under `logs/` (e.g. `lockstep_p1_host.
 .\build\x64-release\Release\aoa.exe --lockstep-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-disconnect-smoke
 .\build\x64-release\Release\aoa.exe --lockstep-reconnect-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-4-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-4-disconnect-smoke
+.\build\x64-release\Release\aoa.exe --lockstep-peer-silence-smoke
 ```
 
 Pass these before spending time on the LAN soak.

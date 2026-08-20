@@ -17,20 +17,28 @@ M2 proved **2-player** lockstep on LAN. M3 adds **multi-peer transport** (`MAX_P
 
 ## CI / daily dev (no LAN)
 
-After M3 multi-peer ships, add headless smokes (same pattern as `--lockstep-reconnect-smoke`):
+Shipped on `main` (in-process smokes in `.github/workflows/build.yml`):
+
+| Smoke | Port | Purpose |
+|-------|-----:|---------|
+| `--lockstep-4-smoke` | `27202` | 4 peers; empty batches; local hash match after 40 ticks |
+| `--lockstep-4-disconnect-smoke` | `27203` | Drop one client; per-slot AI; remaining peers stay in lockstep |
+
+Still planned (not in the binary yet):
 
 | Smoke | Purpose |
 |-------|---------|
-| `--lockstep-4-smoke` | 4 peers in-process or 4 localhost processes; hash match + basic commands |
 | `--lockstep-8-smoke` | 8 peers; staggered join, one disconnect + AI + reconnect |
 | `--lockstep-8-disconnect-smoke` | Two non-host slots drop; AI for both; sim never freezes |
 
-Implementation options (pick one for M3):
+Graphical `--lockstep-host` is still 2-player; there is no `--player-slot` CLI. Full ports and caveats: [LOCKSTEP.md](LOCKSTEP.md).
 
-1. **In-process mesh** — one test binary runs host + N−1 virtual `LockstepSession` clients (fastest CI, like today’s 2-player smoke).
-2. **Multi-process localhost** — test runner spawns `aoa --lockstep-join 127.0.0.1:PORT --headless --slot N` (closer to real ENet, slower CI).
+Implementation options for 8-player (pick one):
 
-Both must pass before calling N-player sync “proven.”
+1. **In-process mesh** — one test binary runs host + N−1 virtual `LockstepSession` clients (fastest CI, like today’s 4-player smoke).
+2. **Multi-process localhost** — test runner spawns `aoa --lockstep-join 127.0.0.1:PORT --headless --player-slot N` (closer to real ENet, slower CI).
+
+`--lockstep-8-smoke` must pass before calling 8-player sync “proven.”
 
 ---
 
@@ -105,9 +113,9 @@ Two-PC LAN confirms: routing, firewall, non-zero RTT, reconnect across machines.
 
 ## M3 implementation order (testing-aware)
 
-1. Multi-peer ENet host + slot assignment in join handshake  
-2. N-way input batch gating (all slots ready before tick)  
-3. `--lockstep-4-smoke` / `--lockstep-8-smoke` in CI  
+1. ~~Multi-peer ENet host + slot assignment in join handshake~~ (landed)  
+2. ~~N-way input batch gating (all slots ready before tick)~~ (landed)  
+3. ~~`--lockstep-4-smoke` (+ `--lockstep-4-disconnect-smoke`) in CI~~ (landed) — `--lockstep-8-smoke` still open  
 4. Headless multi-join CLI (`--player-slot`, soak scripts)  
 5. 2-PC scripted soak (`scripts/run-scale-soak-lan.ps1`)  
 6. Brutal checklist in [m2-tests.md](../scripts/issue-bodies/m2-tests.md) § 8-player — run once 8-smoke green + one 2-PC split soak  
