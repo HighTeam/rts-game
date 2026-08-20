@@ -20,6 +20,7 @@
 #include "sim/systems/disconnected_player_ai.hpp"
 #include "sim/systems/gameplay_systems.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <string>
 
@@ -668,6 +669,115 @@ int run_lockstep_disconnect_smoke()
     EnetTransport::global_deinitialize();
     std::cout << "lockstep-disconnect-smoke: ok ai_at_tick=" << tick_before_disconnect
               << " continued_to=" << host_simulation.tick_count() << '\n';
+    return 0;
+}
+
+int run_lockstep_peer_silence_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-peer-silence-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{};
+    sim::Simulation client_simulation{};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation};
+    LockstepSession client{
+        LockstepRole::Client,
+        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
+        client_simulation};
+
+    if (!host.start_host(constants::LOCKSTEP_PEER_SILENCE_SMOKE_PORT)) {
+        std::cerr << "lockstep-peer-silence-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client.connect("127.0.0.1", constants::LOCKSTEP_PEER_SILENCE_SMOKE_PORT)) {
+        std::cerr << "lockstep-peer-silence-smoke: failed to connect client\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_connection(host, client)) {
+        std::cerr << "lockstep-peer-silence-smoke: timed out waiting for connection\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    const std::uint64_t warmup_ticks = constants::LOCKSTEP_PEER_SILENCE_SMOKE_WARMUP_TICKS;
+    std::uint64_t host_ticks = 0U;
+    std::uint64_t client_ticks = 0U;
+
+    while (host_ticks < warmup_ticks || client_ticks < warmup_ticks) {
+        host.poll();
+        client.poll();
+
+        if (host.is_desynced() || client.is_desynced()) {
+            std::cerr << "lockstep-peer-silence-smoke: desync during warmup\n";
+            EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        if (host_ticks < warmup_ticks && host.try_advance_tick()) {
+            ++host_ticks;
+        }
+
+        if (client_ticks < warmup_ticks && client.try_advance_tick()) {
+            ++client_ticks;
+        }
+    }
+
+    const auto silence_deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(constants::LOCKSTEP_PEER_SILENCE_SMOKE_WAIT_MS);
+    bool host_ai_started = false;
+    bool client_reconnecting = false;
+
+    while (std::chrono::steady_clock::now() < silence_deadline) {
+        host.poll();
+        client.poll();
+
+        if (host.try_advance_tick()) {
+            // Host keeps simulating; client stays silent (no try_advance_tick).
+        }
+
+        if (host.is_ai_fallback()) {
+            host_ai_started = true;
+        }
+
+        if (client.is_reconnecting()) {
+            client_reconnecting = true;
+        }
+
+        if (host_ai_started && client_reconnecting && !host.is_connected()) {
+            break;
+        }
+    }
+
+    if (!host_ai_started) {
+        std::cerr << "lockstep-peer-silence-smoke: host did not enter AI fallback after peer silence\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (host.is_connected()) {
+        std::cerr << "lockstep-peer-silence-smoke: host still connected to silent peer\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_reconnecting) {
+        std::cerr << "lockstep-peer-silence-smoke: client did not enter reconnect after host AI takeover\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-peer-silence-smoke: ok ai_at_tick=" << host_simulation.tick_count() << '\n';
     return 0;
 }
 

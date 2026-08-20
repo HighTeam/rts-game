@@ -1740,9 +1740,10 @@ void LockstepSession::enter_ai_fallback()
         "ai_takeover",
         "slot=" + std::to_string(ai_controlled_slot_) + " tick=" + std::to_string(simulation_.tick_count()));
 
+    // Drop a silent-but-still-connected peer so the client can enter host_lost/reconnect
+    // instead of blocking forever on batches the host no longer sends in AI mode.
     if (role_ == LockstepRole::Host && transport_.is_connected()
-        && !is_opponent_reconnect_grace_active() && !opponent_reconnect_pending_
-        && session_player_count_ == 2U) {
+        && !is_opponent_reconnect_grace_active() && session_player_count_ == 2U) {
         transport_.disconnect_peer();
     }
 }

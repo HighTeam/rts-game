@@ -57,6 +57,8 @@ jobs:
           & $exe --lockstep-4-smoke
           Start-Sleep -Milliseconds 500
           & $exe --lockstep-4-disconnect-smoke
+          Start-Sleep -Milliseconds 500
+          & $exe --lockstep-peer-silence-smoke
           & $exe --snapshot-smoke
 
       - name: Regression harness
