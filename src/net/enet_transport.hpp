@@ -60,6 +60,10 @@ public:
         std::span<const std::byte> data,
         std::uint8_t channel,
         std::optional<std::uint8_t> except_client_slot = std::nullopt);
+    [[nodiscard]] bool broadcast_unreliable_except(
+        std::span<const std::byte> data,
+        std::uint8_t channel,
+        std::optional<std::uint8_t> except_client_slot = std::nullopt);
     [[nodiscard]] bool send_unreliable(std::span<const std::byte> data, std::uint8_t channel);
     [[nodiscard]] std::vector<ReceivedPacket> drain_received();
     void discard_pending_received();
