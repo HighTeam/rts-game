@@ -58,6 +58,8 @@ jobs:
           Start-Sleep -Milliseconds 500
           & $exe --lockstep-4-disconnect-smoke
           Start-Sleep -Milliseconds 500
+          & $exe --lockstep-4-reconnect-smoke
+          Start-Sleep -Milliseconds 500
           & $exe --lockstep-peer-silence-smoke
           & $exe --snapshot-smoke
 

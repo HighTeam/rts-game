@@ -112,6 +112,8 @@ private:
     void try_reconnect();
     void resume_player_control(std::uint8_t player_slot);
     void reset_tick_sync_state();
+    void reset_reconnect_handshake_sync_state(std::uint8_t reconnecting_player_slot);
+    [[nodiscard]] bool reconnect_handshake_blocks_tick_advance() const;
     void begin_opponent_reconnect_grace();
     [[nodiscard]] bool is_opponent_reconnect_grace_active() const;
     void begin_host_reconnect_grace();
