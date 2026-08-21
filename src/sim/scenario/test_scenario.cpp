@@ -2,8 +2,7 @@
 
 #include "core/constants.hpp"
 #include "core/grid.hpp"
-#include "math/fixed.hpp"
-#include "sim/components/combat.hpp"
+#include "sim/components/building_footprint.hpp"
 #include "sim/components/content_pack.hpp"
 #include "sim/components/definition_ref.hpp"
 #include "sim/components/grid_position.hpp"
@@ -15,72 +14,24 @@
 #include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/map/map_generator.hpp"
 #include "sim/map/test_map.hpp"
+#include "sim/scenario/scenario_layouts.hpp"
 #include "sim/snapshot/entity_snapshot_key.hpp"
+#include "sim/spawn/building_unit_spawn.hpp"
 #include "sim/spawn/unit_spawn.hpp"
 #include "sim/systems/visibility_system.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <stdexcept>
+#include <vector>
 
 namespace aoa::sim::scenario {
 
 namespace {
-
-entt::entity spawn_town_center(
-    entt::registry& registry,
-    const data::ArchetypeDefinition& town_center_archetype,
-    const core::GridPos pos,
-    const std::uint8_t player_slot,
-    const int starting_wood)
-{
-    const entt::entity town_center = registry.create();
-    registry.emplace<components::BuildingTag>(town_center);
-    registry.emplace<components::TownCenterTag>(town_center);
-    registry.emplace<components::PlayerOwnedTag>(town_center);
-    registry.emplace<components::PlayerSlot>(town_center, components::PlayerSlot{player_slot});
-    registry.emplace<components::GridPosition>(town_center, components::GridPosition{pos});
-    registry.emplace<components::DefinitionRef>(
-        town_center,
-        components::DefinitionRef{std::string(constants::TOWN_CENTER_BUILDING_ID)});
-    registry.emplace<components::Health>(
-        town_center,
-        components::Health{town_center_archetype.max_hp, town_center_archetype.max_hp});
-    registry.emplace<components::Stockpile>(town_center, components::Stockpile{starting_wood});
-    return town_center;
-}
-
-entt::entity spawn_militia(
-    entt::registry& registry,
-    const data::ArchetypeDefinition& militia_archetype,
-    const core::GridPos pos,
-    const std::uint8_t player_slot)
-{
-    const entt::entity entity = registry.create();
-    registry.emplace<components::UnitTag>(entity);
-    registry.emplace<components::PlayerOwnedTag>(entity);
-    registry.emplace<components::PlayerSlot>(entity, components::PlayerSlot{player_slot});
-    registry.emplace<components::MilitiaUnitTag>(entity);
-    registry.emplace<components::GridPosition>(entity, components::GridPosition{pos});
-    registry.emplace<components::DefinitionRef>(
-        entity,
-        components::DefinitionRef{std::string(constants::MILITIA_UNIT_ID)});
-    registry.emplace<components::Health>(
-        entity,
-        components::Health{militia_archetype.max_hp, militia_archetype.max_hp});
-    registry.emplace<components::MoveCooldown>(entity);
-    registry.emplace<components::AttackCooldown>(entity);
-    registry.emplace<components::WorldPosition>(
-        entity,
-        components::WorldPosition{
-            math::tile_center_coord(pos.x),
-            math::tile_center_coord(pos.y)});
-    registry.emplace<components::PreviousWorldPosition>(
-        entity,
-        components::PreviousWorldPosition{
-            math::tile_center_coord(pos.x),
-            math::tile_center_coord(pos.y)});
-    return entity;
-}
 
 entt::entity find_entity_with_slot(
     entt::registry& registry,
@@ -96,100 +47,297 @@ entt::entity find_entity_with_slot(
     return entt::null;
 }
 
+[[nodiscard]] bool is_free_mana_lake_footprint(
+    entt::registry& registry,
+    const components::MapGrid& map,
+    const core::GridPos anchor)
+{
+    for (int y = 0; y < constants::MANA_LAKE_FOOTPRINT_TILES; ++y) {
+        for (int x = 0; x < constants::MANA_LAKE_FOOTPRINT_TILES; ++x) {
+            const core::GridPos cell{anchor.x + x, anchor.y + y};
+            if (!core::is_inside_grid(cell, map.width, map.height)) {
+                return false;
+            }
+
+            const std::size_t index = static_cast<std::size_t>(core::grid_index(cell, map.width));
+            if (map.tiles[index] != components::TileType::Grass) {
+                return false;
+            }
+
+            if (components::ground_at(map, index) != components::GroundType::Grass) {
+                return false;
+            }
+
+            for (int ky = -constants::MANA_LAKE_RESOURCE_KEEP_TILES;
+                 ky <= constants::MANA_LAKE_RESOURCE_KEEP_TILES + constants::MANA_LAKE_FOOTPRINT_TILES - 1;
+                 ++ky) {
+                for (int kx = -constants::MANA_LAKE_RESOURCE_KEEP_TILES;
+                     kx <= constants::MANA_LAKE_RESOURCE_KEEP_TILES + constants::MANA_LAKE_FOOTPRINT_TILES - 1;
+                     ++kx) {
+                    const core::GridPos keep{anchor.x + kx, anchor.y + ky};
+                    if (!core::is_inside_grid(keep, map.width, map.height)) {
+                        continue;
+                    }
+
+                    const std::size_t keep_index =
+                        static_cast<std::size_t>(core::grid_index(keep, map.width));
+                    const auto keep_tile = map.tiles[keep_index];
+                    if (keep_tile == components::TileType::Berries
+                        || keep_tile == components::TileType::Blueberries) {
+                        return false;
+                    }
+                }
+            }
+
+            const auto building_view =
+                registry.view<components::BuildingTag, components::GridPosition>();
+            for (const entt::entity building : building_view) {
+                components::BuildingFootprint footprint{};
+                if (registry.any_of<components::BuildingFootprint>(building)) {
+                    footprint = registry.get<components::BuildingFootprint>(building);
+                }
+                footprint = components::effective_building_footprint(
+                    footprint,
+                    registry.any_of<components::TownCenterTag>(building));
+                if (components::building_contains_cell(
+                        building_view.get<components::GridPosition>(building),
+                        footprint,
+                        cell)) {
+                    return false;
+                }
+            }
+
+            const auto lake_view = registry.view<
+                components::ManaLakeTag,
+                components::GridPosition,
+                components::BuildingFootprint>();
+            for (const entt::entity lake : lake_view) {
+                if (components::building_contains_cell(
+                        lake_view.get<components::GridPosition>(lake),
+                        lake_view.get<components::BuildingFootprint>(lake),
+                        cell)) {
+                    return false;
+                }
+            }
+
+            const auto unit_view = registry.view<components::UnitTag, components::GridPosition>();
+            for (const entt::entity unit : unit_view) {
+                if (unit_view.get<components::GridPosition>(unit).cell == cell) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+[[nodiscard]] std::uint32_t xorshift32(std::uint32_t& state)
+{
+    std::uint32_t x = state;
+    x ^= x << 13U;
+    x ^= x >> 17U;
+    x ^= x << 5U;
+    state = x;
+    return x;
+}
+
+// Walks the Chebyshev bands around the town center and returns a random free 2x2 grass patch.
+[[nodiscard]] std::optional<core::GridPos> find_mana_lake_anchor(
+    entt::registry& registry,
+    const components::MapGrid& map,
+    const core::GridPos town_center_cell,
+    std::uint32_t& rng)
+{
+    std::vector<core::GridPos> candidates{};
+    for (int ring = constants::MANA_LAKE_MIN_RING_FROM_TOWN_CENTER;
+         ring <= constants::MANA_LAKE_MAX_RING_FROM_TOWN_CENTER;
+         ++ring) {
+        for (int dy = -ring; dy <= ring; ++dy) {
+            for (int dx = -ring; dx <= ring; ++dx) {
+                if (std::max(std::abs(dx), std::abs(dy)) != ring) {
+                    continue;
+                }
+
+                const core::GridPos anchor{town_center_cell.x + dx, town_center_cell.y + dy};
+                if (!is_free_mana_lake_footprint(registry, map, anchor)) {
+                    continue;
+                }
+
+                candidates.push_back(anchor);
+            }
+        }
+    }
+
+    if (candidates.empty()) {
+        return std::nullopt;
+    }
+
+    const std::size_t pick =
+        static_cast<std::size_t>(xorshift32(rng) % static_cast<std::uint32_t>(candidates.size()));
+    return candidates[pick];
+}
+
 } // namespace
 
-void load_test_scenario(entt::registry& registry, const data::ContentDatabase& content)
+void load_test_scenario(
+    entt::registry& registry,
+    const data::ContentDatabase& content,
+    const std::uint8_t player_count)
 {
+    map::MapGenerationConfig generation{};
+    generation.player_count = player_count;
+    load_test_scenario(registry, content, generation);
+}
+
+void load_test_scenario(
+    entt::registry& registry,
+    const data::ContentDatabase& content,
+    const map::MapGenerationConfig& generation)
+{
+    const std::uint8_t player_count = generation.player_count;
+    const std::span<const PlayerBaseLayout> layouts = base_layouts_for_player_count(player_count);
+
     const auto* forest_patch = data::find_resource_node_archetype(
         content,
         std::string(constants::FOREST_PATCH_RESOURCE_ID));
     const int forest_patch_wood = forest_patch != nullptr ? forest_patch->wood_capacity : 100;
+
+    const auto* berry_bush = data::find_resource_node_archetype(
+        content,
+        std::string(constants::BERRY_BUSH_RESOURCE_ID));
+    const int bush_food_capacity = berry_bush != nullptr && berry_bush->food_capacity > 0
+        ? berry_bush->food_capacity
+        : constants::BERRY_BUSH_FOOD_CAPACITY;
+
+    const auto* gold_mine = data::find_resource_node_archetype(
+        content,
+        std::string(constants::GOLD_MINE_RESOURCE_ID));
+    const int mine_money_capacity = gold_mine != nullptr && gold_mine->money_capacity > 0
+        ? gold_mine->money_capacity
+        : constants::GOLD_MINE_MONEY_CAPACITY;
 
     const auto* town_center_archetype = data::find_structure_archetype(
         content,
         std::string(constants::TOWN_CENTER_BUILDING_ID));
     const auto* worker_archetype =
         data::find_unit_archetype(content, std::string(constants::WORKER_UNIT_ID));
-    const auto* militia_archetype =
-        data::find_unit_archetype(content, std::string(constants::MILITIA_UNIT_ID));
+    const auto* mana_lake_archetype = data::find_structure_archetype(
+        content,
+        std::string(constants::MANA_LAKE_BUILDING_ID));
 
-    if (town_center_archetype == nullptr || worker_archetype == nullptr || militia_archetype == nullptr) {
+    if (town_center_archetype == nullptr || worker_archetype == nullptr) {
         throw std::runtime_error("Missing required archetypes for test scenario");
     }
 
     const entt::entity world = registry.create();
     registry.emplace<components::WorldTag>(world);
     registry.emplace<components::ContentPack>(world, components::ContentPack{content});
-    registry.emplace<components::MapGrid>(world, map::create_test_map(forest_patch_wood));
+    map::MapGenerationConfig map_config = generation;
+    map_config.forest_patch_wood = forest_patch_wood;
+    map_config.bush_food_capacity = bush_food_capacity;
+    map_config.mine_money_capacity = mine_money_capacity;
+    const map::GeneratedMap generated = map::generate_map(map_config);
+    registry.emplace<components::MapGrid>(world, generated.grid);
     registry.emplace<components::SimState>(world);
-    registry.emplace<components::MatchSession>(world);
+    auto& session = registry.emplace<components::MatchSession>(world);
+    if (player_count > 0 && player_count <= constants::MAX_PLAYER_SLOTS) {
+        session.playing_slots_mask = static_cast<std::uint8_t>((1U << player_count) - 1U);
+    }
 
-    constexpr std::uint8_t player1_slot = 0U;
-    constexpr std::uint8_t player2_slot = 1U;
+    for (std::size_t layout_index = 0U; layout_index < layouts.size(); ++layout_index) {
+        const PlayerBaseLayout& layout = layouts[layout_index];
+        const std::uint8_t player_slot = static_cast<std::uint8_t>(layout_index);
+        const core::GridPos tc_cell = layout_index < generated.start_anchors.size()
+            ? generated.start_anchors[layout_index]
+            : core::GridPos{layout.tc_x, layout.tc_y};
 
-    (void)spawn_town_center(
-        registry,
-        *town_center_archetype,
-        core::GridPos{
-            constants::SCENARIO_PLAYER1_TC_X,
-            constants::SCENARIO_PLAYER1_TC_Y},
-        player1_slot,
-        content.civ.starting_stockpile_wood);
+        const entt::entity town_center = spawn::spawn_player_town_center(
+            registry,
+            *town_center_archetype,
+            tc_cell,
+            player_slot,
+            components::Stockpile{
+                content.civ.starting_stockpile_wood,
+                content.civ.starting_stockpile_food,
+                content.civ.starting_stockpile_money,
+                content.civ.starting_stockpile_mana,
+            });
 
-    (void)spawn::spawn_player_worker(
-        registry,
-        *worker_archetype,
-        core::GridPos{
-            constants::SCENARIO_PLAYER1_WORKER_X,
-            constants::SCENARIO_PLAYER1_WORKER_Y},
-        player1_slot);
+        const auto& map = registry.get<components::MapGrid>(world);
+        const auto& depot_anchor = registry.get<components::GridPosition>(town_center);
+        const components::BuildingFootprint depot_footprint =
+            components::effective_building_footprint(
+                registry.any_of<components::BuildingFootprint>(town_center)
+                    ? registry.get<components::BuildingFootprint>(town_center)
+                    : components::BuildingFootprint{},
+                true);
+        const auto worker_spawn =
+            spawn::find_building_unit_spawn_cell(map, registry, depot_anchor, depot_footprint);
+        if (!worker_spawn.has_value()) {
+            throw std::runtime_error("No free spawn tile for starting worker");
+        }
 
-    const entt::entity player1_militia = spawn_militia(
-        registry,
-        *militia_archetype,
-        core::GridPos{
-            constants::SCENARIO_PLAYER1_MILITIA_X,
-            constants::SCENARIO_PLAYER1_MILITIA_Y},
-        player1_slot);
+        (void)spawn::spawn_player_worker(
+            registry,
+            *worker_archetype,
+            *worker_spawn,
+            player_slot);
 
-    (void)spawn_town_center(
-        registry,
-        *town_center_archetype,
-        core::GridPos{
-            constants::SCENARIO_PLAYER2_TC_X,
-            constants::SCENARIO_PLAYER2_TC_Y},
-        player2_slot,
-        content.civ.starting_stockpile_wood);
+        if (mana_lake_archetype == nullptr) {
+            continue;
+        }
 
-    (void)spawn::spawn_player_worker(
-        registry,
-        *worker_archetype,
-        core::GridPos{
-            constants::SCENARIO_PLAYER2_WORKER_X,
-            constants::SCENARIO_PLAYER2_WORKER_Y},
-        player2_slot);
+        if (!generated.mana_lake_anchors.empty()) {
+            continue;
+        }
 
-    const entt::entity player2_militia = spawn_militia(
-        registry,
-        *militia_archetype,
-        core::GridPos{
-            constants::SCENARIO_PLAYER2_MILITIA_X,
-            constants::SCENARIO_PLAYER2_MILITIA_Y},
-        player2_slot);
+        for (int lake_index = 0; lake_index < constants::MANA_LAKE_PER_PLAYER_COUNT; ++lake_index) {
+            const auto& current_map = registry.get<components::MapGrid>(world);
+            std::uint32_t lake_rng = static_cast<std::uint32_t>(current_map.width)
+                ^ (static_cast<std::uint32_t>(current_map.height) << 16U)
+                ^ (static_cast<std::uint32_t>(player_slot + 1U) * 0x9E3779B9U)
+                ^ constants::MAP_GEN_LAYOUT_SALT
+                ^ static_cast<std::uint32_t>(lake_index + 1);
+            if (lake_rng == 0U) {
+                lake_rng = 1U;
+            }
 
-    components::AttackOrder player1_attack{};
-    player1_attack.target = player2_militia;
-    player1_attack.last_known_cell = core::GridPos{
-        constants::SCENARIO_PLAYER2_MILITIA_X,
-        constants::SCENARIO_PLAYER2_MILITIA_Y};
-    registry.emplace<components::AttackOrder>(player1_militia, player1_attack);
+            const std::optional<core::GridPos> lake_anchor = find_mana_lake_anchor(
+                registry,
+                current_map,
+                tc_cell,
+                lake_rng);
+            if (!lake_anchor.has_value()) {
+                break;
+            }
 
-    components::AttackOrder player2_attack{};
-    player2_attack.target = player1_militia;
-    player2_attack.last_known_cell = core::GridPos{
-        constants::SCENARIO_PLAYER1_MILITIA_X,
-        constants::SCENARIO_PLAYER1_MILITIA_Y};
-    registry.emplace<components::AttackOrder>(player2_militia, player2_attack);
+            (void)spawn::spawn_mana_lake(
+                registry,
+                *mana_lake_archetype,
+                *lake_anchor,
+                player_slot);
+        }
+    }
+
+    if (mana_lake_archetype != nullptr) {
+        for (std::size_t lake_index = 0; lake_index < generated.mana_lake_anchors.size(); ++lake_index) {
+            const core::GridPos lake_anchor = generated.mana_lake_anchors[lake_index];
+            const auto& current_map = registry.get<components::MapGrid>(world);
+            if (!is_free_mana_lake_footprint(registry, current_map, lake_anchor)) {
+                continue;
+            }
+
+            const std::uint8_t lake_slot = player_count == 0U
+                ? 0U
+                : static_cast<std::uint8_t>(lake_index % static_cast<std::size_t>(player_count));
+            (void)spawn::spawn_mana_lake(
+                registry,
+                *mana_lake_archetype,
+                lake_anchor,
+                lake_slot);
+        }
+    }
 
     snapshot::assign_snapshot_identities(registry);
     systems::initialize_fog_of_war(registry);

@@ -356,10 +356,12 @@ void EnetTransport::network_thread_loop()
 
 void EnetTransport::destroy_host_locked()
 {
+    // Force-drop without waiting for a remote ACK. A blocking enet_host_service
+    // wait here freezes the UI thread (same transport mutex) during client reconnect.
     if (host_ != nullptr && !is_server_ && client_peer_ != nullptr) {
-        enet_peer_disconnect(client_peer_, 0);
+        enet_peer_disconnect_now(client_peer_, 0);
         ENetEvent event{};
-        while (enet_host_service(host_, &event, 1000) > 0) {
+        while (enet_host_service(host_, &event, 0) > 0) {
             if (event.type == ENET_EVENT_TYPE_RECEIVE) {
                 enet_packet_destroy(event.packet);
             }
@@ -523,6 +525,12 @@ void EnetTransport::poll(const std::uint32_t timeout_ms)
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+}
+
+void EnetTransport::flush_outbound()
+{
+    std::lock_guard lock(mutex_);
+    flush_outbound_locked();
 }
 
 bool EnetTransport::enqueue_outbound(OutboundPacket packet)
@@ -716,6 +724,38 @@ bool EnetTransport::consume_peer_connected_slot(std::uint8_t& connected_client_s
     }
 
     return false;
+}
+
+bool EnetTransport::rebind_client_to_player_slot(
+    const std::uint8_t connected_client_slot,
+    const std::uint8_t player_slot)
+{
+    std::lock_guard lock(mutex_);
+
+    if (!is_server_ || player_slot == 0U || player_slot > max_clients_) {
+        return false;
+    }
+
+    if (connected_client_slot == 0U || connected_client_slot > max_clients_) {
+        return false;
+    }
+
+    _ENetPeer* peer = client_peers_[connected_client_slot];
+    if (peer == nullptr) {
+        return false;
+    }
+
+    if (client_peers_[player_slot] != nullptr && client_peers_[player_slot] != peer) {
+        return false;
+    }
+
+    if (connected_client_slot != player_slot) {
+        client_peers_[connected_client_slot] = nullptr;
+        client_peers_[player_slot] = peer;
+    }
+
+    set_peer_slot(peer, player_slot);
+    return true;
 }
 
 std::uint8_t EnetTransport::connected_client_count() const

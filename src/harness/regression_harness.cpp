@@ -1,5 +1,7 @@
 #include "harness/regression_harness.hpp"
 
+#include "core/asset_pack_format.hpp"
+#include "core/asset_store.hpp"
 #include "core/grid.hpp"
 #include "data/content_loader.hpp"
 #include "sim/player/player_command.hpp"
@@ -49,6 +51,10 @@ sim::player::PlayerCommandType parse_command_type(const std::string& type_text)
 
     if (type_text == "spawn_worker") {
         return sim::player::PlayerCommandType::SpawnWorker;
+    }
+
+    if (type_text == "spawn_militia") {
+        return sim::player::PlayerCommandType::SpawnMilitia;
     }
 
     throw std::invalid_argument("Unknown command type: " + type_text);
@@ -114,17 +120,8 @@ void run_ticks(sim::Simulation& simulation, const ScenarioDefinition& scenario)
     }
 }
 
-} // namespace
-
-ScenarioDefinition load_scenario_definition(const std::filesystem::path& scenario_json_path)
+[[nodiscard]] ScenarioDefinition load_scenario_definition_from_json(const nlohmann::json& json)
 {
-    std::ifstream input(scenario_json_path);
-    if (!input) {
-        throw std::runtime_error("Failed to open scenario: " + scenario_json_path.string());
-    }
-
-    const nlohmann::json json = nlohmann::json::parse(input);
-
     ScenarioDefinition scenario{};
     scenario.scenario_id = json.at("scenario_id").get<std::string>();
     scenario.ticks = json.at("ticks").get<std::uint64_t>();
@@ -155,6 +152,18 @@ ScenarioDefinition load_scenario_definition(const std::filesystem::path& scenari
     return scenario;
 }
 
+} // namespace
+
+ScenarioDefinition load_scenario_definition(const std::filesystem::path& scenario_json_path)
+{
+    std::ifstream input(scenario_json_path);
+    if (!input) {
+        throw std::runtime_error("Failed to open scenario: " + scenario_json_path.string());
+    }
+
+    return load_scenario_definition_from_json(nlohmann::json::parse(input));
+}
+
 int run_scenario(const ScenarioDefinition& scenario)
 {
     if (scenario.scenario_id != "earth_default" && scenario.scenario_id != "earth_player_commands") {
@@ -179,19 +188,36 @@ int run_scenario(const ScenarioDefinition& scenario)
 
 int run_all_scenarios(const std::filesystem::path& scenarios_directory)
 {
-    if (!std::filesystem::is_directory(scenarios_directory)) {
-        std::cerr << "Scenarios directory not found: " << scenarios_directory.string() << '\n';
+    (void)scenarios_directory;
+
+    core::AssetStore& store = core::AssetStore::instance();
+    if (!store.ready()) {
+        std::cerr << "Asset store is not initialized; cannot run harness scenarios\n";
+        return 1;
+    }
+
+    const std::string scenarios_prefix = std::string{core::DATA_PACK_PREFIX} + "scenarios/";
+    const std::vector<std::string> scenario_keys = store.list_prefix(scenarios_prefix);
+    if (scenario_keys.empty()) {
+        std::cerr << "No scenarios found under " << scenarios_prefix << '\n';
         return 1;
     }
 
     int failed_count = 0;
-    for (const std::filesystem::directory_entry& entry :
-         std::filesystem::directory_iterator(scenarios_directory)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+    for (const std::string& key : scenario_keys) {
+        if (key.size() < 5U || key.compare(key.size() - 5U, 5U, ".json") != 0) {
             continue;
         }
 
-        const ScenarioDefinition scenario = load_scenario_definition(entry.path());
+        const auto text = store.read_text(key);
+        if (!text.has_value()) {
+            std::cerr << "Failed to open scenario: " << key << '\n';
+            ++failed_count;
+            continue;
+        }
+
+        const ScenarioDefinition scenario =
+            load_scenario_definition_from_json(nlohmann::json::parse(*text));
         if (run_scenario(scenario) != 0) {
             ++failed_count;
         }

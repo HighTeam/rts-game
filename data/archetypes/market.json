@@ -1,0 +1,10 @@
+{
+  "id": "market",
+  "kind": "structure",
+  "display_name": "Market",
+  "max_hp": 500,
+  "footprint_width": 3,
+  "footprint_height": 3,
+  "build_wood_cost": 135,
+  "vision_range": 5
+}

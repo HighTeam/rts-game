@@ -1,8 +1,10 @@
 #include "data/content_loader.hpp"
 
+#include "core/asset_pack_format.hpp"
+#include "core/asset_store.hpp"
+#include "core/constants.hpp"
 #include "core/runtime_paths.hpp"
 
-#include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -21,13 +23,37 @@ ArchetypeDefinition parse_archetype_definition(const nlohmann::json& json)
     archetype.gather_per_tick = json.value("gather_per_tick", 0);
     archetype.carry_capacity = json.value("carry_capacity", 0);
     archetype.melee_attack = json.value("melee_attack", json.value("attack_damage", 0));
-    archetype.melee_armor = json.value("melee_armor", 0);
+    const int default_melee_armor = archetype.kind == ArchetypeKind::Structure
+        ? aoa::constants::STRUCTURE_DEFAULT_MELEE_ARMOR
+        : 0;
+    const int default_pierce_armor = archetype.kind == ArchetypeKind::Structure
+        ? aoa::constants::STRUCTURE_DEFAULT_PIERCE_ARMOR
+        : 0;
+    archetype.melee_armor = json.value("melee_armor", default_melee_armor);
     archetype.pierce_attack = json.value("pierce_attack", 0);
-    archetype.pierce_armor = json.value("pierce_armor", 0);
+    archetype.pierce_armor = json.value("pierce_armor", default_pierce_armor);
     archetype.attack_cooldown_ticks = json.value("attack_cooldown_ticks", 1);
     archetype.vision_range = json.value("vision_range", 0);
-    archetype.spawn_worker_wood_cost = json.value("spawn_worker_wood_cost", 0);
+    archetype.spawn_worker_food_cost = json.value(
+        "spawn_worker_food_cost",
+        json.value("spawn_worker_wood_cost", 0));
+    archetype.spawn_militia_food_cost = json.value(
+        "spawn_militia_food_cost",
+        json.value("spawn_militia_wood_cost", 0));
+    archetype.spawn_militia_money_cost = json.value("spawn_militia_money_cost", 0);
+    archetype.spawn_mage_money_cost = json.value("spawn_mage_money_cost", 0);
+    archetype.spawn_mage_mana_cost = json.value("spawn_mage_mana_cost", 0);
+    archetype.build_wood_cost = json.value("build_wood_cost", 0);
+    archetype.build_money_cost = json.value("build_money_cost", 0);
+    archetype.build_mana_cost = json.value("build_mana_cost", 0);
+    archetype.attack_range = json.value("attack_range", 0);
+    archetype.attack_mana_cost = json.value("attack_mana_cost", 0);
     archetype.wood_capacity = json.value("wood_capacity", 0);
+    archetype.food_capacity = json.value("food_capacity", 0);
+    archetype.money_capacity = json.value("money_capacity", 0);
+    archetype.footprint_width = json.value("footprint_width", 1);
+    archetype.footprint_height = json.value("footprint_height", 1);
+    archetype.gather_interval_ticks = json.value("gather_interval_ticks", 1);
     return archetype;
 }
 
@@ -36,7 +62,14 @@ CivManifest parse_civ_manifest(const nlohmann::json& json)
     CivManifest civ{};
     civ.civ_id = json.at("civ_id").get<std::string>();
     civ.display_name = json.at("display_name").get<std::string>();
-    civ.starting_stockpile_wood = json.value("starting_stockpile_wood", 0);
+    civ.starting_stockpile_wood =
+        json.value("starting_stockpile_wood", aoa::constants::DEFAULT_STARTING_STOCKPILE_WOOD);
+    civ.starting_stockpile_food =
+        json.value("starting_stockpile_food", aoa::constants::DEFAULT_STARTING_STOCKPILE_FOOD);
+    civ.starting_stockpile_money =
+        json.value("starting_stockpile_money", aoa::constants::DEFAULT_STARTING_STOCKPILE_MONEY);
+    civ.starting_stockpile_mana =
+        json.value("starting_stockpile_mana", aoa::constants::DEFAULT_STARTING_STOCKPILE_MANA);
 
     if (json.contains("unit_archetypes")) {
         civ.unit_archetypes = json.at("unit_archetypes").get<std::vector<std::string>>();
@@ -71,6 +104,11 @@ void validate_civ_archetypes(const CivManifest& civ, const ContentDatabase& cont
     require_ids(civ.unit_archetypes, ArchetypeKind::Unit);
     require_ids(civ.structure_archetypes, ArchetypeKind::Structure);
     require_ids(civ.resource_node_archetypes, ArchetypeKind::ResourceNode);
+}
+
+[[nodiscard]] bool ends_with_json(const std::string& path)
+{
+    return path.size() >= 5U && path.compare(path.size() - 5U, 5U, ".json") == 0;
 }
 
 } // namespace
@@ -144,35 +182,42 @@ const ArchetypeDefinition* find_resource_node_archetype(
 
 ContentDatabase load_content_database(const std::filesystem::path& data_directory)
 {
-    ContentDatabase content{};
+    (void)data_directory;
 
-    const std::filesystem::path archetypes_directory = data_directory / "archetypes";
-    if (!std::filesystem::is_directory(archetypes_directory)) {
-        throw std::runtime_error("Archetypes directory not found: " + archetypes_directory.string());
+    core::AssetStore& store = core::AssetStore::instance();
+    if (!store.ready()) {
+        throw std::runtime_error("Asset store is not initialized; cannot load content database");
     }
 
-    for (const std::filesystem::directory_entry& entry :
-         std::filesystem::directory_iterator(archetypes_directory)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+    ContentDatabase content{};
+    const std::string archetypes_prefix = std::string{core::DATA_PACK_PREFIX} + "archetypes/";
+    const std::vector<std::string> archetype_keys = store.list_prefix(archetypes_prefix);
+    if (archetype_keys.empty()) {
+        throw std::runtime_error("No archetype files found under " + archetypes_prefix);
+    }
+
+    for (const std::string& key : archetype_keys) {
+        if (!ends_with_json(key)) {
             continue;
         }
 
-        std::ifstream input(entry.path());
-        if (!input) {
-            throw std::runtime_error("Failed to open archetype: " + entry.path().string());
+        const auto text = store.read_text(key);
+        if (!text.has_value()) {
+            throw std::runtime_error("Failed to open archetype: " + key);
         }
 
-        const ArchetypeDefinition archetype = parse_archetype_definition(nlohmann::json::parse(input));
+        const ArchetypeDefinition archetype =
+            parse_archetype_definition(nlohmann::json::parse(*text));
         content.archetypes.insert_or_assign(archetype.id, archetype);
     }
 
-    const std::filesystem::path civ_path = data_directory / "civs" / "earth.json";
-    std::ifstream civ_input(civ_path);
-    if (!civ_input) {
-        throw std::runtime_error("Failed to open civ manifest: " + civ_path.string());
+    const std::string civ_key = std::string{core::DATA_PACK_PREFIX} + "civs/earth.json";
+    const auto civ_text = store.read_text(civ_key);
+    if (!civ_text.has_value()) {
+        throw std::runtime_error("Failed to open civ manifest: " + civ_key);
     }
 
-    content.civ = parse_civ_manifest(nlohmann::json::parse(civ_input));
+    content.civ = parse_civ_manifest(nlohmann::json::parse(*civ_text));
     validate_civ_archetypes(content.civ, content);
 
     return content;

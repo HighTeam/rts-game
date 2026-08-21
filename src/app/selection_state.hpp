@@ -92,6 +92,8 @@ struct HoverHighlight {
 
     entt::entity building{entt::null};
 
+    bool building_is_enemy{false};
+
     std::optional<core::GridPos> resource_cell{};
 
 };

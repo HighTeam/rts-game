@@ -75,6 +75,7 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
     case PlayerCommandType::Move:
         append_pod(out, static_cast<std::int16_t>(command.cell.x));
         append_pod(out, static_cast<std::int16_t>(command.cell.y));
+        append_pod(out, static_cast<std::uint8_t>(command.has_goal_world ? 1U : 0U));
         append_pod(out, command.goal_world_x.raw());
         append_pod(out, command.goal_world_y.raw());
         break;
@@ -84,9 +85,57 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
         break;
     case PlayerCommandType::Attack:
     case PlayerCommandType::SpawnWorker:
+    case PlayerCommandType::SpawnMilitia:
+    case PlayerCommandType::SpawnMage:
+    case PlayerCommandType::ResumeBuild:
+    case PlayerCommandType::Garrison:
+    case PlayerCommandType::UnloadGarrison:
+    case PlayerCommandType::AdvanceAge:
+    case PlayerCommandType::RenewFarm:
+    case PlayerCommandType::ResearchCartography:
+    case PlayerCommandType::ResearchSpy:
+    case PlayerCommandType::ResearchTrades:
+    case PlayerCommandType::MarketSellWood:
+    case PlayerCommandType::MarketSellFood:
+    case PlayerCommandType::MarketBuyWood:
+    case PlayerCommandType::MarketBuyFood:
         append_pod(out, entity_to_wire(command.target_entity));
         break;
+    case PlayerCommandType::BuildTownCenter:
+    case PlayerCommandType::BuildHouse:
+    case PlayerCommandType::BuildLumberCamp:
+    case PlayerCommandType::BuildExtractor:
+    case PlayerCommandType::BuildMill:
+    case PlayerCommandType::BuildMiningCamp:
+    case PlayerCommandType::BuildBarracks:
+    case PlayerCommandType::BuildMageAcademy:
+    case PlayerCommandType::BuildTower:
+    case PlayerCommandType::BuildMarket:
+    case PlayerCommandType::BuildGarden:
+    case PlayerCommandType::BuildReservoir:
+    case PlayerCommandType::BuildFarm:
+        append_pod(out, static_cast<std::int16_t>(command.cell.x));
+        append_pod(out, static_cast<std::int16_t>(command.cell.y));
+        break;
+    case PlayerCommandType::DestroyBuilding:
+        append_pod(out, entity_to_wire(command.target_entity));
+        break;
+    case PlayerCommandType::SendTrade:
+        append_pod(out, static_cast<std::int16_t>(command.cell.x));
+        append_pod(out, static_cast<std::int32_t>(command.cell.y));
+        append_pod(out, command.goal_world_x.to_int());
+        append_pod(out, command.goal_world_y.to_int());
+        append_pod(out, static_cast<std::int32_t>(entity_to_wire(command.target_entity)));
+        break;
+    case PlayerCommandType::SetDiplomacy:
+        append_pod(out, static_cast<std::uint8_t>(command.cell.x));
+        append_pod(out, static_cast<std::uint8_t>(command.cell.y));
+        break;
     case PlayerCommandType::Deposit:
+    case PlayerCommandType::KillUnits:
+    case PlayerCommandType::Stop:
+    case PlayerCommandType::CheatGrantResources:
+    case PlayerCommandType::Resign:
         break;
     }
 
@@ -114,7 +163,7 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         return std::nullopt;
     }
 
-    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::SpawnWorker)) {
+    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::Resign)) {
         return std::nullopt;
     }
 
@@ -143,15 +192,16 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
     case PlayerCommandType::Move: {
         std::int16_t cell_x = 0;
         std::int16_t cell_y = 0;
+        std::uint8_t has_goal_world_raw = 0U;
         std::int32_t goal_world_x_raw = 0;
         std::int32_t goal_world_y_raw = 0;
-        if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y) || !read_pod(cursor, goal_world_x_raw)
-            || !read_pod(cursor, goal_world_y_raw)) {
+        if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y) || !read_pod(cursor, has_goal_world_raw)
+            || !read_pod(cursor, goal_world_x_raw) || !read_pod(cursor, goal_world_y_raw)) {
             return std::nullopt;
         }
 
         command.cell = core::GridPos{static_cast<int>(cell_x), static_cast<int>(cell_y)};
-        command.has_goal_world = true;
+        command.has_goal_world = has_goal_world_raw != 0U;
         command.goal_world_x = math::Fixed::from_raw(goal_world_x_raw);
         command.goal_world_y = math::Fixed::from_raw(goal_world_y_raw);
         break;
@@ -167,7 +217,21 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         break;
     }
     case PlayerCommandType::Attack:
-    case PlayerCommandType::SpawnWorker: {
+    case PlayerCommandType::SpawnWorker:
+    case PlayerCommandType::SpawnMilitia:
+    case PlayerCommandType::SpawnMage:
+    case PlayerCommandType::ResumeBuild:
+    case PlayerCommandType::Garrison:
+    case PlayerCommandType::UnloadGarrison:
+    case PlayerCommandType::AdvanceAge:
+    case PlayerCommandType::RenewFarm:
+    case PlayerCommandType::ResearchCartography:
+    case PlayerCommandType::ResearchSpy:
+    case PlayerCommandType::ResearchTrades:
+    case PlayerCommandType::MarketSellWood:
+    case PlayerCommandType::MarketSellFood:
+    case PlayerCommandType::MarketBuyWood:
+    case PlayerCommandType::MarketBuyFood: {
         std::uint32_t wire_id = 0U;
         if (!read_pod(cursor, wire_id)) {
             return std::nullopt;
@@ -176,7 +240,70 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         command.target_entity = entity_from_wire(wire_id);
         break;
     }
+    case PlayerCommandType::BuildTownCenter:
+    case PlayerCommandType::BuildHouse:
+    case PlayerCommandType::BuildLumberCamp:
+    case PlayerCommandType::BuildExtractor:
+    case PlayerCommandType::BuildMill:
+    case PlayerCommandType::BuildMiningCamp:
+    case PlayerCommandType::BuildBarracks:
+    case PlayerCommandType::BuildMageAcademy:
+    case PlayerCommandType::BuildTower:
+    case PlayerCommandType::BuildMarket:
+    case PlayerCommandType::BuildGarden:
+    case PlayerCommandType::BuildReservoir:
+    case PlayerCommandType::BuildFarm: {
+        std::int16_t cell_x = 0;
+        std::int16_t cell_y = 0;
+        if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y)) {
+            return std::nullopt;
+        }
+
+        command.cell = core::GridPos{static_cast<int>(cell_x), static_cast<int>(cell_y)};
+        break;
+    }
+    case PlayerCommandType::DestroyBuilding: {
+        std::uint32_t wire_id = 0U;
+        if (!read_pod(cursor, wire_id)) {
+            return std::nullopt;
+        }
+
+        command.target_entity = entity_from_wire(wire_id);
+        break;
+    }
+    case PlayerCommandType::SendTrade: {
+        std::int16_t target_slot = 0;
+        std::int32_t wood_amount = 0;
+        std::int32_t food_amount = 0;
+        std::int32_t gold_amount = 0;
+        std::int32_t mana_amount = 0;
+        if (!read_pod(cursor, target_slot) || !read_pod(cursor, wood_amount)
+            || !read_pod(cursor, food_amount) || !read_pod(cursor, gold_amount)
+            || !read_pod(cursor, mana_amount)) {
+            return std::nullopt;
+        }
+
+        command.cell = core::GridPos{static_cast<int>(target_slot), wood_amount};
+        command.goal_world_x = math::Fixed::from_int(food_amount);
+        command.goal_world_y = math::Fixed::from_int(gold_amount);
+        command.target_entity = entity_from_wire(static_cast<std::uint32_t>(mana_amount));
+        break;
+    }
+    case PlayerCommandType::SetDiplomacy: {
+        std::uint8_t ally_mask = 0U;
+        std::uint8_t ally_victory = 0U;
+        if (!read_pod(cursor, ally_mask) || !read_pod(cursor, ally_victory)) {
+            return std::nullopt;
+        }
+
+        command.cell = core::GridPos{static_cast<int>(ally_mask), static_cast<int>(ally_victory)};
+        break;
+    }
     case PlayerCommandType::Deposit:
+    case PlayerCommandType::KillUnits:
+    case PlayerCommandType::Stop:
+    case PlayerCommandType::CheatGrantResources:
+    case PlayerCommandType::Resign:
         break;
     }
 
@@ -202,7 +329,7 @@ void append_entity_snapshot_key(std::vector<std::byte>& out, const snapshot::Ent
         return false;
     }
 
-    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::TownCenter)) {
+    if (category_raw > static_cast<std::uint8_t>(snapshot::EntitySnapshotCategory::Farm)) {
         return false;
     }
 

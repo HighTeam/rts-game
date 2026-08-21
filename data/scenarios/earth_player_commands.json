@@ -1,7 +1,7 @@
 {
   "scenario_id": "earth_player_commands",
   "ticks": 150,
-  "expected_state_hash": "0x4e8703cf1988f556",
+  "expected_state_hash": "0xb6766a26ec990428",
   "commands": [
     {
       "execute_tick": 5,

@@ -3,6 +3,7 @@
 #include "sim/player/command_queue.hpp"
 #include "sim/player/player_command.hpp"
 #include "sim/snapshot/sim_snapshot.hpp"
+#include "sim/map/map_generator.hpp"
 
 #include <entt/entt.hpp>
 #include <cstdint>
@@ -12,7 +13,8 @@ namespace aoa::sim {
 
 class Simulation {
 public:
-    Simulation();
+    explicit Simulation(std::uint8_t player_count = 2U);
+    explicit Simulation(const map::MapGenerationConfig& generation);
 
     void tick();
 
@@ -34,6 +36,8 @@ public:
 
     void set_snapshot_replay_active(const bool active) { snapshot_replay_active_ = active; }
 
+    void set_compute_state_hash(const bool enabled) { compute_state_hash_ = enabled; }
+
     void set_tick_count(std::uint64_t tick_count) { tick_count_ = tick_count; }
 
     [[nodiscard]] std::uint64_t tick_count() const { return tick_count_; }
@@ -52,6 +56,7 @@ private:
     player::CommandQueue command_queue_;
     std::uint64_t tick_count_{0U};
     bool snapshot_replay_active_{false};
+    bool compute_state_hash_{true};
 };
 
 } // namespace aoa::sim

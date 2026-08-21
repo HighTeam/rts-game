@@ -16,7 +16,20 @@ namespace {
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::JoinAccepted)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::ResyncReady)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LatencyProbe)
-        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LatencyPong);
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LatencyPong)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::SlotAiTakeover)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::SlotAiResume)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::Chat)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyJoin)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyState)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyReady)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyLeave)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyMatchStart)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyColor)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyReject)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyTeam)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::MatchPause)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::PlayerResign);
 }
 
 } // namespace

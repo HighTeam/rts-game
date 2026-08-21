@@ -1,0 +1,10 @@
+{
+  "id": "farm",
+  "kind": "structure",
+  "display_name": "Farm",
+  "max_hp": 75,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "build_wood_cost": 50,
+  "vision_range": 4
+}

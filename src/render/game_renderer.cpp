@@ -1,21 +1,38 @@
 #include "render/game_renderer.hpp"
 
+#include "app/command_panel.hpp"
+#include "app/game_menu.hpp"
 #include "core/constants.hpp"
+#include "core/grid.hpp"
+#include "core/runtime_paths.hpp"
+#include "data/content_types.hpp"
 #include "render/sim_render_snapshot.hpp"
 #include "render/camera_settings.hpp"
+#include "sim/components/content_pack.hpp"
+#include "sim/components/definition_ref.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/fog_of_war.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/building_footprint.hpp"
 #include "sim/systems/visibility_system.hpp"
+#include "sim/systems/pathfinding.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
+#include "sim/components/combat.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/components/movement.hpp"
+#include "sim/spawn/unit_spawn.hpp"
 
 #include "math/fixed.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <limits>
+#include <vector>
 
 #include <SFML/Window/Context.hpp>
 
@@ -24,6 +41,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace aoa::render {
 
@@ -50,6 +68,56 @@ void main()
     output_color = vec4(fragment_color, 1.0);
 }
 )";
+
+constexpr const char* TEXTURED_SCENE_VERTEX_SHADER = R"(
+#version 330 core
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec2 uv;
+layout(location = 2) in vec4 tint;
+out vec2 fragment_uv;
+out vec4 fragment_tint;
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+    fragment_uv = uv;
+    fragment_tint = tint;
+}
+)";
+
+constexpr const char* TEXTURED_SCENE_FRAGMENT_SHADER = R"(
+#version 330 core
+in vec2 fragment_uv;
+in vec4 fragment_tint;
+uniform sampler2D scene_texture;
+out vec4 output_color;
+void main()
+{
+    vec4 sampled = texture(scene_texture, fragment_uv);
+    if (sampled.a < 0.01) {
+        discard;
+    }
+    if (sampled.a < 0.55 && max(max(sampled.r, sampled.g), sampled.b) < 0.12) {
+        discard;
+    }
+    output_color = sampled * fragment_tint;
+}
+)";
+
+std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> g_draw_player_color_indices{
+    0U,
+    1U,
+    2U,
+    3U,
+    4U,
+    5U,
+    6U,
+    7U};
+
+void bind_draw_player_colors(
+    const std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS>& color_indices)
+{
+    g_draw_player_color_indices = color_indices;
+}
 
 unsigned int compile_shader(const unsigned int type, const char* source)
 {
@@ -186,6 +254,834 @@ float fog_tile_brightness(
         < 1.0F;
 }
 
+struct FogTileCornerBrightness {
+    float top{1.0F};
+    float right{1.0F};
+    float bottom{1.0F};
+    float left{1.0F};
+};
+
+// Memory-only brightness: whether a tile has ever been explored, ignoring
+// whether it is *currently* visible. This deliberately excludes the "fully
+// visible" (1.0) state so blurring it can never bleed live-vision brightness
+// into tiles the player hasn't explored yet - it only softens the boundary
+// between remembered (shroud) and never-seen ground, which is static and
+// safe to blur. The live vision edge is instead handled exactly by
+// `vision_strength_at`, which cannot exceed a unit's real vision radius.
+[[nodiscard]] std::vector<float> build_fog_memory_scalar_field(
+    const std::vector<std::uint8_t>& fog_explored,
+    const int map_width,
+    const int map_height,
+    const std::uint8_t player_slot)
+{
+    std::vector<float> field(static_cast<std::size_t>(map_width * map_height), 0.0F);
+    for (int y = 0; y < map_height; ++y) {
+        for (int x = 0; x < map_width; ++x) {
+            const std::size_t index =
+                fog_tile_index(fog_explored, map_width, map_height, player_slot, x, y);
+            const bool explored = index < fog_explored.size() && fog_explored[index] != 0U;
+            field[static_cast<std::size_t>(y * map_width + x)] =
+                explored ? constants::FOG_EXPLORED_SHROUD_BRIGHTNESS : constants::FOG_UNEXPLORED_BRIGHTNESS;
+        }
+    }
+
+    return field;
+}
+
+// Smooth, distance-accurate reveal strength in [0, 1] for a world point,
+// computed directly from real vision sources rather than blurring a
+// discretized grid. It is exactly 0 at and beyond a source's true vision
+// radius (so it can never preview unexplored content) and ramps up to 1
+// over `fade_width` tiles as the point gets closer to the source. Because it
+// reads each source's own radius, it automatically matches whatever vision
+// range a given unit or building type has.
+[[nodiscard]] float vision_strength_at(
+    const std::vector<sim::systems::VisionSource>& vision_sources,
+    const float world_x,
+    const float world_y,
+    const float fade_width)
+{
+    float strength = 0.0F;
+    for (const sim::systems::VisionSource& source : vision_sources) {
+        const float dx = world_x - source.origin_x;
+        const float dy = world_y - source.origin_y;
+        const float distance = std::sqrt((dx * dx) + (dy * dy));
+        const float value = std::clamp((source.radius - distance) / fade_width, 0.0F, 1.0F);
+        strength = std::max(strength, value);
+    }
+
+    return strength;
+}
+
+// Network snapshots don't carry each unit's exact vision_range (only pose
+// data), so approximate it from the same category flags/defaults the sim
+// uses. Good enough for the cosmetic reveal fade in spectator/replay views.
+[[nodiscard]] int approximate_vision_range_for_pose(const RenderEntityPose& pose)
+{
+    if (pose.under_construction) {
+        if (pose.health_current <= constants::CONSTRUCTION_VISION_ACTIVE_MIN_HP) {
+            return 0;
+        }
+
+        // Exact footprint only — cosmetic snapshot fade uses per-tile sources instead.
+        return 0;
+    }
+
+    if (pose.is_town_center) {
+        return constants::DEFAULT_TOWN_CENTER_VISION_RANGE;
+    }
+
+    if (pose.is_worker) {
+        return constants::DEFAULT_WORKER_VISION_RANGE;
+    }
+
+    return constants::DEFAULT_UNIT_VISION_RANGE;
+}
+
+// Wall-clock driven so the lake keeps shimmering while the sim is paused.
+[[nodiscard]] int mana_lake_animation_frame()
+{
+    int cycle_ms = 0;
+    for (const int duration_ms : constants::MANA_LAKE_ANIMATION_FRAME_DURATIONS_MS) {
+        cycle_ms += duration_ms;
+    }
+
+    if (cycle_ms <= 0) {
+        return 0;
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    int position_ms = static_cast<int>(elapsed_ms % static_cast<long long>(cycle_ms));
+    for (int frame = 0; frame < constants::MANA_LAKE_ANIMATION_FRAME_COUNT; ++frame) {
+        position_ms -= constants::MANA_LAKE_ANIMATION_FRAME_DURATIONS_MS[static_cast<std::size_t>(frame)];
+        if (position_ms < 0) {
+            return frame;
+        }
+    }
+
+    return constants::MANA_LAKE_ANIMATION_FRAME_COUNT - 1;
+}
+
+struct BuildingSpriteVisual {
+    SceneTextureKind color{SceneTextureKind::TownCenter};
+    SceneTextureKind mask{SceneTextureKind::TownCenterMask};
+    float offset_x{constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X};
+    float offset_y{constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y};
+    float width_scale{constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    bool has_team_mask{true};
+};
+
+[[nodiscard]] BuildingSpriteVisual building_sprite_visual(
+    const bool is_house,
+    const bool is_lumber_camp,
+    const bool is_mill,
+    const bool is_mining_camp,
+    const bool is_barracks,
+    const bool is_mage_academy,
+    const bool is_tower,
+    const bool is_market,
+    const bool is_extractor,
+    const std::uint8_t house_variant,
+    const bool is_garden = false,
+    const bool is_reservoir = false,
+    const bool is_farm = false,
+    const bool farm_depleted = false)
+{
+    if (is_farm) {
+        if (farm_depleted) {
+            return {
+                SceneTextureKind::FarmDepleted,
+                SceneTextureKind::FarmDepletedMask,
+                constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+                constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+                constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+        }
+
+        return {
+            SceneTextureKind::Farm,
+            SceneTextureKind::Farm,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE,
+            false};
+    }
+
+    if (is_garden) {
+        return {
+            SceneTextureKind::Garden,
+            SceneTextureKind::GardenMask,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_reservoir) {
+        return {
+            SceneTextureKind::Reservoir,
+            SceneTextureKind::ReservoirMask,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_X,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_Y,
+            constants::RENDER_EXTRACTOR_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_extractor) {
+        return {
+            SceneTextureKind::Extractor,
+            SceneTextureKind::ExtractorMask,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_X,
+            constants::RENDER_EXTRACTOR_SPRITE_OFFSET_Y,
+            constants::RENDER_EXTRACTOR_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_tower) {
+        return {
+            SceneTextureKind::Tower,
+            SceneTextureKind::TowerMask,
+            constants::RENDER_TOWER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_house) {
+        const SceneTextureKind color = house_variant == 1U
+            ? SceneTextureKind::HouseB
+            : (house_variant == 2U ? SceneTextureKind::HouseC : SceneTextureKind::HouseA);
+        const SceneTextureKind mask = house_variant == 1U
+            ? SceneTextureKind::HouseBMask
+            : (house_variant == 2U ? SceneTextureKind::HouseCMask : SceneTextureKind::HouseAMask);
+        return {
+            color,
+            mask,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_X,
+            constants::RENDER_HOUSE_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_lumber_camp) {
+        return {
+            SceneTextureKind::LumberCamp,
+            SceneTextureKind::LumberCampMask,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_X,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_mill) {
+        return {
+            SceneTextureKind::Mill,
+            SceneTextureKind::MillMask,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_X,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_mining_camp) {
+        return {
+            SceneTextureKind::MiningCamp,
+            SceneTextureKind::MiningCampMask,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_X,
+            constants::RENDER_LUMBER_CAMP_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_barracks) {
+        return {
+            SceneTextureKind::Barracks,
+            SceneTextureKind::BarracksMask,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_mage_academy) {
+        return {
+            SceneTextureKind::MageAcademy,
+            SceneTextureKind::MageAcademyMask,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    if (is_market) {
+        return {
+            SceneTextureKind::Market,
+            SceneTextureKind::MarketMask,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+            constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+            constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+    }
+
+    return {
+        SceneTextureKind::TownCenter,
+        SceneTextureKind::TownCenterMask,
+        constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_X,
+        constants::RENDER_TOWN_CENTER_SPRITE_OFFSET_Y,
+        constants::RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE};
+}
+
+[[nodiscard]] bool is_textured_building_kind(const SceneTextureKind kind)
+{
+    return kind == SceneTextureKind::TownCenter
+        || kind == SceneTextureKind::TownCenterMask
+        || kind == SceneTextureKind::HouseA
+        || kind == SceneTextureKind::HouseAMask
+        || kind == SceneTextureKind::HouseB
+        || kind == SceneTextureKind::HouseBMask
+        || kind == SceneTextureKind::HouseC
+        || kind == SceneTextureKind::HouseCMask
+        || kind == SceneTextureKind::LumberCamp
+        || kind == SceneTextureKind::LumberCampMask
+        || kind == SceneTextureKind::Mill
+        || kind == SceneTextureKind::MillMask
+        || kind == SceneTextureKind::MiningCamp
+        || kind == SceneTextureKind::MiningCampMask
+        || kind == SceneTextureKind::Barracks
+        || kind == SceneTextureKind::BarracksMask
+        || kind == SceneTextureKind::MageAcademy
+        || kind == SceneTextureKind::MageAcademyMask
+        || kind == SceneTextureKind::Tower
+        || kind == SceneTextureKind::TowerMask
+        || kind == SceneTextureKind::Market
+        || kind == SceneTextureKind::MarketMask
+        || kind == SceneTextureKind::Extractor
+        || kind == SceneTextureKind::ExtractorMask
+        || kind == SceneTextureKind::Garden
+        || kind == SceneTextureKind::GardenMask
+        || kind == SceneTextureKind::Reservoir
+        || kind == SceneTextureKind::ReservoirMask
+        || kind == SceneTextureKind::Farm
+        || kind == SceneTextureKind::FarmDepleted
+        || kind == SceneTextureKind::FarmDepletedMask;
+}
+
+[[nodiscard]] BuildingSpriteVisual placement_ghost_visual(const app::CommandPanelMode mode)
+{
+    return building_sprite_visual(
+        mode == app::CommandPanelMode::PlaceHouse,
+        mode == app::CommandPanelMode::PlaceLumberCamp,
+        mode == app::CommandPanelMode::PlaceMill,
+        mode == app::CommandPanelMode::PlaceMiningCamp,
+        mode == app::CommandPanelMode::PlaceBarracks,
+        mode == app::CommandPanelMode::PlaceMageAcademy,
+        mode == app::CommandPanelMode::PlaceTower,
+        mode == app::CommandPanelMode::PlaceMarket,
+        mode == app::CommandPanelMode::PlaceExtractor,
+        0U,
+        mode == app::CommandPanelMode::PlaceGarden,
+        mode == app::CommandPanelMode::PlaceReservoir,
+        mode == app::CommandPanelMode::PlaceFarm,
+        false);
+}
+
+[[nodiscard]] int placement_ghost_footprint_tiles(const app::CommandPanelMode mode)
+{
+    if (mode == app::CommandPanelMode::PlaceHouse) {
+        return constants::HOUSE_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceLumberCamp) {
+        return constants::LUMBER_CAMP_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceExtractor) {
+        return constants::EXTRACTOR_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMill) {
+        return constants::MILL_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMiningCamp) {
+        return constants::MINING_CAMP_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceBarracks) {
+        return constants::BARRACKS_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMageAcademy) {
+        return constants::MAGE_ACADEMY_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceTower) {
+        return constants::TOWER_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceMarket) {
+        return constants::MARKET_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceGarden) {
+        return constants::GARDEN_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceReservoir) {
+        return constants::RESERVOIR_FOOTPRINT_TILES;
+    }
+
+    if (mode == app::CommandPanelMode::PlaceFarm) {
+        return constants::FARM_FOOTPRINT_TILES;
+    }
+
+    return constants::TOWN_CENTER_FOOTPRINT_TILES;
+}
+
+[[nodiscard]] bool placement_ghost_footprint_on_map(
+    const int map_width,
+    const int map_height,
+    const core::GridPos anchor,
+    const int footprint)
+{
+    if (map_width <= 0 || map_height <= 0) {
+        return false;
+    }
+
+    for (int y = 0; y < footprint; ++y) {
+        for (int x = 0; x < footprint; ++x) {
+            if (!core::is_inside_grid({anchor.x + x, anchor.y + y}, map_width, map_height)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+[[nodiscard]] std::vector<sim::systems::VisionSource> collect_vision_sources_from_snapshot(
+    const SimRenderSnapshot& snapshot,
+    const std::uint8_t player_slot)
+{
+    std::vector<sim::systems::VisionSource> sources{};
+    std::uint8_t vision_mask = snapshot.vision_source_slots_mask;
+    if (vision_mask == 0U) {
+        vision_mask = sim::components::player_slot_bit(player_slot);
+    }
+
+    const auto collect_from = [&](const std::vector<RenderEntityPose>& poses) {
+        for (const RenderEntityPose& pose : poses) {
+            if (pose.health_current <= 0 || pose.shrouded || pose.is_nature || pose.is_mana_lake
+                || pose.is_projectile
+                || !sim::components::player_slot_bit_is_set(vision_mask, pose.player_slot)) {
+                continue;
+            }
+
+            if (pose.under_construction) {
+                if (pose.health_current <= constants::CONSTRUCTION_VISION_ACTIVE_MIN_HP) {
+                    continue;
+                }
+
+                for (int y = 0; y < pose.footprint_height; ++y) {
+                    for (int x = 0; x < pose.footprint_width; ++x) {
+                        sources.push_back(sim::systems::VisionSource{
+                            static_cast<float>(pose.grid_x + x) + 0.5F,
+                            static_cast<float>(pose.grid_y + y) + 0.5F,
+                            constants::CONSTRUCTION_VISION_PER_TILE_RADIUS,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            const float radius = static_cast<float>(approximate_vision_range_for_pose(pose))
+                + constants::FOG_VISION_RADIUS_TILE_PADDING;
+            sources.push_back(sim::systems::VisionSource{pose.cur_x, pose.cur_y, radius});
+        }
+    };
+
+    collect_from(snapshot.units);
+    collect_from(snapshot.buildings);
+
+    return sources;
+}
+
+[[nodiscard]] std::vector<float> gaussian_blur_field(
+    const std::vector<float>& field,
+    const int width,
+    const int height,
+    const int radius,
+    const float sigma)
+{
+    std::vector<float> kernel(static_cast<std::size_t>(radius * 2 + 1));
+    float kernel_sum = 0.0F;
+    for (int i = -radius; i <= radius; ++i) {
+        const float weight =
+            std::exp(-(static_cast<float>(i * i)) / (2.0F * sigma * sigma));
+        kernel[static_cast<std::size_t>(i + radius)] = weight;
+        kernel_sum += weight;
+    }
+
+    for (float& weight : kernel) {
+        weight /= kernel_sum;
+    }
+
+    const auto sample_clamped = [&](const std::vector<float>& source, int x, int y) {
+        x = std::clamp(x, 0, width - 1);
+        y = std::clamp(y, 0, height - 1);
+        return source[static_cast<std::size_t>(y * width + x)];
+    };
+
+    std::vector<float> horizontal(field.size(), 0.0F);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float sum = 0.0F;
+            for (int i = -radius; i <= radius; ++i) {
+                sum += sample_clamped(field, x + i, y)
+                    * kernel[static_cast<std::size_t>(i + radius)];
+            }
+
+            horizontal[static_cast<std::size_t>(y * width + x)] = sum;
+        }
+    }
+
+    std::vector<float> vertical(field.size(), 0.0F);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float sum = 0.0F;
+            for (int i = -radius; i <= radius; ++i) {
+                sum += sample_clamped(horizontal, x, y + i)
+                    * kernel[static_cast<std::size_t>(i + radius)];
+            }
+
+            vertical[static_cast<std::size_t>(y * width + x)] = sum;
+        }
+    }
+
+    return vertical;
+}
+
+[[nodiscard]] float sample_blurred_field_bilinear(
+    const std::vector<float>& field,
+    const int width,
+    const int height,
+    const float sample_x,
+    const float sample_y)
+{
+    const float fx = std::clamp(sample_x, 0.0F, static_cast<float>(width - 1));
+    const float fy = std::clamp(sample_y, 0.0F, static_cast<float>(height - 1));
+    const int x0 = static_cast<int>(std::floor(fx));
+    const int y0 = static_cast<int>(std::floor(fy));
+    const int x1 = std::min(x0 + 1, width - 1);
+    const int y1 = std::min(y0 + 1, height - 1);
+    const float tx = fx - static_cast<float>(x0);
+    const float ty = fy - static_cast<float>(y0);
+
+    const float v00 = field[static_cast<std::size_t>(y0 * width + x0)];
+    const float v10 = field[static_cast<std::size_t>(y0 * width + x1)];
+    const float v01 = field[static_cast<std::size_t>(y1 * width + x0)];
+    const float v11 = field[static_cast<std::size_t>(y1 * width + x1)];
+
+    const float top = v00 + (v10 - v00) * tx;
+    const float bottom = v01 + (v11 - v01) * tx;
+    return top + (bottom - top) * ty;
+}
+
+[[nodiscard]] std::vector<float> build_fog_vertex_brightness(
+    const std::vector<std::uint8_t>& fog_explored,
+    const int map_width,
+    const int map_height,
+    const std::uint8_t player_slot,
+    const std::vector<sim::systems::VisionSource>& vision_sources)
+{
+    if (map_width <= 0 || map_height <= 0) {
+        return {};
+    }
+
+    const std::vector<float> memory_field = build_fog_memory_scalar_field(
+        fog_explored,
+        map_width,
+        map_height,
+        player_slot);
+
+    const std::vector<float> blurred_memory_field = gaussian_blur_field(
+        memory_field,
+        map_width,
+        map_height,
+        constants::FOG_BLUR_RADIUS_TILES,
+        constants::FOG_BLUR_SIGMA);
+
+    const int vertex_width = map_width + 1;
+    const int vertex_height = map_height + 1;
+    std::vector<float> vertex_field(
+        static_cast<std::size_t>(vertex_width * vertex_height),
+        0.0F);
+
+    for (int vertex_y = 0; vertex_y < vertex_height; ++vertex_y) {
+        for (int vertex_x = 0; vertex_x < vertex_width; ++vertex_x) {
+            const float memory_brightness = sample_blurred_field_bilinear(
+                blurred_memory_field,
+                map_width,
+                map_height,
+                static_cast<float>(vertex_x) - 0.5F,
+                static_cast<float>(vertex_y) - 0.5F);
+            const float live_strength = vision_strength_at(
+                vision_sources,
+                static_cast<float>(vertex_x),
+                static_cast<float>(vertex_y),
+                constants::FOG_LIVE_EDGE_FADE_WIDTH_TILES);
+            vertex_field[static_cast<std::size_t>(vertex_y * vertex_width + vertex_x)] =
+                std::max(memory_brightness, live_strength);
+        }
+    }
+
+    return vertex_field;
+}
+
+[[nodiscard]] FogTileCornerBrightness fog_tile_corner_brightness_from_vertices(
+    const std::vector<float>& fog_vertex_brightness,
+    const int map_width,
+    const int map_height,
+    const int grid_x,
+    const int grid_y)
+{
+    const int vertex_width = map_width + 1;
+    const auto sample_vertex = [&](const int vertex_x, const int vertex_y) {
+        if (vertex_x < 0 || vertex_y < 0 || vertex_x >= vertex_width || vertex_y >= map_height + 1) {
+            return constants::FOG_UNEXPLORED_BRIGHTNESS;
+        }
+
+        return fog_vertex_brightness[static_cast<std::size_t>(vertex_y * vertex_width + vertex_x)];
+    };
+
+    return FogTileCornerBrightness{
+        sample_vertex(grid_x, grid_y),
+        sample_vertex(grid_x + 1, grid_y),
+        sample_vertex(grid_x + 1, grid_y + 1),
+        sample_vertex(grid_x, grid_y + 1),
+    };
+}
+
+// Objects sitting on a tile (trees, decorations) must fade in step with the
+// ground beneath them. Sampling the same blurred vertex field the ground
+// uses (instead of the tile's hard fog brightness) keeps an object from
+// looking brighter than the darkened ground around it near the vision edge.
+[[nodiscard]] float fog_object_brightness(
+    const std::vector<float>* fog_vertex_brightness,
+    const int map_width,
+    const int map_height,
+    const int grid_x,
+    const int grid_y,
+    const float fallback_brightness)
+{
+    if (fog_vertex_brightness == nullptr || map_width <= 0 || map_height <= 0) {
+        return fallback_brightness;
+    }
+
+    const FogTileCornerBrightness corners = fog_tile_corner_brightness_from_vertices(
+        *fog_vertex_brightness,
+        map_width,
+        map_height,
+        grid_x,
+        grid_y);
+    return (corners.top + corners.right + corners.bottom + corners.left) * 0.25F;
+}
+
+[[nodiscard]] bool cell_covered_by_building_footprint(
+    const int grid_x,
+    const int grid_y,
+    const std::vector<core::GridPos>& building_anchors,
+    const std::vector<sim::components::BuildingFootprint>& building_footprints)
+{
+    for (std::size_t index = 0U; index < building_anchors.size(); ++index) {
+        const sim::components::GridPosition anchor{building_anchors[index]};
+        const sim::components::BuildingFootprint& footprint = building_footprints[index];
+        if (sim::components::building_contains_cell(anchor, footprint, core::GridPos{grid_x, grid_y})) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+[[nodiscard]] float textured_building_width_scale(
+    const sim::components::BuildingFootprint& footprint)
+{
+    const int span = std::max(1, std::max(footprint.width, footprint.height));
+    return static_cast<float>(span) * constants::RENDER_BUILDING_SPRITE_FOOTPRINT_SCALE;
+}
+
+[[nodiscard]] std::pair<float, float> textured_building_sprite_offset(
+    const sim::components::BuildingFootprint& footprint)
+{
+    const int width = std::max(1, footprint.width);
+    const int height = std::max(1, footprint.height);
+    return {
+        static_cast<float>(width - width / 2) - 0.5F,
+        static_cast<float>(height - height / 2) - 0.5F,
+    };
+}
+
+[[nodiscard]] BuildingSpriteVisual building_visual_from_registry(
+    const entt::registry& registry,
+    const entt::entity entity)
+{
+    const std::uint8_t house_variant = registry.any_of<sim::components::BuildingVisualVariant>(entity)
+        ? registry.get<sim::components::BuildingVisualVariant>(entity).index
+        : 0U;
+    return building_sprite_visual(
+        registry.any_of<sim::components::HouseTag>(entity),
+        registry.any_of<sim::components::LumberCampTag>(entity),
+        registry.any_of<sim::components::MillTag>(entity),
+        registry.any_of<sim::components::MiningCampTag>(entity),
+        registry.any_of<sim::components::BarracksTag>(entity),
+        registry.any_of<sim::components::MageAcademyTag>(entity),
+        registry.any_of<sim::components::TowerTag>(entity),
+        registry.any_of<sim::components::MarketTag>(entity),
+        registry.any_of<sim::components::ExtractorTag>(entity),
+        house_variant,
+        registry.any_of<sim::components::GardenTag>(entity),
+        registry.any_of<sim::components::ReservoirTag>(entity),
+        registry.any_of<sim::components::FarmTag>(entity),
+        false);
+}
+
+[[nodiscard]] BuildingSpriteVisual building_visual_from_pose(const RenderEntityPose& pose)
+{
+    return building_sprite_visual(
+        pose.is_house,
+        pose.is_lumber_camp,
+        pose.is_mill,
+        pose.is_mining_camp,
+        pose.is_barracks,
+        pose.is_mage_academy,
+        pose.is_tower,
+        pose.is_market,
+        pose.is_extractor,
+        pose.house_variant,
+        pose.is_garden,
+        pose.is_reservoir,
+        pose.is_farm,
+        pose.is_farm && (pose.under_construction || pose.farm_food_remaining <= 0));
+}
+
+[[nodiscard]] OccluderSprite make_building_occluder_sprite(
+    const core::GridPos& anchor,
+    const sim::components::BuildingFootprint& footprint,
+    const BuildingSpriteVisual& visual)
+{
+    OccluderSprite sprite{};
+    sprite.grid_x = anchor.x + footprint.width / 2;
+    sprite.grid_y = anchor.y + footprint.height / 2;
+    sprite.texture_kind = visual.color;
+    sprite.width_scale = textured_building_width_scale(footprint);
+    const auto offset = textured_building_sprite_offset(footprint);
+    sprite.offset_x_tiles = offset.first;
+    sprite.offset_y_tiles = offset.second;
+    sprite.sort_y = constants::RENDER_BUILDING_SPRITE_SORT_Y;
+    return sprite;
+}
+
+[[nodiscard]] std::pair<float, float> mana_lake_sprite_offset(
+    const sim::components::BuildingFootprint& footprint)
+{
+    const int width = std::max(1, footprint.width);
+    const int height = std::max(1, footprint.height);
+    const float width_scale = textured_building_width_scale(footprint)
+        * constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE;
+    const float iso_tile_aspect = static_cast<float>(constants::RENDER_ISO_TILE_WIDTH)
+        / static_cast<float>(constants::RENDER_ISO_TILE_HEIGHT);
+    const float center_down_tiles = width_scale * iso_tile_aspect * 0.5F;
+    const float draw_origin_x = static_cast<float>(width / 2) + 0.5F;
+    const float draw_origin_y = static_cast<float>(height / 2) + 0.5F;
+    const float footprint_center_x = static_cast<float>(width) * 0.5F;
+    const float footprint_center_y = static_cast<float>(height) * 0.5F;
+    return {
+        footprint_center_x + center_down_tiles - draw_origin_x,
+        footprint_center_y + center_down_tiles - draw_origin_y,
+    };
+}
+
+[[nodiscard]] float building_footprint_sort_key(
+    const int anchor_x,
+    const int anchor_y,
+    const int width,
+    const int height,
+    const bool mask_layer)
+{
+    const int max_x = anchor_x + std::max(1, width) - 1;
+    const int max_y = anchor_y + std::max(1, height) - 1;
+    const float primary = static_cast<float>(max_x + max_y);
+    const float axis_tie =
+        static_cast<float>(max_x) * constants::RENDER_BUILDING_SORT_AXIS_TIE;
+    const float layer = mask_layer ? constants::RENDER_BUILDING_MASK_SORT_BIAS : 0.0F;
+    return primary + constants::RENDER_BUILDING_SORT_BIAS + axis_tie + layer;
+}
+
+[[nodiscard]] float farm_sprite_sort_key(
+    const int anchor_x,
+    const int anchor_y,
+    const bool mask_layer)
+{
+    const float layer = mask_layer ? constants::RENDER_BUILDING_MASK_SORT_BIAS : 0.0F;
+    return static_cast<float>(anchor_x + anchor_y) + constants::RENDER_FARM_SORT_BIAS + layer;
+}
+
+struct UnitPlaceholderStyle {
+    float r{constants::RENDER_MILITIA_BODY_R};
+    float g{constants::RENDER_MILITIA_BODY_G};
+    float b{constants::RENDER_MILITIA_BODY_B};
+    bool draw_hat{false};
+    float hat_r{1.0F};
+    float hat_g{1.0F};
+    float hat_b{1.0F};
+};
+
+[[nodiscard]] UnitPlaceholderStyle unit_placeholder_style(
+    const bool is_mage,
+    const bool is_worker,
+    const bool is_projectile,
+    const std::uint8_t player_slot)
+{
+    UnitPlaceholderStyle style{};
+    if (is_projectile) {
+        style.r = constants::RENDER_ROCK_PROJECTILE_R;
+        style.g = constants::RENDER_ROCK_PROJECTILE_G;
+        style.b = constants::RENDER_ROCK_PROJECTILE_B;
+        return style;
+    }
+
+    if (is_mage) {
+        style.r = constants::RENDER_MAGE_BODY_R;
+        style.g = constants::RENDER_MAGE_BODY_G;
+        style.b = constants::RENDER_MAGE_BODY_B;
+    }
+    else if (is_worker) {
+        style.r = constants::RENDER_WORKER_BODY_R;
+        style.g = constants::RENDER_WORKER_BODY_G;
+        style.b = constants::RENDER_WORKER_BODY_B;
+    }
+
+    style.draw_hat = true;
+    const auto& rgb = sim::components::player_slot_rgb(g_draw_player_color_indices, player_slot);
+    style.hat_r = rgb[0];
+    style.hat_g = rgb[1];
+    style.hat_b = rgb[2];
+    return style;
+}
+
+[[nodiscard]] sim::components::BuildingFootprint resolve_registry_building_footprint(
+    const entt::registry& registry,
+    const entt::entity entity)
+{
+    sim::components::BuildingFootprint footprint{};
+    if (registry.any_of<sim::components::BuildingFootprint>(entity)) {
+        footprint = registry.get<sim::components::BuildingFootprint>(entity);
+    }
+
+    return sim::components::effective_building_footprint(
+        footprint,
+        registry.any_of<sim::components::TownCenterTag>(entity));
+}
+
+[[nodiscard]] sim::components::BuildingFootprint resolve_pose_building_footprint(
+    const RenderEntityPose& pose)
+{
+    return sim::components::effective_building_footprint(
+        sim::components::BuildingFootprint{pose.footprint_width, pose.footprint_height},
+        pose.is_town_center);
+}
+
 void resolve_tile_appearance(
     const sim::components::TileType live_tile,
     const int live_forest_wood,
@@ -211,6 +1107,122 @@ void resolve_tile_appearance(
         extrude_base_g = 0.22F;
         extrude_base_b = 0.10F;
         extrude = constants::RENDER_FOREST_EXTRUDE;
+    }
+}
+
+[[nodiscard]] std::uint64_t hash_ground_field(
+    const std::vector<sim::components::GroundType>& ground,
+    const int map_width,
+    const int map_height)
+{
+    std::uint64_t hash = constants::FNV1A_OFFSET_BASIS;
+    const auto mix = [&](const std::uint64_t value) {
+        hash ^= value;
+        hash *= constants::FNV1A_PRIME;
+    };
+    mix(static_cast<std::uint64_t>(map_width));
+    mix(static_cast<std::uint64_t>(map_height));
+    mix(static_cast<std::uint64_t>(ground.size()));
+    for (const sim::components::GroundType cell : ground) {
+        mix(static_cast<std::uint64_t>(static_cast<std::uint8_t>(cell)));
+    }
+    return hash;
+}
+
+struct BiomeTileCornerWeights {
+    float top{0.0F};
+    float right{0.0F};
+    float bottom{0.0F};
+    float left{0.0F};
+
+    [[nodiscard]] float max_weight() const
+    {
+        return std::max(std::max(top, right), std::max(bottom, left));
+    }
+};
+
+[[nodiscard]] float packed_biome_vertex_weight(
+    const std::vector<float>& vertex_weight,
+    const int map_width,
+    const int map_height,
+    const int vertex_x,
+    const int vertex_y,
+    const int type_index)
+{
+    const int vertex_width = map_width + 1;
+    const int vertex_height = map_height + 1;
+    if (vertex_x < 0 || vertex_y < 0 || vertex_x >= vertex_width || vertex_y >= vertex_height
+        || type_index < 0 || type_index >= constants::GROUND_TYPE_COUNT || vertex_weight.empty()) {
+        return 0.0F;
+    }
+
+    return vertex_weight[static_cast<std::size_t>(
+        (vertex_y * vertex_width + vertex_x) * constants::GROUND_TYPE_COUNT + type_index)];
+}
+
+[[nodiscard]] BiomeTileCornerWeights biome_tile_corner_weights(
+    const std::vector<float>& vertex_weight,
+    const int map_width,
+    const int map_height,
+    const int grid_x,
+    const int grid_y,
+    const int type_index)
+{
+    return BiomeTileCornerWeights{
+        packed_biome_vertex_weight(
+            vertex_weight,
+            map_width,
+            map_height,
+            grid_x,
+            grid_y,
+            type_index),
+        packed_biome_vertex_weight(
+            vertex_weight,
+            map_width,
+            map_height,
+            grid_x + 1,
+            grid_y,
+            type_index),
+        packed_biome_vertex_weight(
+            vertex_weight,
+            map_width,
+            map_height,
+            grid_x + 1,
+            grid_y + 1,
+            type_index),
+        packed_biome_vertex_weight(
+            vertex_weight,
+            map_width,
+            map_height,
+            grid_x,
+            grid_y + 1,
+            type_index),
+    };
+}
+
+[[nodiscard]] std::pair<float, float> tree_sprite_offset_for_kind(const SceneTextureKind kind)
+{
+    switch (kind) {
+    case SceneTextureKind::OakForestLarge:
+    case SceneTextureKind::DarkenedOakForestLarge:
+        return {constants::RENDER_OAK_LARGE_SPRITE_OFFSET_X, constants::RENDER_OAK_LARGE_SPRITE_OFFSET_Y};
+    case SceneTextureKind::OakForestMedium:
+    case SceneTextureKind::DarkenedOakForestMedium:
+        return {constants::RENDER_OAK_MEDIUM_SPRITE_OFFSET_X, constants::RENDER_OAK_MEDIUM_SPRITE_OFFSET_Y};
+    case SceneTextureKind::OakForestSmall:
+    case SceneTextureKind::DarkenedOakForestSmall:
+        return {constants::RENDER_OAK_SMALL_SPRITE_OFFSET_X, constants::RENDER_OAK_SMALL_SPRITE_OFFSET_Y};
+    case SceneTextureKind::PinesForestSmall:
+    case SceneTextureKind::DarkenedPinesForestSmall:
+        return {constants::RENDER_PINES_SMALL_SPRITE_OFFSET_X, constants::RENDER_PINES_SMALL_SPRITE_OFFSET_Y};
+    case SceneTextureKind::PinesForestMedium:
+    case SceneTextureKind::DarkenedPinesForestMedium:
+        return {constants::RENDER_PINES_MEDIUM_SPRITE_OFFSET_X, constants::RENDER_PINES_MEDIUM_SPRITE_OFFSET_Y};
+    case SceneTextureKind::PinesForestLarge:
+    case SceneTextureKind::DarkenedPinesForestLarge:
+        return {constants::RENDER_PINES_LARGE_SPRITE_OFFSET_X, constants::RENDER_PINES_LARGE_SPRITE_OFFSET_Y};
+    default:
+        return {constants::RENDER_TREE_SPRITE_OFFSET_X, constants::RENDER_TREE_SPRITE_OFFSET_Y};
     }
 }
 
@@ -242,8 +1254,12 @@ GameRenderer::GameRenderer()
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     create_shader_program();
+    create_textured_shader_program();
     create_scene_batch_gl();
+    create_textured_scene_batch_gl();
     scene_batch_.reserve(131072U);
+    textured_scene_batch_.reserve(65536U);
+    scene_textures_.load(aoa::core::default_assets_directory());
 }
 
 GameRenderer::~GameRenderer()
@@ -256,6 +1272,17 @@ void GameRenderer::create_shader_program()
     const unsigned int vertex_shader = compile_shader(GL_VERTEX_SHADER, SCENE_VERTEX_SHADER);
     const unsigned int fragment_shader = compile_shader(GL_FRAGMENT_SHADER, SCENE_FRAGMENT_SHADER);
     scene_shader_program_ = link_program(vertex_shader, fragment_shader);
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+}
+
+void GameRenderer::create_textured_shader_program()
+{
+    const unsigned int vertex_shader =
+        compile_shader(GL_VERTEX_SHADER, TEXTURED_SCENE_VERTEX_SHADER);
+    const unsigned int fragment_shader =
+        compile_shader(GL_FRAGMENT_SHADER, TEXTURED_SCENE_FRAGMENT_SHADER);
+    textured_scene_shader_program_ = link_program(vertex_shader, fragment_shader);
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
 }
@@ -280,8 +1307,157 @@ void GameRenderer::create_scene_batch_gl()
     glBindVertexArray(0U);
 }
 
+void GameRenderer::create_textured_scene_batch_gl()
+{
+    glGenVertexArrays(1, &textured_scene_vao_);
+    glGenBuffers(1, &textured_scene_vbo_);
+
+    glBindVertexArray(textured_scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, textured_scene_vbo_);
+    glVertexAttribPointer(
+        0,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(TexturedSceneVertex),
+        reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(
+        1,
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(TexturedSceneVertex),
+        reinterpret_cast<void*>(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(
+        2,
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(TexturedSceneVertex),
+        reinterpret_cast<void*>(5 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glBindVertexArray(0U);
+}
+
+void GameRenderer::destroy_present_target() const
+{
+    if (present_color_ != 0U) {
+        glDeleteTextures(1, &present_color_);
+        present_color_ = 0U;
+    }
+    if (present_depth_ != 0U) {
+        glDeleteRenderbuffers(1, &present_depth_);
+        present_depth_ = 0U;
+    }
+    if (present_fbo_ != 0U) {
+        glDeleteFramebuffers(1, &present_fbo_);
+        present_fbo_ = 0U;
+    }
+    present_width_ = 0;
+    present_height_ = 0;
+}
+
+bool GameRenderer::ensure_present_target() const
+{
+    const int width = static_cast<int>(window_size_.x);
+    const int height = static_cast<int>(window_size_.y);
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    if (present_fbo_ != 0U && present_color_ != 0U && present_depth_ != 0U
+        && present_width_ == width && present_height_ == height) {
+        return true;
+    }
+
+    destroy_present_target();
+    glGenTextures(1, &present_color_);
+    glBindTexture(GL_TEXTURE_2D, present_color_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA8,
+        width,
+        height,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        nullptr);
+    glBindTexture(GL_TEXTURE_2D, 0U);
+
+    glGenRenderbuffers(1, &present_depth_);
+    glBindRenderbuffer(GL_RENDERBUFFER, present_depth_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0U);
+
+    glGenFramebuffers(1, &present_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, present_color_, 0);
+    glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, present_depth_);
+    const bool complete =
+        glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+    if (!complete) {
+        destroy_present_target();
+        return false;
+    }
+
+    present_width_ = width;
+    present_height_ = height;
+    return true;
+}
+
+void GameRenderer::present_target_to_window() const
+{
+    if (present_fbo_ == 0U || present_width_ <= 0 || present_height_ <= 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+        return;
+    }
+
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, present_fbo_);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0U);
+    glBlitFramebuffer(
+        0,
+        0,
+        present_width_,
+        present_height_,
+        0,
+        0,
+        present_width_,
+        present_height_,
+        GL_COLOR_BUFFER_BIT,
+        GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0U);
+}
+
 void GameRenderer::destroy_gl_objects()
 {
+    destroy_present_target();
+    scene_textures_.destroy_gl_resources();
+
+    if (textured_scene_vbo_ != 0U) {
+        glDeleteBuffers(1, &textured_scene_vbo_);
+        textured_scene_vbo_ = 0U;
+    }
+
+    if (textured_scene_vao_ != 0U) {
+        glDeleteVertexArrays(1, &textured_scene_vao_);
+        textured_scene_vao_ = 0U;
+    }
+
+    if (textured_scene_shader_program_ != 0U) {
+        glDeleteProgram(textured_scene_shader_program_);
+        textured_scene_shader_program_ = 0U;
+    }
     if (scene_vbo_ != 0U) {
         glDeleteBuffers(1, &scene_vbo_);
         scene_vbo_ = 0U;
@@ -317,6 +1493,7 @@ void GameRenderer::set_local_player_slot(const std::uint8_t player_slot)
 
     local_player_slot_ = player_slot;
     map_framed_ = false;
+    cached_hud_snapshot_tick_ = ~0ULL;
 }
 
 void GameRenderer::reset_camera_frame()
@@ -334,6 +1511,31 @@ void GameRenderer::toggle_grid_lines()
     show_grid_lines_ = !show_grid_lines_;
 }
 
+void GameRenderer::toggle_fog_of_war()
+{
+    fog_of_war_enabled_ = !fog_of_war_enabled_;
+}
+
+void GameRenderer::toggle_perf_hud()
+{
+    show_perf_hud_ = !show_perf_hud_;
+}
+
+void GameRenderer::toggle_selection_debug()
+{
+    show_selection_debug_ = !show_selection_debug_;
+}
+
+void GameRenderer::toggle_hitboxes()
+{
+    show_hitboxes_ = !show_hitboxes_;
+}
+
+bool GameRenderer::local_player_has_seen_building(const entt::entity entity) const
+{
+    return building_sight_memory_.find(entity) != nullptr;
+}
+
 void GameRenderer::reset_graphics_context(const sf::Vector2u window_size)
 {
     destroy_gl_objects();
@@ -346,8 +1548,16 @@ void GameRenderer::reset_graphics_context(const sf::Vector2u window_size)
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     create_shader_program();
+    create_textured_shader_program();
     create_scene_batch_gl();
+    create_textured_scene_batch_gl();
+    scene_textures_.load(aoa::core::default_assets_directory());
     resize(window_size, true);
+}
+
+void GameRenderer::center_camera_on_world_keep_zoom(const float world_x, const float world_z)
+{
+    camera_.center_on_world_keep_zoom(world_x, world_z);
 }
 
 void GameRenderer::pan_camera(const float delta_x, const float delta_y)
@@ -361,6 +1571,7 @@ void GameRenderer::step_zoom_camera(
     const float anchor_screen_y)
 {
     camera_.step_zoom(direction, anchor_screen_x, anchor_screen_y);
+    camera_.clamp_to_map_bounds();
 }
 
 std::optional<core::GridPos> GameRenderer::screen_to_grid(
@@ -466,7 +1677,9 @@ sf::Vector2f GameRenderer::unit_screen_position(
 
 float GameRenderer::selection_pick_radius_px() const
 {
-    return constants::SELECTION_PICK_RADIUS_TILES * camera_.tile_width();
+    return std::max(
+        constants::SELECTION_PICK_RADIUS_TILES * camera_.tile_width(),
+        constants::SELECTION_PICK_MIN_RADIUS_PX);
 }
 
 std::optional<core::GridPos> GameRenderer::find_local_town_center_cell(
@@ -476,7 +1689,10 @@ std::optional<core::GridPos> GameRenderer::find_local_town_center_cell(
     if (snapshot != nullptr) {
         for (const RenderEntityPose& pose : snapshot->buildings) {
             if (pose.is_town_center && pose.player_slot == local_player_slot_) {
-                return core::GridPos{pose.grid_x, pose.grid_y};
+                return core::GridPos{
+                    pose.grid_x + pose.footprint_width / 2,
+                    pose.grid_y + pose.footprint_height / 2,
+                };
             }
         }
     }
@@ -492,7 +1708,14 @@ std::optional<core::GridPos> GameRenderer::find_local_town_center_cell(
                 continue;
             }
 
-            return town_center_view.get<sim::components::GridPosition>(entity).cell;
+            const auto& anchor = town_center_view.get<sim::components::GridPosition>(entity);
+            if (registry.any_of<sim::components::BuildingFootprint>(entity)) {
+                return sim::components::building_center_cell(
+                    anchor,
+                    registry.get<sim::components::BuildingFootprint>(entity));
+            }
+
+            return anchor.cell;
         }
     }
 
@@ -506,7 +1729,10 @@ std::optional<core::GridPos> GameRenderer::find_first_town_center_cell(
     if (snapshot != nullptr) {
         for (const RenderEntityPose& pose : snapshot->buildings) {
             if (pose.is_town_center) {
-                return core::GridPos{pose.grid_x, pose.grid_y};
+                return core::GridPos{
+                    pose.grid_x + pose.footprint_width / 2,
+                    pose.grid_y + pose.footprint_height / 2,
+                };
             }
         }
     }
@@ -548,6 +1774,8 @@ void GameRenderer::try_frame_player_start(
     const sim::Simulation* simulation,
     const SimRenderSnapshot* snapshot)
 {
+    camera_.set_map_size(map_width, map_height);
+
     if (map_framed_) {
         return;
     }
@@ -568,6 +1796,7 @@ void GameRenderer::try_frame_player_start(
         }
     }
 
+    camera_.clamp_to_map_bounds();
     map_framed_ = true;
 }
 
@@ -609,7 +1838,7 @@ void GameRenderer::draw_screen_rect_outline_immediate(
     const float right = to_ndc_x(std::max(screen_x0, screen_x1));
     const float top = to_ndc_y(std::min(screen_y0, screen_y1));
     const float bottom = to_ndc_y(std::max(screen_y0, screen_y1));
-    const float depth = -0.99F;
+    const float depth = constants::HUD_CLIP_Z;
 
     const std::array<SceneVertex, 8> line_vertices = {
         SceneVertex{left, top, depth, r, g, b},
@@ -622,6 +1851,8 @@ void GameRenderer::draw_screen_rect_outline_immediate(
         SceneVertex{left, top, depth, r, g, b},
     };
 
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
     glBindVertexArray(scene_vao_);
     glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
     glBufferData(
@@ -632,6 +1863,400 @@ void GameRenderer::draw_screen_rect_outline_immediate(
     glUseProgram(scene_shader_program_);
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(line_vertices.size()));
     glBindVertexArray(0U);
+}
+
+void GameRenderer::draw_iso_range_circle(
+    const float center_world_x,
+    const float center_world_z,
+    const float radius_tiles,
+    const float r,
+    const float g,
+    const float b) const
+{
+    if (radius_tiles <= 0.0F) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const float lift = constants::RENDER_GROUND_HIGHLIGHT_LIFT;
+    const int segments = constants::RENDER_RANGE_CIRCLE_SEGMENTS;
+    constexpr float k_two_pi = 6.2831853F;
+    const float step = k_two_pi / static_cast<float>(segments);
+    const float half_width = constants::RENDER_RANGE_CIRCLE_WIDTH_PX * 0.5F;
+    const float depth = -0.99F;
+
+    std::vector<sf::Vector2f> ring{};
+    ring.reserve(static_cast<std::size_t>(segments + 1));
+    for (int index = 0; index <= segments; ++index) {
+        const float angle = step * static_cast<float>(index);
+        ring.push_back(world_to_screen(
+            center_world_x + std::cos(angle) * radius_tiles,
+            lift,
+            center_world_z + std::sin(angle) * radius_tiles));
+    }
+
+    std::vector<SceneVertex> vertices{};
+    vertices.reserve(static_cast<std::size_t>(segments) * 6U);
+    for (int index = 0; index < segments; ++index) {
+        const sf::Vector2f& from = ring[static_cast<std::size_t>(index)];
+        const sf::Vector2f& to = ring[static_cast<std::size_t>(index + 1)];
+        const float dx = to.x - from.x;
+        const float dy = to.y - from.y;
+        const float length = std::sqrt(dx * dx + dy * dy);
+        if (length <= 0.0001F) {
+            continue;
+        }
+
+        const float nx = (-dy / length) * half_width;
+        const float ny = (dx / length) * half_width;
+        const SceneVertex outer_from{to_ndc_x(from.x + nx), to_ndc_y(from.y + ny), depth, r, g, b};
+        const SceneVertex inner_from{to_ndc_x(from.x - nx), to_ndc_y(from.y - ny), depth, r, g, b};
+        const SceneVertex outer_to{to_ndc_x(to.x + nx), to_ndc_y(to.y + ny), depth, r, g, b};
+        const SceneVertex inner_to{to_ndc_x(to.x - nx), to_ndc_y(to.y - ny), depth, r, g, b};
+        vertices.push_back(outer_from);
+        vertices.push_back(inner_from);
+        vertices.push_back(outer_to);
+        vertices.push_back(outer_to);
+        vertices.push_back(inner_from);
+        vertices.push_back(inner_to);
+    }
+
+    if (vertices.empty()) {
+        return;
+    }
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(vertices.size() * sizeof(SceneVertex)),
+        vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+    glBindVertexArray(0U);
+    glDisable(GL_BLEND);
+}
+
+void GameRenderer::draw_screen_line_immediate(
+    const float screen_x0,
+    const float screen_y0,
+    const float screen_x1,
+    const float screen_y1,
+    const float r,
+    const float g,
+    const float b) const
+{
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const std::array<SceneVertex, 2> line_vertices = {
+        SceneVertex{to_ndc_x(screen_x0), to_ndc_y(screen_y0), -0.99F, r, g, b},
+        SceneVertex{to_ndc_x(screen_x1), to_ndc_y(screen_y1), -0.99F, r, g, b},
+    };
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(line_vertices.size() * sizeof(SceneVertex)),
+        line_vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(line_vertices.size()));
+    glBindVertexArray(0U);
+}
+
+void GameRenderer::draw_scene_line_xz(
+    const float x0,
+    const float z0,
+    const float x1,
+    const float z1,
+    const float y,
+    const float r,
+    const float g,
+    const float b,
+    const float width) const
+{
+    const float dx = x1 - x0;
+    const float dz = z1 - z0;
+    const float length = std::sqrt((dx * dx) + (dz * dz));
+    if (length <= 1e-6F) {
+        return;
+    }
+
+    const float px = (-dz / length) * width * 0.5F;
+    const float pz = (dx / length) * width * 0.5F;
+
+    draw_scene_quad(
+        x0 + px,
+        y,
+        z0 + pz,
+        x1 + px,
+        y,
+        z1 + pz,
+        x1 - px,
+        y,
+        z1 - pz,
+        x0 - px,
+        y,
+        z0 - pz,
+        r,
+        g,
+        b,
+        1.0F);
+}
+
+void GameRenderer::draw_scene_rect_outline(
+    const float x0,
+    const float z0,
+    const float x1,
+    const float z1,
+    const float y,
+    const float line_width,
+    const float r,
+    const float g,
+    const float b) const
+{
+    draw_scene_line_xz(x0, z0, x1, z0, y, r, g, b, line_width);
+    draw_scene_line_xz(x1, z0, x1, z1, y, r, g, b, line_width);
+    draw_scene_line_xz(x1, z1, x0, z1, y, r, g, b, line_width);
+    draw_scene_line_xz(x0, z1, x0, z0, y, r, g, b, line_width);
+}
+
+void GameRenderer::project_unit_screen_bounds(
+    const float world_x,
+    const float world_z,
+    float& min_screen_x,
+    float& min_screen_y,
+    float& max_screen_x,
+    float& max_screen_y) const
+{
+    min_screen_x = std::numeric_limits<float>::max();
+    min_screen_y = std::numeric_limits<float>::max();
+    max_screen_x = std::numeric_limits<float>::lowest();
+    max_screen_y = std::numeric_limits<float>::lowest();
+
+    const auto expand = [&](const float wx, const float wy, const float wz) {
+        const sf::Vector2f screen = world_to_screen(wx, wy, wz);
+        min_screen_x = std::min(min_screen_x, screen.x);
+        min_screen_y = std::min(min_screen_y, screen.y);
+        max_screen_x = std::max(max_screen_x, screen.x);
+        max_screen_y = std::max(max_screen_y, screen.y);
+    };
+
+    const float base = constants::RENDER_ENTITY_BASE_LIFT;
+    const float top = base + constants::RENDER_UNIT_HEIGHT;
+    const float radius = constants::RENDER_UNIT_RADIUS;
+    constexpr float k_two_pi = 6.2831853F;
+    const int segments = constants::RENDER_CYLINDER_SEGMENTS;
+    const float angle_step = k_two_pi / static_cast<float>(segments);
+
+    expand(world_x, top, world_z);
+    for (int segment_index = 0; segment_index <= segments; ++segment_index) {
+        const float angle = angle_step * static_cast<float>(segment_index);
+        const float offset_x = std::cos(angle) * radius;
+        const float offset_z = std::sin(angle) * radius;
+        expand(world_x + offset_x, base, world_z + offset_z);
+        expand(world_x + offset_x, top, world_z + offset_z);
+    }
+}
+
+void GameRenderer::occluder_tile_screen_rect(
+    const int grid_x,
+    const int grid_y,
+    const bool is_building,
+    float& min_screen_x,
+    float& min_screen_y,
+    float& max_screen_x,
+    float& max_screen_y) const
+{
+    const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
+    const float tile_width = camera_.tile_width()
+        * (is_building
+            ? static_cast<float>(constants::TOWN_CENTER_FOOTPRINT_TILES)
+            : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
+    const SceneTextureKind aspect_kind = is_building
+        ? SceneTextureKind::TownCenter
+        : SceneTextureKind::OakForestLarge;
+    const float vertical_extent_scale = is_building
+        ? constants::RENDER_BUILDING_OCCLUSION_SCISSOR_SCALE
+        : constants::RENDER_TREE_OCCLUSION_SCISSOR_SCALE;
+    const float sprite_height = tile_width * scene_textures_.aspect_ratio(aspect_kind)
+        * vertical_extent_scale;
+
+    min_screen_x = std::min(
+        std::min(corners.top.x, corners.right.x),
+        std::min(corners.bottom.x, corners.left.x));
+    max_screen_x = std::max(
+        std::max(corners.top.x, corners.right.x),
+        std::max(corners.bottom.x, corners.left.x));
+    min_screen_y = corners.top.y - sprite_height;
+    max_screen_y = std::max(
+        std::max(corners.top.y, corners.right.y),
+        std::max(corners.bottom.y, corners.left.y));
+}
+
+bool GameRenderer::unit_screen_overlaps_occluder_tile(
+    const float world_x,
+    const float world_z,
+    const int grid_x,
+    const int grid_y,
+    const bool is_building) const
+{
+    float unit_min_x = 0.0F;
+    float unit_min_y = 0.0F;
+    float unit_max_x = 0.0F;
+    float unit_max_y = 0.0F;
+    project_unit_screen_bounds(world_x, world_z, unit_min_x, unit_min_y, unit_max_x, unit_max_y);
+
+    float tile_min_x = 0.0F;
+    float tile_min_y = 0.0F;
+    float tile_max_x = 0.0F;
+    float tile_max_y = 0.0F;
+    occluder_tile_screen_rect(grid_x, grid_y, is_building, tile_min_x, tile_min_y, tile_max_x, tile_max_y);
+
+    return unit_max_x >= tile_min_x
+        && unit_min_x <= tile_max_x
+        && unit_max_y >= tile_min_y
+        && unit_min_y <= tile_max_y;
+}
+
+bool GameRenderer::unit_is_occluded_by_tile(
+    const float world_x,
+    const float world_z,
+    const int grid_x,
+    const int grid_y,
+    const bool is_building) const
+{
+    if (!unit_screen_overlaps_occluder_tile(world_x, world_z, grid_x, grid_y, is_building)) {
+        return false;
+    }
+
+    const sf::Vector2f unit_base = world_to_screen(
+        world_x,
+        constants::RENDER_ENTITY_BASE_LIFT,
+        world_z);
+    const sf::Vector2f unit_top = world_to_screen(
+        world_x,
+        constants::RENDER_ENTITY_BASE_LIFT + constants::RENDER_UNIT_HEIGHT,
+        world_z);
+
+    float tile_min_x = 0.0F;
+    float tile_min_y = 0.0F;
+    float tile_max_x = 0.0F;
+    float tile_max_y = 0.0F;
+    occluder_tile_screen_rect(grid_x, grid_y, is_building, tile_min_x, tile_min_y, tile_max_x, tile_max_y);
+
+    const float unit_mid_y = (unit_base.y + unit_top.y) * 0.5F;
+    if (unit_mid_y >= tile_max_y) {
+        return false;
+    }
+
+    return true;
+}
+
+void GameRenderer::draw_unit_projected_silhouette_outline_immediate(
+    const float world_x,
+    const float world_z,
+    const float r,
+    const float g,
+    const float b) const
+{
+    const float base = constants::RENDER_ENTITY_BASE_LIFT;
+    const float top = base + constants::RENDER_UNIT_HEIGHT;
+    const float radius = constants::RENDER_UNIT_RADIUS;
+
+    constexpr float k_two_pi = 6.2831853F;
+    const int segments = constants::RENDER_CYLINDER_SEGMENTS;
+    const float angle_step = k_two_pi / static_cast<float>(segments);
+
+    std::vector<sf::Vector2f> top_ring{};
+    std::vector<sf::Vector2f> bottom_ring{};
+    top_ring.reserve(static_cast<std::size_t>(segments));
+    bottom_ring.reserve(static_cast<std::size_t>(segments));
+
+    for (int segment_index = 0; segment_index < segments; ++segment_index) {
+        const float angle = angle_step * static_cast<float>(segment_index);
+        const float offset_x = std::cos(angle) * radius;
+        const float offset_z = std::sin(angle) * radius;
+        top_ring.push_back(world_to_screen(world_x + offset_x, top, world_z + offset_z));
+        bottom_ring.push_back(world_to_screen(world_x + offset_x, base, world_z + offset_z));
+    }
+
+    for (int segment_index = 0; segment_index < segments; ++segment_index) {
+        const int next_index = (segment_index + 1) % segments;
+        draw_screen_line_immediate(
+            top_ring[static_cast<std::size_t>(segment_index)].x,
+            top_ring[static_cast<std::size_t>(segment_index)].y,
+            top_ring[static_cast<std::size_t>(next_index)].x,
+            top_ring[static_cast<std::size_t>(next_index)].y,
+            r,
+            g,
+            b);
+        draw_screen_line_immediate(
+            bottom_ring[static_cast<std::size_t>(segment_index)].x,
+            bottom_ring[static_cast<std::size_t>(segment_index)].y,
+            bottom_ring[static_cast<std::size_t>(next_index)].x,
+            bottom_ring[static_cast<std::size_t>(next_index)].y,
+            r,
+            g,
+            b);
+    }
+
+    int left_index = 0;
+    int right_index = 0;
+    for (int segment_index = 1; segment_index < segments; ++segment_index) {
+        if (top_ring[static_cast<std::size_t>(segment_index)].x
+            < top_ring[static_cast<std::size_t>(left_index)].x) {
+            left_index = segment_index;
+        }
+        if (top_ring[static_cast<std::size_t>(segment_index)].x
+            > top_ring[static_cast<std::size_t>(right_index)].x) {
+            right_index = segment_index;
+        }
+    }
+
+    draw_screen_line_immediate(
+        bottom_ring[static_cast<std::size_t>(left_index)].x,
+        bottom_ring[static_cast<std::size_t>(left_index)].y,
+        top_ring[static_cast<std::size_t>(left_index)].x,
+        top_ring[static_cast<std::size_t>(left_index)].y,
+        r,
+        g,
+        b);
+    draw_screen_line_immediate(
+        bottom_ring[static_cast<std::size_t>(right_index)].x,
+        bottom_ring[static_cast<std::size_t>(right_index)].y,
+        top_ring[static_cast<std::size_t>(right_index)].x,
+        top_ring[static_cast<std::size_t>(right_index)].y,
+        r,
+        g,
+        b);
 }
 
 void GameRenderer::apply_team_color(
@@ -670,6 +2295,1220 @@ void GameRenderer::flush_scene_batch() const
     glUseProgram(scene_shader_program_);
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(scene_batch_.size()));
     glBindVertexArray(0U);
+    scene_batch_.clear();
+}
+
+void GameRenderer::append_textured_vertices(
+    const TexturedSceneVertex* vertices,
+    const std::size_t vertex_count) const
+{
+    textured_scene_batch_.insert(textured_scene_batch_.end(), vertices, vertices + vertex_count);
+}
+
+void GameRenderer::flush_textured_scene_batch(const unsigned int texture_id) const
+{
+    if (textured_scene_batch_.empty() || textured_scene_vao_ == 0U || textured_scene_vbo_ == 0U
+        || textured_scene_shader_program_ == 0U || texture_id == 0U) {
+        textured_scene_batch_.clear();
+        return;
+    }
+
+    enable_rgb_blend_keep_framebuffer_opaque();
+    glBindVertexArray(textured_scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, textured_scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(textured_scene_batch_.size() * sizeof(TexturedSceneVertex)),
+        textured_scene_batch_.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(textured_scene_shader_program_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glUniform1i(glGetUniformLocation(textured_scene_shader_program_, "scene_texture"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(textured_scene_batch_.size()));
+    glBindTexture(GL_TEXTURE_2D, 0U);
+    glBindVertexArray(0U);
+    glDisable(GL_BLEND);
+    textured_scene_batch_.clear();
+}
+
+SceneTextureKind GameRenderer::ground_texture_for_ground(
+    const sim::components::GroundType ground) const
+{
+    if (ground == sim::components::GroundType::Snow
+        && scene_textures_.texture_id(SceneTextureKind::Snow) != 0U) {
+        return SceneTextureKind::Snow;
+    }
+
+    if (ground == sim::components::GroundType::Sand
+        && scene_textures_.texture_id(SceneTextureKind::Sand) != 0U) {
+        return SceneTextureKind::Sand;
+    }
+
+    if (ground == sim::components::GroundType::Dirt
+        && scene_textures_.texture_id(SceneTextureKind::Dirt) != 0U) {
+        return SceneTextureKind::Dirt;
+    }
+
+    return SceneTextureKind::Grass;
+}
+
+const std::vector<float>& GameRenderer::ensure_fog_vertex_brightness(
+    const std::uint64_t tick_count,
+    const std::vector<std::uint8_t>& fog_explored,
+    const int map_width,
+    const int map_height,
+    const std::uint8_t player_slot,
+    const std::vector<sim::systems::VisionSource>& vision_sources) const
+{
+    if (fog_vertex_tick_ == tick_count && fog_vertex_player_slot_ == player_slot
+        && fog_vertex_map_width_ == map_width && fog_vertex_map_height_ == map_height
+        && !fog_vertex_cache_.empty()) {
+        return fog_vertex_cache_;
+    }
+
+    fog_vertex_cache_ = build_fog_vertex_brightness(
+        fog_explored,
+        map_width,
+        map_height,
+        player_slot,
+        vision_sources);
+    fog_vertex_tick_ = tick_count;
+    fog_vertex_player_slot_ = player_slot;
+    fog_vertex_map_width_ = map_width;
+    fog_vertex_map_height_ = map_height;
+    return fog_vertex_cache_;
+}
+
+void GameRenderer::ensure_biome_vertex_weights(
+    const std::vector<sim::components::GroundType>& ground,
+    const int map_width,
+    const int map_height) const
+{
+    if (map_width <= 0 || map_height <= 0 || ground.empty()) {
+        biome_vertex_weight_.clear();
+        biome_blend_map_width_ = 0;
+        biome_blend_map_height_ = 0;
+        biome_blend_ground_hash_ = 0U;
+        return;
+    }
+
+    if (biome_blend_map_width_ == map_width && biome_blend_map_height_ == map_height
+        && !biome_vertex_weight_.empty()) {
+        return;
+    }
+
+    const std::uint64_t hash = hash_ground_field(ground, map_width, map_height);
+
+    const int tile_count = map_width * map_height;
+    const int vertex_width = map_width + 1;
+    const int vertex_height = map_height + 1;
+    biome_vertex_weight_.assign(
+        static_cast<std::size_t>(vertex_width * vertex_height * constants::GROUND_TYPE_COUNT),
+        0.0F);
+
+    std::vector<float> type_field(static_cast<std::size_t>(tile_count), 0.0F);
+    for (int type_index = 0; type_index < constants::GROUND_TYPE_COUNT; ++type_index) {
+        const auto type = static_cast<sim::components::GroundType>(type_index);
+        for (int cell_index = 0; cell_index < tile_count; ++cell_index) {
+            const std::size_t index = static_cast<std::size_t>(cell_index);
+            const sim::components::GroundType cell =
+                index < ground.size() ? ground[index] : sim::components::GroundType::Grass;
+            type_field[index] = (cell == type) ? 1.0F : 0.0F;
+        }
+
+        const std::vector<float> blurred = gaussian_blur_field(
+            type_field,
+            map_width,
+            map_height,
+            constants::BIOME_BLEND_RADIUS_TILES,
+            constants::BIOME_BLEND_SIGMA);
+
+        for (int vertex_y = 0; vertex_y < vertex_height; ++vertex_y) {
+            for (int vertex_x = 0; vertex_x < vertex_width; ++vertex_x) {
+                const float weight = sample_blurred_field_bilinear(
+                    blurred,
+                    map_width,
+                    map_height,
+                    static_cast<float>(vertex_x) - 0.5F,
+                    static_cast<float>(vertex_y) - 0.5F);
+                const std::size_t packed = static_cast<std::size_t>(
+                    (vertex_y * vertex_width + vertex_x) * constants::GROUND_TYPE_COUNT
+                    + type_index);
+                biome_vertex_weight_[packed] = std::clamp(weight, 0.0F, 1.0F);
+            }
+        }
+    }
+
+    biome_blend_map_width_ = map_width;
+    biome_blend_map_height_ = map_height;
+    biome_blend_ground_hash_ = hash;
+}
+
+bool GameRenderer::iso_tile_intersects_window(
+    const int grid_x,
+    const int grid_y,
+    const int pad_tiles) const
+{
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return true;
+    }
+
+    const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
+    const float pad_x = camera_.tile_width() * static_cast<float>(std::max(pad_tiles, 0));
+    const float pad_y = camera_.tile_height() * static_cast<float>(std::max(pad_tiles, 0));
+    const float min_x =
+        std::min({corners.top.x, corners.right.x, corners.bottom.x, corners.left.x}) - pad_x;
+    const float max_x =
+        std::max({corners.top.x, corners.right.x, corners.bottom.x, corners.left.x}) + pad_x;
+    const float min_y =
+        std::min({corners.top.y, corners.right.y, corners.bottom.y, corners.left.y}) - pad_y;
+    const float max_y =
+        std::max({corners.top.y, corners.right.y, corners.bottom.y, corners.left.y}) + pad_y;
+    return max_x >= 0.0F && min_x <= static_cast<float>(window_size_.x) && max_y >= 0.0F
+        && min_y <= static_cast<float>(window_size_.y);
+}
+
+void GameRenderer::draw_batched_ground_tiles(
+    const int map_width,
+    const int map_height,
+    const std::vector<sim::components::GroundType>& ground,
+    const std::vector<std::uint8_t>& fog_visible,
+    const std::vector<std::uint8_t>& fog_explored,
+    const bool fog_enabled,
+    const std::vector<float>* fog_vertex_brightness,
+    const std::uint64_t tick_count) const
+{
+    if (map_width <= 0 || map_height <= 0
+        || ground.size() != static_cast<std::size_t>(map_width * map_height)) {
+        return;
+    }
+
+    unsigned int active_textured_batch = 0U;
+    const auto flush_if_needed = [&](const unsigned int texture_id) {
+        if (texture_id == 0U) {
+            return;
+        }
+
+        if (active_textured_batch != 0U && active_textured_batch != texture_id) {
+            flush_textured_scene_batch(active_textured_batch);
+        }
+
+        active_textured_batch = texture_id;
+    };
+    const auto finish_batches = [&]() {
+        if (active_textured_batch != 0U) {
+            flush_textured_scene_batch(active_textured_batch);
+            active_textured_batch = 0U;
+        }
+    };
+
+    const auto tile_brightness = [&](const int x, const int y) {
+        if (!fog_enabled) {
+            return 1.0F;
+        }
+
+        return fog_tile_brightness(
+            fog_visible,
+            fog_explored,
+            map_width,
+            map_height,
+            local_player_slot_,
+            x,
+            y);
+    };
+    if (ground_draw_tick_ != tick_count || ground_draw_player_slot_ != local_player_slot_
+        || ground_draw_map_width_ != map_width || ground_draw_map_height_ != map_height) {
+        ground_draw_indices_.clear();
+        ground_draw_indices_.reserve(static_cast<std::size_t>(map_width * map_height));
+        for (int y = 0; y < map_height; ++y) {
+            for (int x = 0; x < map_width; ++x) {
+                ground_draw_indices_.push_back(y * map_width + x);
+            }
+        }
+
+        ground_draw_tick_ = tick_count;
+        ground_draw_player_slot_ = local_player_slot_;
+        ground_draw_map_width_ = map_width;
+        ground_draw_map_height_ = map_height;
+    }
+
+    static constexpr std::array<SceneTextureKind, constants::GROUND_TYPE_COUNT> pass_kinds{
+        SceneTextureKind::Grass,
+        SceneTextureKind::Sand,
+        SceneTextureKind::Snow,
+        SceneTextureKind::Dirt,
+    };
+
+    for (const SceneTextureKind pass_kind : pass_kinds) {
+        const unsigned int texture_id = scene_textures_.texture_id(pass_kind);
+        if (texture_id == 0U) {
+            continue;
+        }
+
+        flush_if_needed(texture_id);
+        for (const int packed : ground_draw_indices_) {
+            const int x = packed % map_width;
+            const int y = packed / map_width;
+            if (!iso_tile_intersects_window(x, y, constants::RENDER_GROUND_SCREEN_CULL_PAD_TILES)) {
+                continue;
+            }
+
+            const std::size_t index = static_cast<std::size_t>(packed);
+            const SceneTextureKind ground_kind = ground_texture_for_ground(
+                index < ground.size() ? ground[index] : sim::components::GroundType::Grass);
+            if (ground_kind != pass_kind) {
+                continue;
+            }
+
+            draw_iso_diamond_sprite(
+                x,
+                y,
+                ground_kind,
+                tile_brightness(x, y),
+                fog_vertex_brightness,
+                map_width,
+                map_height);
+        }
+    }
+
+    finish_batches();
+
+    ensure_biome_vertex_weights(ground, map_width, map_height);
+    if (biome_vertex_weight_.empty()) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+    for (const SceneTextureKind pass_kind : pass_kinds) {
+        const unsigned int texture_id = scene_textures_.texture_id(pass_kind);
+        if (texture_id == 0U) {
+            continue;
+        }
+
+        flush_if_needed(texture_id);
+        for (const int packed : ground_draw_indices_) {
+            const int x = packed % map_width;
+            const int y = packed / map_width;
+            if (!iso_tile_intersects_window(x, y, constants::RENDER_GROUND_SCREEN_CULL_PAD_TILES)) {
+                continue;
+            }
+
+            const std::size_t index = static_cast<std::size_t>(packed);
+            const sim::components::GroundType self =
+                    index < ground.size() ? ground[index] : sim::components::GroundType::Grass;
+                for (int type_index = 0; type_index < constants::GROUND_TYPE_COUNT; ++type_index) {
+                    const auto overlay_ground =
+                        static_cast<sim::components::GroundType>(type_index);
+                    if (overlay_ground == self) {
+                        continue;
+                    }
+
+                    const SceneTextureKind overlay_kind = ground_texture_for_ground(overlay_ground);
+                    if (overlay_kind != pass_kind) {
+                        continue;
+                    }
+
+                    const BiomeTileCornerWeights corners = biome_tile_corner_weights(
+                        biome_vertex_weight_,
+                        map_width,
+                        map_height,
+                        x,
+                        y,
+                        type_index);
+                    if (corners.max_weight() < constants::BIOME_BLEND_MIN_CORNER_ALPHA) {
+                        continue;
+                    }
+
+                    const std::array<float, 4> corner_alphas{
+                        corners.top,
+                        corners.right,
+                        corners.bottom,
+                        corners.left,
+                    };
+                    draw_iso_diamond_sprite(
+                        x,
+                        y,
+                        overlay_kind,
+                        tile_brightness(x, y),
+                        fog_vertex_brightness,
+                        map_width,
+                        map_height,
+                        1.0F,
+                        corner_alphas.data());
+                }
+        }
+    }
+
+    finish_batches();
+    glEnable(GL_DEPTH_TEST);
+}
+
+SceneTextureKind GameRenderer::forest_tree_texture_for_cell(
+    const int grid_x,
+    const int grid_y,
+    const sim::components::GroundType ground) const
+{
+    const bool snow = ground == sim::components::GroundType::Snow;
+    const int size_index =
+        std::abs(grid_x * 3 + grid_y * 5) % constants::TREE_SIZE_VARIANT_COUNT;
+
+    const SceneTextureKind small_kind =
+        snow ? SceneTextureKind::PinesForestSmall : SceneTextureKind::OakForestSmall;
+    const SceneTextureKind medium_kind =
+        snow ? SceneTextureKind::PinesForestMedium : SceneTextureKind::OakForestMedium;
+    const SceneTextureKind large_kind =
+        snow ? SceneTextureKind::PinesForestLarge : SceneTextureKind::OakForestLarge;
+
+    const SceneTextureKind preferred =
+        size_index == 0 ? small_kind : (size_index == 1 ? medium_kind : large_kind);
+    if (scene_textures_.texture_id(preferred) != 0U) {
+        return preferred;
+    }
+
+    if (scene_textures_.texture_id(medium_kind) != 0U) {
+        return medium_kind;
+    }
+
+    if (scene_textures_.texture_id(small_kind) != 0U) {
+        return small_kind;
+    }
+
+    return large_kind;
+}
+
+float GameRenderer::tree_sprite_width_scale(const SceneTextureKind kind) const
+{
+    switch (kind) {
+    case SceneTextureKind::OakForestSmall:
+    case SceneTextureKind::DarkenedOakForestSmall:
+    case SceneTextureKind::PinesForestSmall:
+    case SceneTextureKind::DarkenedPinesForestSmall:
+        return constants::RENDER_TREE_SMALL_SPRITE_WIDTH_SCALE;
+    case SceneTextureKind::OakForestLarge:
+    case SceneTextureKind::DarkenedOakForestLarge:
+    case SceneTextureKind::PinesForestLarge:
+    case SceneTextureKind::DarkenedPinesForestLarge:
+        return constants::RENDER_TREE_LARGE_SPRITE_WIDTH_SCALE;
+    default:
+        return constants::RENDER_TREE_MEDIUM_SPRITE_WIDTH_SCALE;
+    }
+}
+
+SceneTextureKind GameRenderer::gold_mine_texture_for_cell(const int grid_x, const int grid_y) const
+{
+    static constexpr SceneTextureKind variants[] = {
+        SceneTextureKind::GoldMine0,
+        SceneTextureKind::GoldMine1,
+        SceneTextureKind::GoldMine2,
+        SceneTextureKind::GoldMine3,
+    };
+    const int variant_index =
+        (grid_x * 7 + grid_y * 13) % constants::GOLD_MINE_VARIANT_COUNT;
+    const SceneTextureKind kind = variants[variant_index];
+    if (scene_textures_.texture_id(kind) != 0U) {
+        return kind;
+    }
+
+    for (const SceneTextureKind fallback : variants) {
+        if (scene_textures_.texture_id(fallback) != 0U) {
+            return fallback;
+        }
+    }
+
+    return SceneTextureKind::GoldMine0;
+}
+
+void GameRenderer::draw_screen_sprite(
+    const float screen_left,
+    const float screen_top,
+    const float screen_width,
+    const float screen_height,
+    const float depth,
+    const unsigned int texture_id,
+    const float tint_r,
+    const float tint_g,
+    const float tint_b,
+    const float tint_a,
+    const float uv_left,
+    const float uv_right) const
+{
+    if (texture_id == 0U || window_size_.x == 0U || window_size_.y == 0U) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+
+    const auto to_clip_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_clip_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const float left = to_clip_x(screen_left);
+    const float right = to_clip_x(screen_left + screen_width);
+    const float top = to_clip_y(screen_top);
+    const float bottom = to_clip_y(screen_top + screen_height);
+
+    const std::array<TexturedSceneVertex, 6> vertices = {{
+        {left, top, depth, uv_left, 1.0F, tint_r, tint_g, tint_b, tint_a},
+        {right, top, depth, uv_right, 1.0F, tint_r, tint_g, tint_b, tint_a},
+        {right, bottom, depth, uv_right, 0.0F, tint_r, tint_g, tint_b, tint_a},
+        {left, top, depth, uv_left, 1.0F, tint_r, tint_g, tint_b, tint_a},
+        {right, bottom, depth, uv_right, 0.0F, tint_r, tint_g, tint_b, tint_a},
+        {left, bottom, depth, uv_left, 0.0F, tint_r, tint_g, tint_b, tint_a},
+    }};
+
+    append_textured_vertices(vertices.data(), vertices.size());
+}
+
+void GameRenderer::draw_textured_quad(
+    const sf::Vector2f& top,
+    const sf::Vector2f& right,
+    const sf::Vector2f& bottom,
+    const sf::Vector2f& left,
+    const float uv_top_u,
+    const float uv_top_v,
+    const float uv_right_u,
+    const float uv_right_v,
+    const float uv_bottom_u,
+    const float uv_bottom_v,
+    const float uv_left_u,
+    const float uv_left_v,
+    const float depth,
+    const float brightness_top,
+    const float brightness_right,
+    const float brightness_bottom,
+    const float brightness_left,
+    const float alpha) const
+{
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+
+    const auto to_clip = [&](const sf::Vector2f& screen_pos) {
+        return std::array<float, 2>{
+            (screen_pos.x / window_width) * 2.0F - 1.0F,
+            1.0F - (screen_pos.y / window_height) * 2.0F,
+        };
+    };
+
+    const auto top_clip = to_clip(top);
+    const auto right_clip = to_clip(right);
+    const auto bottom_clip = to_clip(bottom);
+    const auto left_clip = to_clip(left);
+
+    const std::array<TexturedSceneVertex, 6> vertices = {{
+        {top_clip[0], top_clip[1], depth, uv_top_u, uv_top_v, brightness_top, brightness_top, brightness_top, alpha},
+        {right_clip[0], right_clip[1], depth, uv_right_u, uv_right_v, brightness_right, brightness_right, brightness_right, alpha},
+        {bottom_clip[0], bottom_clip[1], depth, uv_bottom_u, uv_bottom_v, brightness_bottom, brightness_bottom, brightness_bottom, alpha},
+        {top_clip[0], top_clip[1], depth, uv_top_u, uv_top_v, brightness_top, brightness_top, brightness_top, alpha},
+        {bottom_clip[0], bottom_clip[1], depth, uv_bottom_u, uv_bottom_v, brightness_bottom, brightness_bottom, brightness_bottom, alpha},
+        {left_clip[0], left_clip[1], depth, uv_left_u, uv_left_v, brightness_left, brightness_left, brightness_left, alpha},
+    }};
+
+    append_textured_vertices(vertices.data(), vertices.size());
+}
+
+void GameRenderer::draw_textured_iso_diamond_fog(
+    const sf::Vector2f& top,
+    const sf::Vector2f& right,
+    const sf::Vector2f& bottom,
+    const sf::Vector2f& left,
+    const float uv_top_u,
+    const float uv_top_v,
+    const float uv_right_u,
+    const float uv_right_v,
+    const float uv_bottom_u,
+    const float uv_bottom_v,
+    const float uv_left_u,
+    const float uv_left_v,
+    const float depth,
+    const float self_brightness,
+    const float corner_top,
+    const float corner_right,
+    const float corner_bottom,
+    const float corner_left,
+    const bool use_corner_fade,
+    const float alpha_top,
+    const float alpha_right,
+    const float alpha_bottom,
+    const float alpha_left) const
+{
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return;
+    }
+
+    const bool alphas_vary = alpha_top != alpha_right || alpha_right != alpha_bottom
+        || alpha_bottom != alpha_left;
+    const bool brightness_varies = corner_top != self_brightness
+        || corner_right != self_brightness
+        || corner_bottom != self_brightness
+        || corner_left != self_brightness;
+    const bool needs_center_fan = alphas_vary || (use_corner_fade && brightness_varies);
+
+    if (!needs_center_fan) {
+        draw_textured_quad(
+            top,
+            right,
+            bottom,
+            left,
+            uv_top_u,
+            uv_top_v,
+            uv_right_u,
+            uv_right_v,
+            uv_bottom_u,
+            uv_bottom_v,
+            uv_left_u,
+            uv_left_v,
+            depth,
+            self_brightness,
+            self_brightness,
+            self_brightness,
+            self_brightness,
+            alpha_top);
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    const float center_alpha = (alpha_top + alpha_right + alpha_bottom + alpha_left) * 0.25F;
+
+    const auto to_clip = [&](const sf::Vector2f& screen_pos) {
+        return std::array<float, 2>{
+            (screen_pos.x / window_width) * 2.0F - 1.0F,
+            1.0F - (screen_pos.y / window_height) * 2.0F,
+        };
+    };
+
+    const auto make_vertex = [&](
+        const sf::Vector2f& screen_pos,
+        const float uv_u,
+        const float uv_v,
+        const float brightness,
+        const float vertex_alpha) {
+        const auto clip = to_clip(screen_pos);
+        return TexturedSceneVertex{
+            clip[0],
+            clip[1],
+            depth,
+            uv_u,
+            uv_v,
+            brightness,
+            brightness,
+            brightness,
+            vertex_alpha,
+        };
+    };
+
+    const sf::Vector2f center{
+        (top.x + right.x + bottom.x + left.x) * 0.25F,
+        (top.y + right.y + bottom.y + left.y) * 0.25F,
+    };
+    const float uv_center_u = 0.5F;
+    const float uv_center_v = (uv_top_v + uv_bottom_v) * 0.5F;
+
+    const TexturedSceneVertex center_vertex =
+        make_vertex(center, uv_center_u, uv_center_v, self_brightness, center_alpha);
+    const TexturedSceneVertex top_vertex =
+        make_vertex(top, uv_top_u, uv_top_v, corner_top, alpha_top);
+    const TexturedSceneVertex right_vertex =
+        make_vertex(right, uv_right_u, uv_right_v, corner_right, alpha_right);
+    const TexturedSceneVertex bottom_vertex =
+        make_vertex(bottom, uv_bottom_u, uv_bottom_v, corner_bottom, alpha_bottom);
+    const TexturedSceneVertex left_vertex =
+        make_vertex(left, uv_left_u, uv_left_v, corner_left, alpha_left);
+
+    const std::array<TexturedSceneVertex, 12> vertices = {{
+        center_vertex,
+        top_vertex,
+        right_vertex,
+        center_vertex,
+        right_vertex,
+        bottom_vertex,
+        center_vertex,
+        bottom_vertex,
+        left_vertex,
+        center_vertex,
+        left_vertex,
+        top_vertex,
+    }};
+
+    append_textured_vertices(vertices.data(), vertices.size());
+}
+
+void GameRenderer::draw_iso_diamond_sprite(
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float brightness,
+    const std::vector<float>* fog_vertex_brightness,
+    const int map_width,
+    const int map_height,
+    const float alpha,
+    const float* corner_alphas) const
+{
+    if (scene_textures_.texture_id(texture_kind) == 0U) {
+        return;
+    }
+
+    const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
+    const float uv_left = constants::RENDER_GRASS_UV_LEFT;
+    const float uv_top = constants::RENDER_GRASS_UV_TOP;
+    const float uv_right = constants::RENDER_GRASS_UV_RIGHT;
+    const float uv_bottom = constants::RENDER_GRASS_UV_BOTTOM;
+    const float mid_v = (uv_top + uv_bottom) * 0.5F;
+    const auto image_v_to_gl = [](const float image_v_from_top) {
+        return 1.0F - image_v_from_top;
+    };
+    const float uv_top_gl = image_v_to_gl(uv_top);
+    const float uv_right_gl = image_v_to_gl(mid_v);
+    const float uv_bottom_gl = image_v_to_gl(uv_bottom);
+    const float uv_left_gl = image_v_to_gl(mid_v);
+
+    const std::array<float, 3> depth = camera_.world_to_clip(
+        static_cast<float>(grid_x) + 0.5F,
+        constants::RENDER_GROUND_SPRITE_SORT_Y,
+        static_cast<float>(grid_y) + 0.5F);
+
+    float corner_top = brightness;
+    float corner_right = brightness;
+    float corner_bottom = brightness;
+    float corner_left = brightness;
+    float center_brightness = brightness;
+    const bool use_corner_fade = fog_vertex_brightness != nullptr
+        && map_width > 0
+        && map_height > 0;
+    if (use_corner_fade) {
+        const FogTileCornerBrightness corner_brightness = fog_tile_corner_brightness_from_vertices(
+            *fog_vertex_brightness,
+            map_width,
+            map_height,
+            grid_x,
+            grid_y);
+        corner_top = corner_brightness.top;
+        corner_right = corner_brightness.right;
+        corner_bottom = corner_brightness.bottom;
+        corner_left = corner_brightness.left;
+        center_brightness =
+            (corner_top + corner_right + corner_bottom + corner_left) * 0.25F;
+    }
+
+    float alpha_top = alpha;
+    float alpha_right = alpha;
+    float alpha_bottom = alpha;
+    float alpha_left = alpha;
+    if (corner_alphas != nullptr) {
+        alpha_top = corner_alphas[0];
+        alpha_right = corner_alphas[1];
+        alpha_bottom = corner_alphas[2];
+        alpha_left = corner_alphas[3];
+    }
+    const bool use_alpha_fade = alpha_top != alpha_right || alpha_right != alpha_bottom
+        || alpha_bottom != alpha_left;
+
+    draw_textured_iso_diamond_fog(
+        corners.top,
+        corners.right,
+        corners.bottom,
+        corners.left,
+        0.5F,
+        uv_top_gl,
+        uv_right,
+        uv_right_gl,
+        0.5F,
+        uv_bottom_gl,
+        uv_left,
+        uv_left_gl,
+        depth[2],
+        center_brightness,
+        corner_top,
+        corner_right,
+        corner_bottom,
+        corner_left,
+        use_corner_fade || use_alpha_fade,
+        alpha_top,
+        alpha_right,
+        alpha_bottom,
+        alpha_left);
+}
+
+void GameRenderer::draw_iso_object_sprite(
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float width_scale,
+    const float sort_y,
+    const float brightness,
+    const float offset_x_tiles,
+    const float offset_y_tiles,
+    const int frame_index,
+    const int frame_count,
+    const float tint_r,
+    const float tint_g,
+    const float tint_b) const
+{
+    const unsigned int texture_id = scene_textures_.texture_id(texture_kind);
+    if (texture_id == 0U) {
+        return;
+    }
+
+    const int frames = std::max(1, frame_count);
+    const int frame = std::clamp(frame_index, 0, frames - 1);
+    const float world_x = static_cast<float>(grid_x) + 0.5F + offset_x_tiles;
+    const float world_z = static_cast<float>(grid_y) + 0.5F + offset_y_tiles;
+    const sf::Vector2f anchor = camera_.world_to_screen(world_x, 0.0F, world_z);
+    const float tile_width = camera_.tile_width() * width_scale;
+    const float sprite_height =
+        tile_width * scene_textures_.aspect_ratio(texture_kind) * static_cast<float>(frames);
+    const float screen_left = anchor.x - tile_width * 0.5F;
+    const float screen_top = anchor.y - sprite_height;
+
+    const std::array<float, 3> depth = camera_.world_to_clip(world_x, sort_y, world_z);
+    const float frame_width = 1.0F / static_cast<float>(frames);
+    const float uv_left = static_cast<float>(frame) * frame_width;
+
+    draw_screen_sprite(
+        screen_left,
+        screen_top,
+        tile_width,
+        sprite_height,
+        depth[2],
+        texture_id,
+        brightness * tint_r,
+        brightness * tint_g,
+        brightness * tint_b,
+        1.0F,
+        uv_left,
+        uv_left + frame_width);
+}
+
+void GameRenderer::queue_iso_object_sprite(
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float width_scale,
+    const float brightness,
+    const float sort_key,
+    const float offset_x_tiles,
+    const float offset_y_tiles,
+    const int frame_index,
+    const int frame_count,
+    const float tint_r,
+    const float tint_g,
+    const float tint_b) const
+{
+    if (scene_textures_.texture_id(texture_kind) == 0U) {
+        return;
+    }
+
+    pending_iso_sprites_.push_back(
+        PendingIsoSpriteDraw{
+            sort_key,
+            grid_x,
+            grid_y,
+            texture_kind,
+            width_scale,
+            brightness,
+            tint_r,
+            tint_g,
+            tint_b,
+            offset_x_tiles,
+            offset_y_tiles,
+            frame_index,
+            frame_count,
+        });
+}
+
+void GameRenderer::queue_unit_draw(const PendingUnitDraw& draw) const
+{
+    pending_unit_draws_.push_back(draw);
+}
+
+void GameRenderer::flush_pending_depth_sorted_draws(unsigned int& active_textured_batch) const
+{
+    if (pending_iso_sprites_.empty() && pending_unit_draws_.empty()) {
+        return;
+    }
+
+    enum class PendingDrawKind {
+        IsoSprite,
+        Unit,
+    };
+
+    struct CombinedDraw {
+        float sort_key{0.0F};
+        PendingDrawKind kind{PendingDrawKind::IsoSprite};
+        std::size_t index{0U};
+    };
+
+    std::vector<CombinedDraw> combined_draws{};
+    combined_draws.reserve(pending_iso_sprites_.size() + pending_unit_draws_.size());
+    for (std::size_t index = 0U; index < pending_iso_sprites_.size(); ++index) {
+        combined_draws.push_back(
+            CombinedDraw{
+                pending_iso_sprites_[index].sort_key,
+                PendingDrawKind::IsoSprite,
+                index,
+            });
+    }
+    for (std::size_t index = 0U; index < pending_unit_draws_.size(); ++index) {
+        combined_draws.push_back(
+            CombinedDraw{
+                pending_unit_draws_[index].sort_key,
+                PendingDrawKind::Unit,
+                index,
+            });
+    }
+
+    std::sort(
+        combined_draws.begin(),
+        combined_draws.end(),
+        [](const CombinedDraw& left, const CombinedDraw& right) {
+            return left.sort_key < right.sort_key;
+        });
+
+    const auto flush_textured_batch_if_needed = [&](const unsigned int texture_id) {
+        if (texture_id == 0U) {
+            return;
+        }
+
+        if (active_textured_batch != 0U && active_textured_batch != texture_id) {
+            flush_textured_scene_batch(active_textured_batch);
+        }
+
+        active_textured_batch = texture_id;
+    };
+
+    const auto finish_textured_batch = [&]() {
+        if (active_textured_batch != 0U) {
+            flush_textured_scene_batch(active_textured_batch);
+            active_textured_batch = 0U;
+        }
+    };
+
+    glDisable(GL_DEPTH_TEST);
+    for (const CombinedDraw& draw : combined_draws) {
+        if (draw.kind == PendingDrawKind::IsoSprite) {
+            if (!scene_batch_.empty()) {
+                flush_scene_batch();
+            }
+
+            const PendingIsoSpriteDraw& iso_draw = pending_iso_sprites_[draw.index];
+            flush_textured_batch_if_needed(scene_textures_.texture_id(iso_draw.texture_kind));
+            const bool is_building_sprite = is_textured_building_kind(iso_draw.texture_kind);
+            draw_iso_object_sprite(
+                iso_draw.grid_x,
+                iso_draw.grid_y,
+                iso_draw.texture_kind,
+                iso_draw.width_scale,
+                is_building_sprite ? constants::RENDER_BUILDING_SPRITE_SORT_Y
+                                   : constants::RENDER_TREE_SPRITE_SORT_Y,
+                iso_draw.brightness,
+                iso_draw.offset_x_tiles,
+                iso_draw.offset_y_tiles,
+                iso_draw.frame_index,
+                iso_draw.frame_count,
+                iso_draw.tint_r,
+                iso_draw.tint_g,
+                iso_draw.tint_b);
+            continue;
+        }
+
+        finish_textured_batch();
+
+        if (!scene_batch_.empty()) {
+            flush_scene_batch();
+        }
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        const PendingUnitDraw& unit_draw = pending_unit_draws_[draw.index];
+        draw_entity_cylinder(
+            unit_draw.world_x,
+            unit_draw.world_z,
+            unit_draw.height,
+            unit_draw.radius,
+            unit_draw.r,
+            unit_draw.g,
+            unit_draw.b);
+        if (unit_draw.draw_hat) {
+            const float hat_total =
+                unit_draw.height * (1.0F + constants::RENDER_MAGE_HAT_HEIGHT_SCALE);
+            const float hat_start = unit_draw.height / hat_total;
+            draw_entity_cylinder(
+                unit_draw.world_x,
+                unit_draw.world_z,
+                hat_total,
+                unit_draw.radius * constants::RENDER_MAGE_HAT_SCALE,
+                unit_draw.silhouette_r,
+                unit_draw.silhouette_g,
+                unit_draw.silhouette_b,
+                hat_start,
+                1.0F);
+        }
+        if (!scene_batch_.empty()) {
+            flush_scene_batch();
+        }
+        glDisable(GL_DEPTH_TEST);
+    }
+    finish_textured_batch();
+    glEnable(GL_DEPTH_TEST);
+
+    pending_iso_sprites_.clear();
+    pending_unit_draws_.clear();
+}
+
+std::vector<OccluderSprite> GameRenderer::collect_unit_front_occluder_sprites(
+    const float world_x,
+    const float world_z,
+    const sim::components::MapGrid& map,
+    const std::vector<sim::components::BuildingFootprint>& building_footprints,
+    const std::vector<core::GridPos>& building_anchors,
+    const std::vector<OccluderSprite>& building_sprites,
+    const std::vector<std::uint8_t>* fog_visible,
+    const std::vector<std::uint8_t>* fog_explored) const
+{
+    std::vector<OccluderSprite> occluder_sprites{};
+    const int unit_tile_x = static_cast<int>(std::floor(world_x));
+    const int unit_tile_y = static_cast<int>(std::floor(world_z));
+    const int unit_sort = unit_tile_x + unit_tile_y;
+    const core::GridPos unit_cell{unit_tile_x, unit_tile_y};
+
+    const auto add_sprite = [&](const OccluderSprite& sprite) {
+        if (scene_textures_.texture_id(sprite.texture_kind) == 0U) {
+            return;
+        }
+
+        if (!unit_screen_overlaps_iso_sprite(
+                world_x,
+                world_z,
+                sprite.grid_x,
+                sprite.grid_y,
+                sprite.texture_kind,
+                sprite.width_scale,
+                sprite.offset_x_tiles,
+                sprite.offset_y_tiles)) {
+            return;
+        }
+
+        occluder_sprites.push_back(sprite);
+    };
+
+    for (int offset_y = -constants::RENDER_OCCLUSION_PROBE_RADIUS;
+         offset_y <= constants::RENDER_OCCLUSION_PROBE_RADIUS;
+         ++offset_y) {
+        for (int offset_x = -constants::RENDER_OCCLUSION_PROBE_RADIUS;
+             offset_x <= constants::RENDER_OCCLUSION_PROBE_RADIUS;
+             ++offset_x) {
+            const core::GridPos cell{unit_tile_x + offset_x, unit_tile_y + offset_y};
+            if (!core::is_inside_grid(cell, map.width, map.height)) {
+                continue;
+            }
+
+            if (!iso_tile_intersects_window(
+                    cell.x, cell.y, constants::RENDER_OBJECT_SCREEN_CULL_PAD_TILES)) {
+                continue;
+            }
+
+            if (fog_visible != nullptr && fog_explored != nullptr
+                && is_fog_tile_unexplored(
+                    *fog_visible,
+                    *fog_explored,
+                    map.width,
+                    map.height,
+                    local_player_slot_,
+                    cell.x,
+                    cell.y)) {
+                continue;
+            }
+
+            if (cell.x + cell.y <= unit_sort) {
+                continue;
+            }
+
+            if (core::chebyshev_distance(cell, unit_cell) > constants::RENDER_OCCLUSION_PROBE_RADIUS) {
+                continue;
+            }
+
+            if (cell_covered_by_building_footprint(
+                    cell.x, cell.y, building_anchors, building_footprints)) {
+                continue;
+            }
+
+            const int index = core::grid_index(cell, map.width);
+            const sim::components::TileType tile = map.tiles[static_cast<std::size_t>(index)];
+            const bool is_forest = tile == sim::components::TileType::Forest
+                && static_cast<std::size_t>(index) < map.forest_wood.size()
+                && map.forest_wood[static_cast<std::size_t>(index)] > 0;
+            const bool is_berries =
+                (tile == sim::components::TileType::Berries
+                    || tile == sim::components::TileType::Blueberries)
+                && static_cast<std::size_t>(index) < map.bush_food.size()
+                && map.bush_food[static_cast<std::size_t>(index)] > 0;
+            if (!is_forest && !is_berries) {
+                continue;
+            }
+
+            OccluderSprite sprite{};
+            sprite.grid_x = cell.x;
+            sprite.grid_y = cell.y;
+            sprite.sort_y = constants::RENDER_TREE_SPRITE_SORT_Y;
+            if (is_forest) {
+                sprite.texture_kind = forest_tree_texture_for_cell(
+                    cell.x,
+                    cell.y,
+                    sim::components::ground_at(map, static_cast<std::size_t>(index)));
+                sprite.width_scale = tree_sprite_width_scale(sprite.texture_kind);
+                const auto offset = tree_sprite_offset_for_kind(sprite.texture_kind);
+                sprite.offset_x_tiles = offset.first;
+                sprite.offset_y_tiles = offset.second;
+            }
+            else {
+                sprite.texture_kind = tile == sim::components::TileType::Blueberries
+                    ? SceneTextureKind::Blueberries
+                    : SceneTextureKind::Berries;
+                sprite.width_scale = constants::RENDER_TREE_SPRITE_WIDTH_SCALE;
+                sprite.offset_x_tiles = constants::RENDER_BERRY_SPRITE_OFFSET_X;
+                sprite.offset_y_tiles = constants::RENDER_BERRY_SPRITE_OFFSET_Y;
+            }
+            add_sprite(sprite);
+        }
+    }
+
+    const std::size_t building_count = std::min(building_anchors.size(), building_footprints.size());
+    const std::size_t sprite_count = std::min(building_count, building_sprites.size());
+    for (std::size_t index = 0U; index < sprite_count; ++index) {
+        const core::GridPos& anchor_cell = building_anchors[index];
+        const sim::components::BuildingFootprint& footprint = building_footprints[index];
+        const OccluderSprite& sprite = building_sprites[index];
+        const sim::components::GridPosition anchor{anchor_cell};
+        if (sim::components::chebyshev_distance_to_footprint(unit_cell, anchor, footprint)
+            > constants::RENDER_OCCLUSION_PROBE_RADIUS) {
+            continue;
+        }
+
+        if (unit_draws_in_front_of_building(world_x, world_z, anchor_cell, footprint, sprite)) {
+            continue;
+        }
+
+        add_sprite(sprite);
+    }
+
+    return occluder_sprites;
+}
+
+void GameRenderer::apply_iso_tile_scissor(
+    const int grid_x,
+    const int grid_y,
+    const float vertical_extent_scale,
+    const SceneTextureKind aspect_kind) const
+{
+    if (window_size_.x == 0U || window_size_.y == 0U) {
+        return;
+    }
+
+    const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
+    const float tile_width = camera_.tile_width()
+        * (aspect_kind == SceneTextureKind::TownCenter
+            ? static_cast<float>(constants::TOWN_CENTER_FOOTPRINT_TILES)
+            : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
+    const float sprite_height = tile_width * scene_textures_.aspect_ratio(aspect_kind)
+        * vertical_extent_scale;
+
+    const float min_x = std::min(
+        std::min(corners.top.x, corners.right.x),
+        std::min(corners.bottom.x, corners.left.x));
+    const float max_x = std::max(
+        std::max(corners.top.x, corners.right.x),
+        std::max(corners.bottom.x, corners.left.x));
+    const float min_y = corners.top.y - sprite_height;
+    const float max_y = std::max(
+        std::max(corners.top.y, corners.right.y),
+        std::max(corners.bottom.y, corners.left.y));
+
+    const float window_height = static_cast<float>(window_size_.y);
+    const int scissor_x = std::max(0, static_cast<int>(std::floor(min_x)));
+    const int scissor_y = std::max(0, static_cast<int>(std::floor(window_height - max_y)));
+    const int scissor_w = std::max(
+        1,
+        static_cast<int>(std::ceil(max_x - min_x)));
+    const int scissor_h = std::max(
+        1,
+        static_cast<int>(std::ceil(max_y - min_y)));
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(scissor_x, scissor_y, scissor_w, scissor_h);
+}
+
+void GameRenderer::clear_screen_scissor() const
+{
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+}
+
+void GameRenderer::draw_unit_occlusion_silhouette(
+    const float world_x,
+    const float world_z,
+    const float r,
+    const float g,
+    const float b,
+    const std::vector<OccluderSprite>& occluder_sprites) const
+{
+    if (occluder_sprites.empty()) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glEnable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+
+    unsigned int active_texture = 0U;
+    for (const OccluderSprite& sprite : occluder_sprites) {
+        const unsigned int texture_id = scene_textures_.texture_id(sprite.texture_kind);
+        if (texture_id == 0U) {
+            continue;
+        }
+
+        if (active_texture != 0U && active_texture != texture_id) {
+            flush_textured_scene_batch(active_texture);
+        }
+
+        active_texture = texture_id;
+        draw_iso_object_sprite(
+            sprite.grid_x,
+            sprite.grid_y,
+            sprite.texture_kind,
+            sprite.width_scale,
+            sprite.sort_y,
+            1.0F,
+            sprite.offset_x_tiles,
+            sprite.offset_y_tiles);
+    }
+    if (active_texture != 0U) {
+        flush_textured_scene_batch(active_texture);
+    }
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 1, 0xFF);
+    glStencilMask(0x00);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    draw_unit_projected_silhouette_outline_immediate(world_x, world_z, r, g, b);
+
+    glDisable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+    glDepthMask(GL_TRUE);
 }
 
 void GameRenderer::draw_scene_triangles(
@@ -787,11 +3626,15 @@ void GameRenderer::draw_extruded_tile(
     draw_scene_quad(gx, 0.0F, gy, gx, 0.0F, gy + 1.0F, gx, top, gy + 1.0F, gx, top, gy, r, g, b, side_light);
 }
 
-void GameRenderer::draw_tile_grid_lines(const int grid_x, const int grid_y, const float extrude_height) const
+void GameRenderer::draw_tile_grid_lines(
+    const int grid_x,
+    const int grid_y,
+    const float extrude_height,
+    const float line_lift) const
 {
     const float gx = static_cast<float>(grid_x);
     const float gy = static_cast<float>(grid_y);
-    const float top = extrude_height + constants::RENDER_GRID_LINE_LIFT;
+    const float top = extrude_height + line_lift;
     const float width = constants::RENDER_GRID_LINE_WIDTH;
     const float r = constants::RENDER_GRID_LINE_R;
     const float g = constants::RENDER_GRID_LINE_G;
@@ -833,6 +3676,75 @@ void GameRenderer::draw_tile_grid_lines(const int grid_x, const int grid_y, cons
         g,
         b,
         1.0F);
+}
+
+void GameRenderer::draw_iso_tile_grid_lines(const int map_width, const int map_height) const
+{
+    if (map_width <= 0 || map_height <= 0) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const VisibleGridRange range = camera_.visible_grid_range(
+        map_width,
+        map_height,
+        constants::RENDER_GROUND_SCREEN_CULL_PAD_TILES);
+    const float r = constants::RENDER_GRID_LINE_R;
+    const float g = constants::RENDER_GRID_LINE_G;
+    const float b = constants::RENDER_GRID_LINE_B;
+    const float depth = -0.99F;
+
+    thread_local std::vector<SceneVertex> vertices{};
+    vertices.clear();
+    const int tiles_x = std::max(0, range.max_x - range.min_x + 1);
+    const int tiles_y = std::max(0, range.max_y - range.min_y + 1);
+    vertices.reserve(static_cast<std::size_t>((tiles_x + 1) * tiles_y + tiles_x * (tiles_y + 1)) * 2U);
+
+    const auto push_edge = [&](const sf::Vector2f& from, const sf::Vector2f& to) {
+        vertices.push_back(SceneVertex{to_ndc_x(from.x), to_ndc_y(from.y), depth, r, g, b});
+        vertices.push_back(SceneVertex{to_ndc_x(to.x), to_ndc_y(to.y), depth, r, g, b});
+    };
+
+    for (int y = range.min_y; y <= range.max_y; ++y) {
+        for (int x = range.min_x; x <= range.max_x; ++x) {
+            const IsoTileScreenCorners corners = camera_.grid_iso_corners(x, y);
+            push_edge(corners.top, corners.right);
+            push_edge(corners.left, corners.top);
+            if (x == range.max_x) {
+                push_edge(corners.right, corners.bottom);
+            }
+            if (y == range.max_y) {
+                push_edge(corners.bottom, corners.left);
+            }
+        }
+    }
+
+    if (vertices.empty()) {
+        return;
+    }
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(vertices.size() * sizeof(SceneVertex)),
+        vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(vertices.size()));
+    glBindVertexArray(0U);
 }
 
 void GameRenderer::draw_entity_prism(
@@ -946,10 +3858,15 @@ void GameRenderer::draw_entity_cylinder(
     const float radius,
     const float r,
     const float g,
-    const float b) const
+    const float b,
+    const float height_start,
+    const float height_end) const
 {
     const float base = constants::RENDER_ENTITY_BASE_LIFT;
-    const float top = base + height;
+    const float clamped_start = std::clamp(height_start, 0.0F, 1.0F);
+    const float clamped_end = std::clamp(height_end, clamped_start, 1.0F);
+    const float body_base = base + height * clamped_start;
+    const float top = base + height * clamped_end;
     const float top_light = constants::RENDER_AMBIENT_LIGHT;
     const float side_light = constants::RENDER_AMBIENT_LIGHT * constants::RENDER_SIDE_LIGHT_FACTOR;
     const float lit_top_r = r * top_light;
@@ -979,10 +3896,10 @@ void GameRenderer::draw_entity_cylinder(
         append_scene_vertices(top_triangle.data(), top_triangle.size());
 
         const std::array<SceneVertex, 6> side_quad = {
-            make_scene_vertex(ax, base, az, lit_side_r, lit_side_g, lit_side_b),
-            make_scene_vertex(bx, base, bz, lit_side_r, lit_side_g, lit_side_b),
+            make_scene_vertex(ax, body_base, az, lit_side_r, lit_side_g, lit_side_b),
+            make_scene_vertex(bx, body_base, bz, lit_side_r, lit_side_g, lit_side_b),
             make_scene_vertex(bx, top, bz, lit_side_r, lit_side_g, lit_side_b),
-            make_scene_vertex(ax, base, az, lit_side_r, lit_side_g, lit_side_b),
+            make_scene_vertex(ax, body_base, az, lit_side_r, lit_side_g, lit_side_b),
             make_scene_vertex(bx, top, bz, lit_side_r, lit_side_g, lit_side_b),
             make_scene_vertex(ax, top, az, lit_side_r, lit_side_g, lit_side_b),
         };
@@ -993,31 +3910,26 @@ void GameRenderer::draw_entity_cylinder(
 void GameRenderer::draw_ground_highlight(const SceneHighlight& highlight) const
 {
     const float half = 0.5F * highlight.scale;
-    const float outline_height = constants::RENDER_ENTITY_BASE_LIFT + 0.02F;
+    const float outline_height = constants::RENDER_GROUND_HIGHLIGHT_LIFT;
+    const float line_width = constants::RENDER_HIGHLIGHT_LINE_WIDTH_TILES;
 
-    draw_scene_quad(
+    draw_scene_rect_outline(
         highlight.world_x - half,
-        outline_height,
         highlight.world_z - half,
         highlight.world_x + half,
-        outline_height,
-        highlight.world_z - half,
-        highlight.world_x + half,
-        outline_height,
         highlight.world_z + half,
-        highlight.world_x - half,
         outline_height,
-        highlight.world_z + half,
+        line_width,
         highlight.r,
         highlight.g,
-        highlight.b,
-        1.0F);
+        highlight.b);
 }
 
 void GameRenderer::draw_unit_ground_highlight(const SceneHighlight& highlight) const
 {
     const float radius = constants::RENDER_UNIT_RADIUS * highlight.scale;
-    const float outline_height = constants::RENDER_ENTITY_BASE_LIFT + 0.02F;
+    const float outline_height = constants::RENDER_GROUND_HIGHLIGHT_LIFT;
+    const float line_width = constants::RENDER_HIGHLIGHT_LINE_WIDTH_TILES;
 
     constexpr float k_two_pi = 6.2831853F;
     const int segments = constants::RENDER_CYLINDER_SEGMENTS;
@@ -1031,13 +3943,338 @@ void GameRenderer::draw_unit_ground_highlight(const SceneHighlight& highlight) c
         const float bx = highlight.world_x + std::cos(angle_b) * radius;
         const float bz = highlight.world_z + std::sin(angle_b) * radius;
 
-        const std::array<SceneVertex, 3> triangle = {
-            make_scene_vertex(highlight.world_x, outline_height, highlight.world_z, highlight.r, highlight.g, highlight.b),
-            make_scene_vertex(ax, outline_height, az, highlight.r, highlight.g, highlight.b),
-            make_scene_vertex(bx, outline_height, bz, highlight.r, highlight.g, highlight.b),
-        };
-        append_scene_vertices(triangle.data(), triangle.size());
+        draw_scene_line_xz(
+            ax,
+            az,
+            bx,
+            bz,
+            outline_height,
+            highlight.r,
+            highlight.g,
+            highlight.b,
+            line_width);
     }
+}
+
+void GameRenderer::draw_hitbox_overlays(
+    const sim::Simulation& simulation,
+    const float interpolation_alpha) const
+{
+    if (!show_hitboxes_) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+
+    const auto& registry = simulation.registry();
+    const float move_scale =
+        constants::MOVE_UNIT_COLLISION_RADIUS_TILES / constants::RENDER_UNIT_RADIUS;
+    const float melee_scale =
+        constants::MELEE_UNIT_COLLISION_RADIUS_TILES / constants::RENDER_UNIT_RADIUS;
+
+    const auto unit_view = registry.view<sim::components::UnitTag, sim::components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (unit_view.get<sim::components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+        draw_unit_ground_highlight(SceneHighlight{
+            world_x,
+            world_z,
+            constants::HITBOX_DEBUG_UNIT_MOVE_R,
+            constants::HITBOX_DEBUG_UNIT_MOVE_G,
+            constants::HITBOX_DEBUG_UNIT_MOVE_B,
+            move_scale,
+        });
+        draw_unit_ground_highlight(SceneHighlight{
+            world_x,
+            world_z,
+            constants::HITBOX_DEBUG_UNIT_MELEE_R,
+            constants::HITBOX_DEBUG_UNIT_MELEE_G,
+            constants::HITBOX_DEBUG_UNIT_MELEE_B,
+            melee_scale,
+        });
+    }
+
+    const auto building_view =
+        registry.view<sim::components::BuildingTag, sim::components::GridPosition>();
+    for (const entt::entity entity : building_view) {
+        const auto& anchor = building_view.get<sim::components::GridPosition>(entity);
+        sim::components::BuildingFootprint footprint{};
+        if (registry.any_of<sim::components::BuildingFootprint>(entity)) {
+            footprint = registry.get<sim::components::BuildingFootprint>(entity);
+        }
+        footprint = sim::components::effective_building_footprint(
+            footprint,
+            registry.any_of<sim::components::TownCenterTag>(entity));
+        draw_footprint_highlight(
+            anchor.cell.x,
+            anchor.cell.y,
+            footprint.width,
+            footprint.height,
+            constants::HITBOX_DEBUG_BUILDING_R,
+            constants::HITBOX_DEBUG_BUILDING_G,
+            constants::HITBOX_DEBUG_BUILDING_B,
+            1.0F);
+    }
+
+    const auto world_view = registry.view<sim::components::WorldTag, sim::components::MapGrid>();
+    if (world_view.begin() == world_view.end()) {
+        return;
+    }
+
+    const auto& map = world_view.get<sim::components::MapGrid>(*world_view.begin());
+    for (int y = 0; y < map.height; ++y) {
+        for (int x = 0; x < map.width; ++x) {
+            const int index = core::grid_index({x, y}, map.width);
+            const auto tile = map.tiles[static_cast<std::size_t>(index)];
+            bool blocked = false;
+            if (tile == sim::components::TileType::Forest) {
+                blocked = map.forest_wood[static_cast<std::size_t>(index)] > 0;
+            }
+            else if (tile == sim::components::TileType::Berries
+                || tile == sim::components::TileType::Blueberries) {
+                blocked = map.bush_food[static_cast<std::size_t>(index)] > 0;
+            }
+            else if (tile == sim::components::TileType::GoldMine) {
+                blocked = static_cast<std::size_t>(index) < map.mine_money.size()
+                    && map.mine_money[static_cast<std::size_t>(index)] > 0;
+            }
+
+            if (!blocked) {
+                continue;
+            }
+
+            draw_ground_highlight(SceneHighlight{
+                static_cast<float>(x) + 0.5F,
+                static_cast<float>(y) + 0.5F,
+                constants::HITBOX_DEBUG_RESOURCE_R,
+                constants::HITBOX_DEBUG_RESOURCE_G,
+                constants::HITBOX_DEBUG_RESOURCE_B,
+                1.0F,
+            });
+        }
+    }
+
+    flush_scene_batch();
+    glEnable(GL_DEPTH_TEST);
+}
+
+void GameRenderer::draw_hitbox_overlays_snapshot(
+    const SimRenderSnapshot& snapshot,
+    const float interpolation_alpha) const
+{
+    if (!show_hitboxes_) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+
+    const float move_scale =
+        constants::MOVE_UNIT_COLLISION_RADIUS_TILES / constants::RENDER_UNIT_RADIUS;
+    const float melee_scale =
+        constants::MELEE_UNIT_COLLISION_RADIUS_TILES / constants::RENDER_UNIT_RADIUS;
+
+    for (const RenderEntityPose& pose : snapshot.units) {
+        const auto [world_x, world_z] = interpolate_render_pose(pose, interpolation_alpha);
+        draw_unit_ground_highlight(SceneHighlight{
+            world_x,
+            world_z,
+            constants::HITBOX_DEBUG_UNIT_MOVE_R,
+            constants::HITBOX_DEBUG_UNIT_MOVE_G,
+            constants::HITBOX_DEBUG_UNIT_MOVE_B,
+            move_scale,
+        });
+        draw_unit_ground_highlight(SceneHighlight{
+            world_x,
+            world_z,
+            constants::HITBOX_DEBUG_UNIT_MELEE_R,
+            constants::HITBOX_DEBUG_UNIT_MELEE_G,
+            constants::HITBOX_DEBUG_UNIT_MELEE_B,
+            melee_scale,
+        });
+    }
+
+    for (const RenderEntityPose& pose : snapshot.buildings) {
+        draw_footprint_highlight(
+            pose.grid_x,
+            pose.grid_y,
+            pose.footprint_width,
+            pose.footprint_height,
+            constants::HITBOX_DEBUG_BUILDING_R,
+            constants::HITBOX_DEBUG_BUILDING_G,
+            constants::HITBOX_DEBUG_BUILDING_B,
+            1.0F);
+    }
+
+    for (int y = 0; y < snapshot.map_height; ++y) {
+        for (int x = 0; x < snapshot.map_width; ++x) {
+            const int index = core::grid_index({x, y}, snapshot.map_width);
+            if (index < 0 || index >= static_cast<int>(snapshot.tiles.size())) {
+                continue;
+            }
+
+            const auto tile = snapshot.tiles[static_cast<std::size_t>(index)];
+            bool blocked = false;
+            if (tile == sim::components::TileType::Forest) {
+                blocked = index < static_cast<int>(snapshot.forest_wood.size())
+                    && snapshot.forest_wood[static_cast<std::size_t>(index)] > 0;
+            }
+            else if (tile == sim::components::TileType::Berries
+                || tile == sim::components::TileType::Blueberries) {
+                blocked = index < static_cast<int>(snapshot.bush_food.size())
+                    && snapshot.bush_food[static_cast<std::size_t>(index)] > 0;
+            }
+            else if (tile == sim::components::TileType::GoldMine) {
+                blocked = index < static_cast<int>(snapshot.mine_money.size())
+                    && snapshot.mine_money[static_cast<std::size_t>(index)] > 0;
+            }
+
+            if (!blocked) {
+                continue;
+            }
+
+            draw_ground_highlight(SceneHighlight{
+                static_cast<float>(x) + 0.5F,
+                static_cast<float>(y) + 0.5F,
+                constants::HITBOX_DEBUG_RESOURCE_R,
+                constants::HITBOX_DEBUG_RESOURCE_G,
+                constants::HITBOX_DEBUG_RESOURCE_B,
+                1.0F,
+            });
+        }
+    }
+
+    flush_scene_batch();
+    glEnable(GL_DEPTH_TEST);
+}
+
+void GameRenderer::draw_debug_path_for_unit(
+    const float world_x,
+    const float world_z,
+    const std::vector<core::GridPos>& cells,
+    int next_index) const
+{
+    if (next_index < 0) {
+        next_index = 0;
+    }
+
+    const int cell_count = static_cast<int>(cells.size());
+    if (next_index >= cell_count) {
+        return;
+    }
+
+    sf::Vector2f previous = world_to_screen(
+        world_x,
+        constants::RENDER_ENTITY_BASE_LIFT,
+        world_z);
+
+    for (int i = next_index; i < cell_count; ++i) {
+        const core::GridPos cell = cells[static_cast<std::size_t>(i)];
+        const sf::Vector2f waypoint = tile_center_screen(
+            cell.x,
+            cell.y,
+            constants::RENDER_ENTITY_BASE_LIFT);
+        draw_screen_line_immediate(
+            previous.x,
+            previous.y,
+            waypoint.x,
+            waypoint.y,
+            constants::RENDER_DEBUG_PATH_R,
+            constants::RENDER_DEBUG_PATH_G,
+            constants::RENDER_DEBUG_PATH_B);
+
+        const IsoTileScreenCorners corners = camera_.grid_iso_corners(cell.x, cell.y);
+        draw_screen_line_immediate(
+            corners.top.x,
+            corners.top.y,
+            corners.right.x,
+            corners.right.y,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_R,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_G,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_B);
+        draw_screen_line_immediate(
+            corners.right.x,
+            corners.right.y,
+            corners.bottom.x,
+            corners.bottom.y,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_R,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_G,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_B);
+        draw_screen_line_immediate(
+            corners.bottom.x,
+            corners.bottom.y,
+            corners.left.x,
+            corners.left.y,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_R,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_G,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_B);
+        draw_screen_line_immediate(
+            corners.left.x,
+            corners.left.y,
+            corners.top.x,
+            corners.top.y,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_R,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_G,
+            constants::RENDER_DEBUG_PATH_WAYPOINT_B);
+
+        previous = waypoint;
+    }
+}
+
+void GameRenderer::draw_debug_path_overlays(
+    const sim::Simulation& simulation,
+    const float interpolation_alpha) const
+{
+    if (!show_selection_debug_) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+
+    const auto& registry = simulation.registry();
+    const auto unit_view = registry.view<
+        sim::components::UnitTag,
+        sim::components::MovePath,
+        sim::components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (unit_view.get<sim::components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        const auto& path = unit_view.get<sim::components::MovePath>(entity);
+        const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+        draw_debug_path_for_unit(world_x, world_z, path.cells, path.next_index);
+    }
+
+    glEnable(GL_DEPTH_TEST);
+}
+
+void GameRenderer::draw_debug_path_overlays_snapshot(
+    const SimRenderSnapshot& snapshot,
+    const float interpolation_alpha) const
+{
+    if (!show_selection_debug_) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+
+    for (const RenderEntityPose& pose : snapshot.units) {
+        if (pose.debug_path_cells.empty()) {
+            continue;
+        }
+
+        const auto [world_x, world_z] = interpolate_render_pose(pose, interpolation_alpha);
+        draw_debug_path_for_unit(
+            world_x,
+            world_z,
+            pose.debug_path_cells,
+            pose.debug_path_next_index);
+    }
+
+    glEnable(GL_DEPTH_TEST);
 }
 
 void GameRenderer::draw_selection_outline(const float world_x, const float world_z) const
@@ -1055,15 +4292,661 @@ void GameRenderer::draw_selection_outline(const float world_x, const float world
 
 void GameRenderer::draw_unit_selection_outline(const float world_x, const float world_z) const
 {
-    draw_unit_ground_highlight(
-        SceneHighlight{
+    const auto& rgb =
+        sim::components::player_slot_rgb(g_draw_player_color_indices, local_player_slot_);
+    draw_iso_range_circle(
+        world_x,
+        world_z,
+        constants::RENDER_UNIT_RADIUS,
+        rgb[0],
+        rgb[1],
+        rgb[2]);
+}
+
+void GameRenderer::draw_footprint_highlight(
+    const int anchor_x,
+    const int anchor_y,
+    const int width,
+    const int height,
+    const float r,
+    const float g,
+    const float b,
+    const float scale) const
+{
+    const float expand = (scale - 1.0F) * 0.5F;
+    const float outline_height = constants::RENDER_GROUND_HIGHLIGHT_LIFT;
+    const float line_width = constants::RENDER_HIGHLIGHT_LINE_WIDTH_TILES;
+
+    draw_scene_rect_outline(
+        static_cast<float>(anchor_x) - expand,
+        static_cast<float>(anchor_y) - expand,
+        static_cast<float>(anchor_x + width) + expand,
+        static_cast<float>(anchor_y + height) + expand,
+        outline_height,
+        line_width,
+        r,
+        g,
+        b);
+}
+
+void GameRenderer::draw_footprint_selection_outline(
+    const int anchor_x,
+    const int anchor_y,
+    const int width,
+    const int height) const
+{
+    draw_footprint_highlight(
+        anchor_x,
+        anchor_y,
+        width,
+        height,
+        constants::RENDER_SELECTION_HIGHLIGHT_R,
+        constants::RENDER_SELECTION_HIGHLIGHT_G,
+        constants::RENDER_SELECTION_HIGHLIGHT_B,
+        constants::RENDER_SELECTION_OUTLINE_SCALE);
+}
+
+float GameRenderer::unit_depth_sort_key(const float world_x, const float world_z) const
+{
+    return static_cast<float>(
+        static_cast<int>(std::floor(world_x)) + static_cast<int>(std::floor(world_z)))
+        + constants::RENDER_UNIT_SORT_BIAS;
+}
+
+void GameRenderer::iso_object_sprite_screen_rect(
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float width_scale,
+    const float offset_x_tiles,
+    const float offset_y_tiles,
+    float& min_x,
+    float& min_y,
+    float& max_x,
+    float& max_y) const
+{
+    const float world_x = static_cast<float>(grid_x) + 0.5F + offset_x_tiles;
+    const float world_z = static_cast<float>(grid_y) + 0.5F + offset_y_tiles;
+    const sf::Vector2f anchor = camera_.world_to_screen(world_x, 0.0F, world_z);
+    const float tile_width = camera_.tile_width() * width_scale;
+    const float sprite_height = tile_width * scene_textures_.aspect_ratio(texture_kind);
+    min_x = anchor.x - tile_width * 0.5F;
+    max_x = min_x + tile_width;
+    min_y = anchor.y - sprite_height;
+    max_y = anchor.y;
+}
+
+bool GameRenderer::unit_screen_overlaps_iso_sprite(
+    const float world_x,
+    const float world_z,
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float width_scale,
+    const float offset_x_tiles,
+    const float offset_y_tiles) const
+{
+    float unit_min_x = 0.0F;
+    float unit_min_y = 0.0F;
+    float unit_max_x = 0.0F;
+    float unit_max_y = 0.0F;
+    project_unit_screen_bounds(world_x, world_z, unit_min_x, unit_min_y, unit_max_x, unit_max_y);
+
+    float sprite_min_x = 0.0F;
+    float sprite_min_y = 0.0F;
+    float sprite_max_x = 0.0F;
+    float sprite_max_y = 0.0F;
+    iso_object_sprite_screen_rect(
+        grid_x,
+        grid_y,
+        texture_kind,
+        width_scale,
+        offset_x_tiles,
+        offset_y_tiles,
+        sprite_min_x,
+        sprite_min_y,
+        sprite_max_x,
+        sprite_max_y);
+
+    return unit_max_x >= sprite_min_x
+        && unit_min_x <= sprite_max_x
+        && unit_max_y >= sprite_min_y
+        && unit_min_y <= sprite_max_y;
+}
+
+bool GameRenderer::unit_screen_is_in_front_of_building(
+    const float world_x,
+    const float world_z,
+    const core::GridPos& anchor,
+    const sim::components::BuildingFootprint& footprint) const
+{
+    const int width = std::max(1, footprint.width);
+    const int height = std::max(1, footprint.height);
+    const IsoTileScreenCorners left_tile =
+        camera_.grid_iso_corners(anchor.x, anchor.y + height - 1);
+    const IsoTileScreenCorners right_tile =
+        camera_.grid_iso_corners(anchor.x + width - 1, anchor.y);
+    const sf::Vector2f left = left_tile.left;
+    const sf::Vector2f right = right_tile.right;
+    const sf::Vector2f unit_feet = world_to_screen(world_x, 0.0F, world_z);
+    const float dx = right.x - left.x;
+    const float line_y = std::abs(dx) > constants::RENDER_ISO_FRONT_EDGE_DX_EPSILON
+        ? left.y + ((unit_feet.x - left.x) / dx) * (right.y - left.y)
+        : (left.y + right.y) * 0.5F;
+    const float slack = camera_.tile_height() * constants::RENDER_UNIT_BUILDING_FRONT_LINE_SLACK_TILES;
+    return unit_feet.y + slack >= line_y;
+}
+
+bool GameRenderer::unit_draws_in_front_of_building(
+    const float world_x,
+    const float world_z,
+    const core::GridPos& anchor,
+    const sim::components::BuildingFootprint& footprint,
+    const OccluderSprite& sprite) const
+{
+    if (!unit_screen_is_in_front_of_building(world_x, world_z, anchor, footprint)) {
+        return false;
+    }
+
+    return unit_screen_overlaps_iso_sprite(
+        world_x,
+        world_z,
+        sprite.grid_x,
+        sprite.grid_y,
+        sprite.texture_kind,
+        sprite.width_scale,
+        sprite.offset_x_tiles,
+        sprite.offset_y_tiles);
+}
+
+float GameRenderer::cap_unit_sort_below_buildings(
+    const float sort_key,
+    const float world_x,
+    const float world_z,
+    const std::vector<core::GridPos>& building_anchors,
+    const std::vector<sim::components::BuildingFootprint>& building_footprints,
+    const std::vector<OccluderSprite>& building_sprites) const
+{
+    float capped_sort = sort_key;
+    const std::size_t building_count = std::min(building_anchors.size(), building_footprints.size());
+    const std::size_t sprite_count = std::min(building_count, building_sprites.size());
+
+    for (std::size_t index = 0U; index < sprite_count; ++index) {
+        const core::GridPos& anchor_cell = building_anchors[index];
+        const sim::components::BuildingFootprint& footprint = building_footprints[index];
+        const OccluderSprite& sprite = building_sprites[index];
+        const bool sprite_overlap = unit_screen_overlaps_iso_sprite(
             world_x,
             world_z,
-            constants::RENDER_SELECTION_HIGHLIGHT_R,
-            constants::RENDER_SELECTION_HIGHLIGHT_G,
-            constants::RENDER_SELECTION_HIGHLIGHT_B,
-            constants::RENDER_SELECTION_OUTLINE_SCALE,
-        });
+            sprite.grid_x,
+            sprite.grid_y,
+            sprite.texture_kind,
+            sprite.width_scale,
+            sprite.offset_x_tiles,
+            sprite.offset_y_tiles);
+        if (!sprite_overlap) {
+            continue;
+        }
+
+        const float building_sort = building_footprint_sort_key(
+            anchor_cell.x,
+            anchor_cell.y,
+            footprint.width,
+            footprint.height,
+            false);
+        if (unit_screen_is_in_front_of_building(world_x, world_z, anchor_cell, footprint)) {
+            capped_sort = std::max(
+                capped_sort, building_sort + constants::RENDER_UNIT_IN_FRONT_OF_BUILDING_SORT);
+            continue;
+        }
+
+        capped_sort = std::min(
+            capped_sort, building_sort - constants::RENDER_UNIT_BEHIND_BUILDING_SORT);
+    }
+
+    return capped_sort;
+}
+
+void GameRenderer::draw_interaction_highlights(
+    const entt::registry* registry,
+    const SimRenderSnapshot* snapshot,
+    const std::vector<entt::entity>& selected_entities,
+    const entt::entity hover_unit,
+    const bool hover_unit_is_enemy,
+    const entt::entity hover_building,
+    const std::optional<core::GridPos> hover_resource_cell,
+    const std::optional<core::GridPos> selected_resource_cell,
+    const entt::entity selected_building,
+    const float interpolation_alpha) const
+{
+    const auto find_building_pose = [&](const entt::entity entity) -> const RenderEntityPose* {
+        if (snapshot == nullptr) {
+            return nullptr;
+        }
+
+        for (const RenderEntityPose& pose : snapshot->buildings) {
+            if (pose.entity == entity) {
+                return &pose;
+            }
+        }
+
+        return nullptr;
+    };
+
+    glDisable(GL_DEPTH_TEST);
+
+    if (registry != nullptr) {
+        for (const entt::entity entity : selected_entities) {
+            if (!registry->valid(entity) || !registry->any_of<sim::components::GridPosition>(entity)) {
+                continue;
+            }
+
+            if (registry->any_of<sim::components::UnitTag>(entity)) {
+                if (registry->any_of<sim::components::GarrisonedTag>(entity)) {
+                    continue;
+                }
+                const auto [world_x, world_z] = unit_render_world_xz(*registry, entity, interpolation_alpha);
+                draw_unit_selection_outline(world_x, world_z);
+                continue;
+            }
+
+            if (registry->any_of<sim::components::BuildingTag>(entity)) {
+                const auto& anchor = registry->get<sim::components::GridPosition>(entity);
+                const sim::components::BuildingFootprint footprint =
+                    resolve_registry_building_footprint(*registry, entity);
+                draw_footprint_selection_outline(
+                    anchor.cell.x,
+                    anchor.cell.y,
+                    footprint.width,
+                    footprint.height);
+            }
+        }
+
+        if (selected_resource_cell.has_value()) {
+            draw_selection_outline(
+                static_cast<float>(selected_resource_cell->x) + 0.5F,
+                static_cast<float>(selected_resource_cell->y) + 0.5F);
+        }
+
+        if (selected_building != entt::null && registry->valid(selected_building)
+            && registry->any_of<sim::components::GridPosition>(selected_building)) {
+            const auto& anchor = registry->get<sim::components::GridPosition>(selected_building);
+            const sim::components::BuildingFootprint footprint =
+                resolve_registry_building_footprint(*registry, selected_building);
+            draw_footprint_selection_outline(
+                anchor.cell.x,
+                anchor.cell.y,
+                footprint.width,
+                footprint.height);
+        }
+
+        const sim::components::FogOfWarState* fog = nullptr;
+        if (fog_of_war_enabled_) {
+            const auto world_view =
+                registry->view<sim::components::WorldTag, sim::components::FogOfWarState>();
+            if (world_view.begin() != world_view.end()) {
+                fog = &world_view.get<sim::components::FogOfWarState>(*world_view.begin());
+            }
+        }
+
+        const auto construction_view = registry->view<
+            sim::components::BuildingTag,
+            sim::components::UnderConstructionTag,
+            sim::components::GridPosition,
+            sim::components::Health>();
+        for (const entt::entity entity : construction_view) {
+            if (construction_view.get<sim::components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            if (!sim::systems::unstarted_construction_visible_to_slot(
+                    *registry, entity, local_player_slot_)) {
+                continue;
+            }
+
+            const bool visible = fog == nullptr
+                || sim::systems::is_entity_visible_to_slot(
+                       *registry, *fog, entity, local_player_slot_);
+            if (!visible) {
+                // Last-seen ghost only — never leak live construction in shroud.
+                const RenderEntityPose* remembered = building_sight_memory_.find(entity);
+                if (remembered == nullptr || !remembered->under_construction) {
+                    continue;
+                }
+            }
+
+            const auto& anchor = construction_view.get<sim::components::GridPosition>(entity);
+            const sim::components::BuildingFootprint footprint =
+                resolve_registry_building_footprint(*registry, entity);
+            draw_footprint_highlight(
+                anchor.cell.x,
+                anchor.cell.y,
+                footprint.width,
+                footprint.height,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_R,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_G,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_B,
+                constants::RENDER_SELECTION_OUTLINE_SCALE);
+        }
+
+        // Keep remembered under-construction ghosts after the live building finishes.
+        for (const RenderEntityPose& remembered : building_sight_memory_.remembered_poses()) {
+            if (!remembered.under_construction || remembered.health_current <= 0) {
+                continue;
+            }
+
+            if (fog != nullptr
+                && sim::systems::is_entity_visible_to_slot(
+                       *registry, *fog, remembered.entity, local_player_slot_)) {
+                continue;
+            }
+
+            if (registry->valid(remembered.entity)
+                && registry->any_of<sim::components::UnderConstructionTag>(remembered.entity)) {
+                continue;
+            }
+
+            draw_footprint_highlight(
+                remembered.grid_x,
+                remembered.grid_y,
+                remembered.footprint_width,
+                remembered.footprint_height,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_R,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_G,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_B,
+                constants::RENDER_SELECTION_OUTLINE_SCALE);
+        }
+
+        if (hover_unit != entt::null && registry->valid(hover_unit)
+            && registry->any_of<sim::components::GridPosition>(hover_unit)
+            && !registry->any_of<sim::components::GarrisonedTag>(hover_unit)) {
+            const auto [world_x, world_z] = unit_render_world_xz(*registry, hover_unit, interpolation_alpha);
+            const bool is_selected = std::find(selected_entities.begin(), selected_entities.end(), hover_unit)
+                != selected_entities.end();
+            if (!is_selected) {
+                draw_unit_ground_highlight(
+                    SceneHighlight{
+                        world_x,
+                        world_z,
+                        hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_R
+                                            : constants::RENDER_HOVER_FRIENDLY_R,
+                        hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_G
+                                            : constants::RENDER_HOVER_FRIENDLY_G,
+                        hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_B
+                                            : constants::RENDER_HOVER_FRIENDLY_B,
+                        constants::RENDER_HOVER_OUTLINE_SCALE,
+                    });
+            }
+        }
+        else if (hover_building != entt::null && registry->valid(hover_building)
+            && registry->any_of<sim::components::GridPosition>(hover_building)
+            && hover_building != selected_building) {
+            const bool enemy_building = sim::components::is_opponent_entity(
+                *registry, hover_building, local_player_slot_);
+            const bool unseen_enemy = enemy_building && fog != nullptr
+                && !sim::systems::is_entity_visible_to_slot(
+                       *registry, *fog, hover_building, local_player_slot_)
+                && building_sight_memory_.find(hover_building) == nullptr;
+            if (!unseen_enemy) {
+                const auto& anchor = registry->get<sim::components::GridPosition>(hover_building);
+                const sim::components::BuildingFootprint footprint =
+                    resolve_registry_building_footprint(*registry, hover_building);
+                draw_footprint_highlight(
+                    anchor.cell.x,
+                    anchor.cell.y,
+                    footprint.width,
+                    footprint.height,
+                    constants::RENDER_HOVER_FRIENDLY_R,
+                    constants::RENDER_HOVER_FRIENDLY_G,
+                    constants::RENDER_HOVER_FRIENDLY_B,
+                    constants::RENDER_HOVER_OUTLINE_SCALE);
+            }
+        }
+        else if (hover_resource_cell.has_value()
+            && (!selected_resource_cell.has_value()
+                || *hover_resource_cell != *selected_resource_cell)) {
+            draw_ground_highlight(
+                SceneHighlight{
+                    static_cast<float>(hover_resource_cell->x) + 0.5F,
+                    static_cast<float>(hover_resource_cell->y) + 0.5F,
+                    constants::RENDER_HOVER_RESOURCE_R,
+                    constants::RENDER_HOVER_RESOURCE_G,
+                    constants::RENDER_HOVER_RESOURCE_B,
+                    constants::RENDER_HOVER_OUTLINE_SCALE,
+                });
+        }
+    }
+    else if (snapshot != nullptr) {
+        const auto find_unit_pose = [&](const entt::entity entity) -> const RenderEntityPose* {
+            for (const RenderEntityPose& pose : snapshot->units) {
+                if (pose.entity == entity) {
+                    return &pose;
+                }
+            }
+
+            return nullptr;
+        };
+
+        for (const entt::entity entity : selected_entities) {
+            const RenderEntityPose* unit_pose = find_unit_pose(entity);
+            if (unit_pose != nullptr) {
+                const auto [world_x, world_z] = interpolate_render_pose(*unit_pose, interpolation_alpha);
+                if (snapshot->fog_visible.empty()
+                    || snapshot_cell_is_visible(
+                        *snapshot,
+                        snapshot_world_visibility_cell(world_x, world_z))) {
+                    draw_unit_selection_outline(world_x, world_z);
+                }
+                continue;
+            }
+
+            const RenderEntityPose* building_pose = find_building_pose(entity);
+            if (building_pose != nullptr) {
+                const sim::components::BuildingFootprint footprint =
+                    resolve_pose_building_footprint(*building_pose);
+                draw_footprint_selection_outline(
+                    building_pose->grid_x,
+                    building_pose->grid_y,
+                    footprint.width,
+                    footprint.height);
+            }
+        }
+
+        if (selected_resource_cell.has_value()) {
+            draw_selection_outline(
+                static_cast<float>(selected_resource_cell->x) + 0.5F,
+                static_cast<float>(selected_resource_cell->y) + 0.5F);
+        }
+
+        if (selected_building != entt::null) {
+            const RenderEntityPose* building_pose = find_building_pose(selected_building);
+            if (building_pose != nullptr) {
+                const sim::components::BuildingFootprint footprint =
+                    resolve_pose_building_footprint(*building_pose);
+                draw_footprint_selection_outline(
+                    building_pose->grid_x,
+                    building_pose->grid_y,
+                    footprint.width,
+                    footprint.height);
+            }
+        }
+
+        for (const RenderEntityPose& pose : snapshot->buildings) {
+            if (!pose.under_construction || pose.health_current <= 0) {
+                continue;
+            }
+
+            const sim::components::BuildingFootprint footprint = resolve_pose_building_footprint(pose);
+            draw_footprint_highlight(
+                pose.grid_x,
+                pose.grid_y,
+                footprint.width,
+                footprint.height,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_R,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_G,
+                constants::RENDER_CONSTRUCTION_HIGHLIGHT_B,
+                constants::RENDER_SELECTION_OUTLINE_SCALE);
+        }
+
+        if (hover_unit != entt::null) {
+            const RenderEntityPose* pose = find_unit_pose(hover_unit);
+            if (pose != nullptr) {
+                const bool is_selected = std::find(selected_entities.begin(), selected_entities.end(), hover_unit)
+                    != selected_entities.end();
+                if (!is_selected) {
+                    const auto [world_x, world_z] = interpolate_render_pose(*pose, interpolation_alpha);
+                    const bool render_hover = snapshot->fog_visible.empty()
+                        || snapshot_cell_is_visible(
+                            *snapshot,
+                            snapshot_world_visibility_cell(world_x, world_z));
+                    if (render_hover) {
+                        draw_unit_ground_highlight(
+                            SceneHighlight{
+                                world_x,
+                                world_z,
+                                hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_R
+                                                    : constants::RENDER_HOVER_FRIENDLY_R,
+                                hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_G
+                                                    : constants::RENDER_HOVER_FRIENDLY_G,
+                                hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_B
+                                                    : constants::RENDER_HOVER_FRIENDLY_B,
+                                constants::RENDER_HOVER_OUTLINE_SCALE,
+                            });
+                    }
+                }
+            }
+        }
+        else if (hover_building != entt::null && hover_building != selected_building) {
+            const RenderEntityPose* building_pose = find_building_pose(hover_building);
+            if (building_pose != nullptr) {
+                const sim::components::BuildingFootprint footprint =
+                    resolve_pose_building_footprint(*building_pose);
+                draw_footprint_highlight(
+                    building_pose->grid_x,
+                    building_pose->grid_y,
+                    footprint.width,
+                    footprint.height,
+                    constants::RENDER_HOVER_FRIENDLY_R,
+                    constants::RENDER_HOVER_FRIENDLY_G,
+                    constants::RENDER_HOVER_FRIENDLY_B,
+                    constants::RENDER_HOVER_OUTLINE_SCALE);
+            }
+        }
+        else if (hover_resource_cell.has_value()
+            && (!selected_resource_cell.has_value()
+                || *hover_resource_cell != *selected_resource_cell)) {
+            draw_ground_highlight(
+                SceneHighlight{
+                    static_cast<float>(hover_resource_cell->x) + 0.5F,
+                    static_cast<float>(hover_resource_cell->y) + 0.5F,
+                    constants::RENDER_HOVER_RESOURCE_R,
+                    constants::RENDER_HOVER_RESOURCE_G,
+                    constants::RENDER_HOVER_RESOURCE_B,
+                    constants::RENDER_HOVER_OUTLINE_SCALE,
+                });
+        }
+    }
+
+    if (building_range_display_ != constants::BuildingRangeDisplayMode::Never) {
+        const auto should_draw_range = [&](const bool is_own, const bool is_selected) {
+            if (building_range_display_ == constants::BuildingRangeDisplayMode::Selected) {
+                return is_selected;
+            }
+
+            return is_own || is_selected;
+        };
+
+        if (registry != nullptr) {
+            const auto world_view =
+                registry->view<sim::components::WorldTag, sim::components::ContentPack>();
+            const data::ContentDatabase* content = nullptr;
+            if (world_view.begin() != world_view.end()) {
+                content = &world_view.get<sim::components::ContentPack>(*world_view.begin()).content;
+            }
+
+            const auto building_view = registry->view<
+                sim::components::BuildingTag,
+                sim::components::GridPosition,
+                sim::components::Health>();
+            for (const entt::entity entity : building_view) {
+                if (building_view.get<sim::components::Health>(entity).current.raw() <= 0) {
+                    continue;
+                }
+
+                if (registry->any_of<sim::components::UnderConstructionTag>(entity)) {
+                    continue;
+                }
+
+                int attack_range = 0;
+                if (content != nullptr && registry->any_of<sim::components::DefinitionRef>(entity)) {
+                    const auto* definition = data::find_structure_archetype(
+                        *content, registry->get<sim::components::DefinitionRef>(entity).id);
+                    if (definition != nullptr) {
+                        attack_range = definition->attack_range;
+                    }
+                }
+                if (attack_range <= 0) {
+                    continue;
+                }
+
+                const bool is_own = registry->any_of<sim::components::PlayerOwnedTag>(entity)
+                    && sim::components::entity_player_slot(*registry, entity) == local_player_slot_;
+                const bool is_selected = entity == selected_building
+                    || std::find(selected_entities.begin(), selected_entities.end(), entity)
+                        != selected_entities.end();
+                if (!should_draw_range(is_own, is_selected)) {
+                    continue;
+                }
+
+                const auto& anchor = building_view.get<sim::components::GridPosition>(entity);
+                const sim::components::BuildingFootprint footprint =
+                    resolve_registry_building_footprint(*registry, entity);
+                const auto& rgb = sim::components::player_slot_rgb(
+                    g_draw_player_color_indices,
+                    sim::components::entity_player_slot(*registry, entity));
+                draw_iso_range_circle(
+                    static_cast<float>(anchor.cell.x) + static_cast<float>(footprint.width) * 0.5F,
+                    static_cast<float>(anchor.cell.y) + static_cast<float>(footprint.height) * 0.5F,
+                    static_cast<float>(attack_range),
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
+        }
+        else if (snapshot != nullptr) {
+            for (const RenderEntityPose& pose : snapshot->buildings) {
+                if (pose.health_current <= 0 || pose.under_construction || pose.attack_range <= 0) {
+                    continue;
+                }
+
+                const bool is_own = pose.player_slot == local_player_slot_;
+                const bool is_selected = pose.entity == selected_building
+                    || std::find(selected_entities.begin(), selected_entities.end(), pose.entity)
+                        != selected_entities.end();
+                if (!should_draw_range(is_own, is_selected)) {
+                    continue;
+                }
+
+                const auto& rgb =
+                    sim::components::player_slot_rgb(g_draw_player_color_indices, pose.player_slot);
+                draw_iso_range_circle(
+                    static_cast<float>(pose.grid_x)
+                        + static_cast<float>(std::max(1, pose.footprint_width)) * 0.5F,
+                    static_cast<float>(pose.grid_y)
+                        + static_cast<float>(std::max(1, pose.footprint_height)) * 0.5F,
+                    static_cast<float>(pose.attack_range),
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
+        }
+    }
+
+    if (!scene_batch_.empty()) {
+        flush_scene_batch();
+    }
+
+    glEnable(GL_DEPTH_TEST);
 }
 
 void GameRenderer::draw(
@@ -1078,25 +4961,57 @@ void GameRenderer::draw(
     const std::optional<core::GridPos> selected_resource_cell,
     const entt::entity selected_building,
     const float fps,
-    const net::LockstepNetworkHudStats& network_stats)
+    const float tps,
+    const net::LockstepNetworkHudStats& network_stats,
+    const HudUnitContext& hud_context_input,
+    const std::optional<core::GridPos> placement_ghost_anchor,
+    const bool placement_ghost_valid)
 {
     if (active_camera_view() != CameraView::Classic) {
         return;
     }
 
-    glClearColor(0.05F, 0.06F, 0.08F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    building_range_display_ = hud_context_input.game_menu.building_range_display;
+
+    const bool offscreen = ensure_present_target();
+    if (offscreen) {
+        glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
+    }
+
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    if (window_size_.x > 0U && window_size_.y > 0U) {
+        glViewport(0, 0, static_cast<GLsizei>(window_size_.x), static_cast<GLsizei>(window_size_.y));
+    }
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0U);
+    clear_opaque_framebuffer(
+        constants::RENDER_CLEAR_R,
+        constants::RENDER_CLEAR_G,
+        constants::RENDER_CLEAR_B,
+        constants::RENDER_CLEAR_A);
 
     const auto& registry = simulation.registry();
     const auto world_view = registry.view<sim::components::WorldTag, sim::components::MapGrid>();
     if (world_view.begin() == world_view.end()) {
+        if (offscreen) {
+            present_target_to_window();
+        }
         return;
     }
 
     const entt::entity world = *world_view.begin();
+    if (registry.any_of<sim::components::MatchSession>(world)) {
+        bind_draw_player_colors(
+            registry.get<sim::components::MatchSession>(world).player_color_indices);
+    }
     const auto& map = world_view.get<sim::components::MapGrid>(world);
     const sim::components::FogOfWarState* fog = nullptr;
-    if (registry.any_of<sim::components::FogOfWarState>(world)) {
+    if (fog_of_war_enabled_ && registry.any_of<sim::components::FogOfWarState>(world)) {
         fog = &registry.get<sim::components::FogOfWarState>(world);
     }
 
@@ -1104,154 +5019,703 @@ void GameRenderer::draw(
         try_frame_player_start(map.width, map.height, &simulation, nullptr);
     }
 
-    scene_batch_.clear();
+    const std::uint64_t hud_tick = simulation.tick_count();
+    if (cached_hud_snapshot_tick_ != hud_tick) {
+        cached_hud_snapshot_ = capture_sim_render_snapshot(
+            registry, local_player_slot_, &building_sight_memory_, hud_tick);
+        cached_hud_snapshot_tick_ = hud_tick;
+    }
+    const SimRenderSnapshot& hud_snapshot = cached_hud_snapshot_;
 
-    for (int y = 0; y < map.height; ++y) {
-        for (int x = 0; x < map.width; ++x) {
-            if (fog != nullptr
-                && is_fog_tile_unexplored(
-                    fog->visible,
-                    fog->explored,
-                    map.width,
-                    map.height,
-                    local_player_slot_,
-                    x,
-                    y)) {
-                draw_extruded_tile(x, y, 0.0F, 0.0F, 0.0F, 0.0F);
+    scene_batch_.clear();
+    textured_scene_batch_.clear();
+    pending_iso_sprites_.clear();
+    pending_unit_draws_.clear();
+
+    std::vector<core::GridPos> building_anchors{};
+    std::vector<sim::components::BuildingFootprint> building_footprints{};
+    std::vector<OccluderSprite> building_sprites{};
+    const auto is_shrouded_building = [&](const entt::entity entity, const bool visible) {
+        if (visible || fog == nullptr) {
+            return false;
+        }
+
+        return building_sight_memory_.find(entity) != nullptr
+            && sim::systems::is_building_renderable_in_shroud(
+                   registry, *fog, entity, local_player_slot_);
+    };
+    const auto remembered_under_construction = [&](const entt::entity entity) {
+        const RenderEntityPose* remembered = building_sight_memory_.find(entity);
+        return remembered != nullptr && remembered->under_construction;
+    };
+    const auto collect_building_footprints = [&]() {
+        building_anchors.clear();
+        building_footprints.clear();
+        building_sprites.clear();
+
+        const auto footprint_view = registry.view<
+            sim::components::BuildingTag,
+            sim::components::GridPosition,
+            sim::components::Health>();
+        for (const entt::entity entity : footprint_view) {
+            const auto& health = footprint_view.get<sim::components::Health>(entity);
+            if (health.current.raw() <= 0) {
                 continue;
             }
 
-            const int index = y * map.width + x;
-            const auto live_tile = map.tiles[static_cast<std::size_t>(index)];
-            const int live_forest_wood = map.forest_wood[static_cast<std::size_t>(index)];
-            const bool use_memory = fog != nullptr
-                && fog_tile_is_in_shroud(
-                    fog->visible,
-                    fog->explored,
-                    map.width,
-                    map.height,
-                    local_player_slot_,
-                    x,
-                    y);
+            if (registry.any_of<sim::components::FarmTag>(entity)) {
+                continue;
+            }
 
-            sim::components::TileType tile = live_tile;
-            int forest_wood = live_forest_wood;
-            float r = 0.20F;
-            float g = 0.32F;
-            float b = 0.18F;
-            float extrude = 0.0F;
-            resolve_tile_appearance(
-                live_tile,
-                live_forest_wood,
-                use_memory,
-                use_memory
-                    ? sim::components::fog_memory_tile_type(*fog, map, x, y, local_player_slot_)
-                    : live_tile,
-                use_memory
-                    ? sim::components::fog_memory_forest_wood(*fog, map, x, y, local_player_slot_)
-                    : live_forest_wood,
-                tile,
-                forest_wood,
-                r,
-                g,
-                b,
-                extrude);
+            if (!sim::systems::unstarted_construction_visible_to_slot(
+                    registry, entity, local_player_slot_)) {
+                continue;
+            }
 
-            if (fog != nullptr) {
-                const float brightness = fog_tile_brightness(
-                    fog->visible,
-                    fog->explored,
-                    map.width,
-                    map.height,
-                    local_player_slot_,
-                    x,
-                    y);
+            const bool visible = fog == nullptr
+                || sim::systems::is_entity_visible_to_slot(registry, *fog, entity, local_player_slot_);
+            const bool shrouded = is_shrouded_building(entity, visible);
+            if (!visible && !shrouded) {
+                continue;
+            }
+
+            if (registry.any_of<sim::components::UnderConstructionTag>(entity)) {
+                continue;
+            }
+
+            const auto& anchor = footprint_view.get<sim::components::GridPosition>(entity);
+            const sim::components::BuildingFootprint footprint = resolve_registry_building_footprint(
+                registry,
+                entity);
+            building_anchors.push_back(anchor.cell);
+            building_footprints.push_back(footprint);
+            building_sprites.push_back(
+                make_building_occluder_sprite(
+                    anchor.cell,
+                    footprint,
+                    building_visual_from_registry(registry, entity)));
+        }
+    };
+
+    const bool use_textured_tiles = scene_textures_.is_loaded();
+    const std::vector<sim::systems::VisionSource> vision_sources = (fog != nullptr && use_textured_tiles)
+        ? sim::systems::collect_vision_sources_for_slot(registry, local_player_slot_)
+        : std::vector<sim::systems::VisionSource>{};
+    const std::vector<float>& fog_vertex_brightness =
+        (fog != nullptr && use_textured_tiles)
+        ? ensure_fog_vertex_brightness(
+            simulation.tick_count(),
+            fog->explored,
+            map.width,
+            map.height,
+            local_player_slot_,
+            vision_sources)
+        : fog_vertex_cache_;
+    const std::vector<float>* fog_vertex_brightness_ptr =
+        (fog != nullptr && use_textured_tiles && !fog_vertex_brightness.empty())
+        ? &fog_vertex_brightness
+        : nullptr;
+    unsigned int active_textured_batch = 0U;
+
+    const auto flush_textured_batch_if_needed = [&](const unsigned int texture_id) {
+        if (texture_id == 0U) {
+            return;
+        }
+
+        if (active_textured_batch != 0U && active_textured_batch != texture_id) {
+            flush_textured_scene_batch(active_textured_batch);
+        }
+
+        active_textured_batch = texture_id;
+    };
+
+    const auto finish_textured_batches = [&]() {
+        if (active_textured_batch != 0U) {
+            flush_textured_scene_batch(active_textured_batch);
+            active_textured_batch = 0U;
+        }
+    };
+
+    if (use_textured_tiles) {
+        const std::vector<std::uint8_t> empty_fog{};
+        draw_batched_ground_tiles(
+            map.width,
+            map.height,
+            map.ground,
+            fog != nullptr ? fog->visible : empty_fog,
+            fog != nullptr ? fog->explored : empty_fog,
+            fog != nullptr,
+            fog_vertex_brightness_ptr,
+            simulation.tick_count());
+    }
+    else {
+        for (int y = 0; y < map.height; ++y) {
+            for (int x = 0; x < map.width; ++x) {
+                const int index = y * map.width + x;
+                const auto live_tile = map.tiles[static_cast<std::size_t>(index)];
+                const int live_forest_wood = map.forest_wood[static_cast<std::size_t>(index)];
+                const bool use_memory = fog != nullptr
+                    && fog_tile_is_in_shroud(
+                        fog->visible,
+                        fog->explored,
+                        map.width,
+                        map.height,
+                        local_player_slot_,
+                        x,
+                        y);
+
+                sim::components::TileType tile = live_tile;
+                int forest_wood = live_forest_wood;
+                float r = 0.20F;
+                float g = 0.32F;
+                float b = 0.18F;
+                float extrude = 0.0F;
+                resolve_tile_appearance(
+                    live_tile,
+                    live_forest_wood,
+                    use_memory,
+                    use_memory
+                        ? sim::components::fog_memory_tile_type(*fog, map, x, y, local_player_slot_)
+                        : live_tile,
+                    use_memory
+                        ? sim::components::fog_memory_forest_wood(*fog, map, x, y, local_player_slot_)
+                        : live_forest_wood,
+                    tile,
+                    forest_wood,
+                    r,
+                    g,
+                    b,
+                    extrude);
+
+                float brightness = 1.0F;
+                if (fog != nullptr) {
+                    brightness = fog_tile_brightness(
+                        fog->visible,
+                        fog->explored,
+                        map.width,
+                        map.height,
+                        local_player_slot_,
+                        x,
+                        y);
+                }
+
                 r *= brightness;
                 g *= brightness;
                 b *= brightness;
+
+                draw_extruded_tile(x, y, extrude, r, g, b);
+                if (show_grid_lines_ && (r > 0.0F || g > 0.0F || b > 0.0F)) {
+                    draw_tile_grid_lines(x, y, extrude);
+                }
+            }
+        }
+    }
+
+    finish_textured_batches();
+
+    if (!scene_batch_.empty()) {
+        flush_scene_batch();
+    }
+
+    draw_interaction_highlights(
+        &registry,
+        nullptr,
+        selected_entities,
+        hover_unit,
+        hover_unit_is_enemy,
+        hover_building,
+        hover_resource_cell,
+        selected_resource_cell,
+        selected_building,
+        interpolation_alpha);
+
+    if (use_textured_tiles) {
+        collect_building_footprints();
+
+        for (int y = 0; y < map.height; ++y) {
+            for (int x = 0; x < map.width; ++x) {
+                if (!iso_tile_intersects_window(
+                        x,
+                        y,
+                        constants::RENDER_OBJECT_SCREEN_CULL_PAD_TILES)) {
+                    continue;
+                }
+
+                if (fog != nullptr
+                    && is_fog_tile_unexplored(
+                        fog->visible,
+                        fog->explored,
+                        map.width,
+                        map.height,
+                        local_player_slot_,
+                        x,
+                        y)) {
+                    continue;
+                }
+
+                if (cell_covered_by_building_footprint(x, y, building_anchors, building_footprints)) {
+                    continue;
+                }
+
+                const int index = y * map.width + x;
+                const auto live_tile = map.tiles[static_cast<std::size_t>(index)];
+                const int live_forest_wood = map.forest_wood[static_cast<std::size_t>(index)];
+                const bool use_memory = fog != nullptr
+                    && fog_tile_is_in_shroud(
+                        fog->visible,
+                        fog->explored,
+                        map.width,
+                        map.height,
+                        local_player_slot_,
+                        x,
+                        y);
+
+                sim::components::TileType tile = live_tile;
+                int forest_wood = live_forest_wood;
+                float unused_r = 0.0F;
+                float unused_g = 0.0F;
+                float unused_b = 0.0F;
+                float unused_extrude = 0.0F;
+                resolve_tile_appearance(
+                    live_tile,
+                    live_forest_wood,
+                    use_memory,
+                    use_memory
+                        ? sim::components::fog_memory_tile_type(*fog, map, x, y, local_player_slot_)
+                        : live_tile,
+                    use_memory
+                        ? sim::components::fog_memory_forest_wood(*fog, map, x, y, local_player_slot_)
+                        : live_forest_wood,
+                    tile,
+                    forest_wood,
+                    unused_r,
+                    unused_g,
+                    unused_b,
+                    unused_extrude);
+
+                const int live_bush_food = map.bush_food[static_cast<std::size_t>(index)];
+                const int memory_bush_food = use_memory
+                    ? sim::components::fog_memory_bush_food(*fog, map, x, y, local_player_slot_)
+                    : live_bush_food;
+                const int bush_food = use_memory ? memory_bush_food : live_bush_food;
+                const int live_mine_money =
+                    static_cast<std::size_t>(index) < map.mine_money.size()
+                    ? map.mine_money[static_cast<std::size_t>(index)]
+                    : 0;
+                const int memory_mine_money = use_memory
+                    ? sim::components::fog_memory_mine_money(*fog, map, x, y, local_player_slot_)
+                    : live_mine_money;
+                const int mine_money = use_memory ? memory_mine_money : live_mine_money;
+                const bool draw_forest = tile == sim::components::TileType::Forest && forest_wood > 0;
+                const bool draw_bush =
+                    (tile == sim::components::TileType::Berries
+                        || tile == sim::components::TileType::Blueberries)
+                    && bush_food > 0;
+                const bool draw_gold_mine =
+                    tile == sim::components::TileType::GoldMine && mine_money > 0;
+                if (!draw_forest && !draw_bush && !draw_gold_mine) {
+                    continue;
+                }
+
+                float brightness = 1.0F;
+                if (fog != nullptr) {
+                    brightness = fog_tile_brightness(
+                        fog->visible,
+                        fog->explored,
+                        map.width,
+                        map.height,
+                        local_player_slot_,
+                        x,
+                        y);
+                }
+                brightness = fog_object_brightness(
+                    fog_vertex_brightness_ptr,
+                    map.width,
+                    map.height,
+                    x,
+                    y,
+                    brightness);
+
+                const SceneTextureKind object_kind = draw_forest
+                    ? forest_tree_texture_for_cell(
+                        x,
+                        y,
+                        sim::components::ground_at(map, static_cast<std::size_t>(index)))
+                    : (draw_gold_mine
+                        ? gold_mine_texture_for_cell(x, y)
+                        : (tile == sim::components::TileType::Blueberries
+                            ? SceneTextureKind::Blueberries
+                            : SceneTextureKind::Berries));
+                const float width_scale = draw_gold_mine
+                    ? constants::RENDER_GOLD_MINE_SPRITE_WIDTH_SCALE
+                    : (draw_forest
+                        ? tree_sprite_width_scale(object_kind)
+                        : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
+                float offset_x = 0.0F;
+                float offset_y = 0.0F;
+                if (draw_gold_mine) {
+                    offset_x = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_X;
+                    offset_y = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_Y;
+                }
+                else if (draw_forest) {
+                    const auto tree_offset = tree_sprite_offset_for_kind(object_kind);
+                    offset_x = tree_offset.first;
+                    offset_y = tree_offset.second;
+                }
+                else {
+                    offset_x = constants::RENDER_BERRY_SPRITE_OFFSET_X;
+                    offset_y = constants::RENDER_BERRY_SPRITE_OFFSET_Y;
+                }
+                queue_iso_object_sprite(
+                    x,
+                    y,
+                    object_kind,
+                    width_scale,
+                    brightness,
+                    static_cast<float>(x + y) + constants::RENDER_TREE_SORT_BIAS,
+                    offset_x,
+                    offset_y);
+            }
+        }
+
+        const int mana_lake_frame = mana_lake_animation_frame();
+        const auto mana_lake_view = registry.view<
+            sim::components::ManaLakeTag,
+            sim::components::GridPosition,
+            sim::components::BuildingFootprint>();
+        for (const entt::entity entity : mana_lake_view) {
+            const entt::entity extractor_on_lake =
+                sim::spawn::find_extractor_on_mana_lake(registry, entity);
+            if (extractor_on_lake != entt::null
+                && registry.valid(extractor_on_lake)
+                && !registry.any_of<sim::components::UnderConstructionTag>(extractor_on_lake)
+                && registry.any_of<sim::components::Health>(extractor_on_lake)
+                && registry.get<sim::components::Health>(extractor_on_lake).current.raw() > 0) {
+                // Completed extractor covers the lake (SC geyser style: lake returns on destroy).
+                continue;
             }
 
-            draw_extruded_tile(x, y, extrude, r, g, b);
-            if (show_grid_lines_ && (r > 0.0F || g > 0.0F || b > 0.0F)) {
-                draw_tile_grid_lines(x, y, extrude);
+            const auto& anchor = mana_lake_view.get<sim::components::GridPosition>(entity);
+            const auto& footprint = mana_lake_view.get<sim::components::BuildingFootprint>(entity);
+            float brightness = 1.0F;
+            if (fog != nullptr) {
+                if (!sim::systems::is_cell_explored_to_slot(*fog, anchor.cell, local_player_slot_)) {
+                    continue;
+                }
+
+                if (!sim::systems::is_cell_visible_to_slot(*fog, anchor.cell, local_player_slot_)) {
+                    brightness = constants::FOG_EXPLORED_SHROUD_BRIGHTNESS;
+                }
+            }
+
+            const auto [lake_offset_x, lake_offset_y] = mana_lake_sprite_offset(footprint);
+            queue_iso_object_sprite(
+                anchor.cell.x + footprint.width / 2,
+                anchor.cell.y + footprint.height / 2,
+                SceneTextureKind::ManaLake,
+                textured_building_width_scale(footprint)
+                    * constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE,
+                brightness,
+                static_cast<float>(
+                    (anchor.cell.x + footprint.width - 1) + (anchor.cell.y + footprint.height - 1))
+                    + constants::RENDER_MANA_LAKE_SORT_BIAS,
+                lake_offset_x,
+                lake_offset_y,
+                mana_lake_frame,
+                constants::MANA_LAKE_ANIMATION_FRAME_COUNT);
+        }
+
+        const auto building_view = registry.view<
+            sim::components::BuildingTag,
+            sim::components::GridPosition,
+            sim::components::Health>();
+        for (const entt::entity entity : building_view) {
+            const bool visible = fog == nullptr
+                || sim::systems::is_entity_visible_to_slot(registry, *fog, entity, local_player_slot_);
+            const bool shrouded = is_shrouded_building(entity, visible);
+            if (!visible && !shrouded) {
+                continue;
+            }
+
+            const bool is_town_center = registry.any_of<sim::components::TownCenterTag>(entity);
+            const bool is_house = registry.any_of<sim::components::HouseTag>(entity);
+            const bool is_lumber_camp = registry.any_of<sim::components::LumberCampTag>(entity);
+            const bool is_mill = registry.any_of<sim::components::MillTag>(entity);
+            const bool is_mining_camp = registry.any_of<sim::components::MiningCampTag>(entity);
+            const bool is_barracks = registry.any_of<sim::components::BarracksTag>(entity);
+            const bool is_mage_academy = registry.any_of<sim::components::MageAcademyTag>(entity);
+            const bool is_tower = registry.any_of<sim::components::TowerTag>(entity);
+            const bool is_market = registry.any_of<sim::components::MarketTag>(entity);
+            const bool is_extractor = registry.any_of<sim::components::ExtractorTag>(entity);
+            const bool is_garden = registry.any_of<sim::components::GardenTag>(entity);
+            const bool is_reservoir = registry.any_of<sim::components::ReservoirTag>(entity);
+            const bool is_farm = registry.any_of<sim::components::FarmTag>(entity);
+            if (!is_town_center && !is_house && !is_lumber_camp && !is_mill && !is_mining_camp
+                && !is_barracks && !is_mage_academy && !is_tower && !is_market && !is_extractor
+                && !is_garden && !is_reservoir && !is_farm) {
+                continue;
+            }
+
+            const bool under_construction = visible
+                ? registry.any_of<sim::components::UnderConstructionTag>(entity)
+                : remembered_under_construction(entity);
+            if (under_construction && !is_farm) {
+                continue;
+            }
+
+            const auto& anchor = building_view.get<sim::components::GridPosition>(entity);
+            const sim::components::BuildingFootprint footprint =
+                resolve_registry_building_footprint(registry, entity);
+            const bool is_enemy = registry.any_of<sim::components::PlayerOwnedTag>(entity)
+                && sim::components::entity_player_slot(registry, entity) != local_player_slot_;
+            float brightness = 1.0F;
+            if (shrouded) {
+                brightness = constants::FOG_EXPLORED_SHROUD_BRIGHTNESS;
+            }
+
+            const std::uint8_t house_variant = registry.any_of<sim::components::BuildingVisualVariant>(entity)
+                ? registry.get<sim::components::BuildingVisualVariant>(entity).index
+                : 0U;
+            const bool farm_depleted = is_farm
+                && (under_construction
+                    || !registry.any_of<sim::components::FarmFood>(entity)
+                    || registry.get<sim::components::FarmFood>(entity).remaining <= 0);
+            const BuildingSpriteVisual visual = building_sprite_visual(
+                is_house,
+                is_lumber_camp,
+                is_mill,
+                is_mining_camp,
+                is_barracks,
+                is_mage_academy,
+                is_tower,
+                is_market,
+                is_extractor,
+                house_variant,
+                is_garden,
+                is_reservoir,
+                is_farm,
+                farm_depleted);
+            const int center_x = anchor.cell.x + footprint.width / 2;
+            const int center_y = anchor.cell.y + footprint.height / 2;
+            const float width_scale = textured_building_width_scale(footprint);
+            const auto [offset_x, offset_y] = textured_building_sprite_offset(footprint);
+            const float sort_key = is_farm
+                ? farm_sprite_sort_key(anchor.cell.x, anchor.cell.y, false)
+                : building_footprint_sort_key(
+                    anchor.cell.x,
+                    anchor.cell.y,
+                    footprint.width,
+                    footprint.height,
+                    false);
+            (void)is_enemy;
+            queue_iso_object_sprite(
+                center_x,
+                center_y,
+                visual.color,
+                width_scale,
+                brightness,
+                sort_key,
+                offset_x,
+                offset_y);
+            if (visual.has_team_mask) {
+                const std::uint8_t owner_slot = sim::components::entity_player_slot(registry, entity);
+                const auto& rgb = sim::components::player_slot_rgb(g_draw_player_color_indices, owner_slot);
+                queue_iso_object_sprite(
+                    center_x,
+                    center_y,
+                    visual.mask,
+                    width_scale,
+                    brightness,
+                    is_farm
+                        ? farm_sprite_sort_key(anchor.cell.x, anchor.cell.y, true)
+                        : building_footprint_sort_key(
+                            anchor.cell.x,
+                            anchor.cell.y,
+                            footprint.width,
+                            footprint.height,
+                            true),
+                    offset_x,
+                    offset_y,
+                    0,
+                    1,
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
             }
         }
-    }
 
-    for (const entt::entity entity : selected_entities) {
-        if (!registry.valid(entity) || !registry.any_of<sim::components::GridPosition>(entity)) {
-            continue;
+        const auto queue_live_unit_draw = [&](
+            const entt::entity entity,
+            const float world_x,
+            const float world_z,
+            const bool is_mage,
+            const bool is_projectile) {
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                is_mage,
+                registry.any_of<sim::components::WorkerUnitTag>(entity),
+                is_projectile,
+                sim::components::entity_player_slot(registry, entity));
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
+
+            const float sort_key = cap_unit_sort_below_buildings(
+                unit_depth_sort_key(world_x, world_z),
+                world_x,
+                world_z,
+                building_anchors,
+                building_footprints,
+                building_sprites);
+
+            PendingUnitDraw unit_draw{
+                sort_key,
+                world_x,
+                world_z,
+                r,
+                g,
+                b,
+                r,
+                g,
+                b,
+            };
+            if (style.draw_hat) {
+                unit_draw.draw_hat = true;
+                unit_draw.silhouette_r = style.hat_r;
+                unit_draw.silhouette_g = style.hat_g;
+                unit_draw.silhouette_b = style.hat_b;
+            }
+            if (is_projectile) {
+                unit_draw.radius = constants::ROCK_PROJECTILE_RADIUS;
+                unit_draw.height = constants::ROCK_PROJECTILE_RADIUS * 2.0F;
+                if (registry.any_of<sim::components::Projectile>(entity)) {
+                    const auto& projectile = registry.get<sim::components::Projectile>(entity);
+                    if (projectile.is_arrow) {
+                        unit_draw.radius = constants::ARROW_PROJECTILE_RADIUS;
+                        unit_draw.height = constants::ARROW_PROJECTILE_RADIUS * 2.0F;
+                        unit_draw.r = constants::RENDER_ARROW_PROJECTILE_R;
+                        unit_draw.g = constants::RENDER_ARROW_PROJECTILE_G;
+                        unit_draw.b = constants::RENDER_ARROW_PROJECTILE_B;
+                    }
+                }
+            }
+            queue_unit_draw(unit_draw);
+        };
+
+        const auto unit_view = registry.view<
+            sim::components::UnitTag,
+            sim::components::GridPosition,
+            sim::components::Health>();
+        for (const entt::entity entity : unit_view) {
+            const auto& health = unit_view.get<sim::components::Health>(entity);
+            if (health.current.raw() <= 0) {
+                continue;
+            }
+            if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
+                continue;
+            }
+
+            const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+            if (fog != nullptr) {
+                const core::GridPos visibility_cell{
+                    static_cast<int>(std::floor(world_x)),
+                    static_cast<int>(std::floor(world_z)),
+                };
+                if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)
+                    && (!registry.any_of<sim::components::PlayerOwnedTag>(entity)
+                        || sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
+                    continue;
+                }
+            }
+
+            queue_live_unit_draw(
+                entity,
+                world_x,
+                world_z,
+                registry.any_of<sim::components::MageUnitTag>(entity),
+                false);
         }
 
-        const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
-        if (registry.any_of<sim::components::UnitTag>(entity)) {
-            draw_unit_selection_outline(world_x, world_z);
+        const auto projectile_view = registry.view<
+            sim::components::Projectile,
+            sim::components::WorldPosition>();
+        for (const entt::entity entity : projectile_view) {
+            const auto& projectile_world =
+                projectile_view.get<sim::components::WorldPosition>(entity);
+            const float world_x = projectile_world.x.to_float();
+            const float world_z = projectile_world.y.to_float();
+            if (fog != nullptr) {
+                const core::GridPos visibility_cell{
+                    static_cast<int>(std::floor(world_x)),
+                    static_cast<int>(std::floor(world_z)),
+                };
+                if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)) {
+                    const auto& projectile = projectile_view.get<sim::components::Projectile>(entity);
+                    if (projectile.reveal_to_slot != local_player_slot_) {
+                        continue;
+                    }
+                }
+            }
+
+            queue_live_unit_draw(entity, world_x, world_z, false, true);
         }
-        else {
-            draw_selection_outline(world_x, world_z);
-        }
-    }
 
-    if (selected_resource_cell.has_value()) {
-        draw_selection_outline(
-            static_cast<float>(selected_resource_cell->x) + 0.5F,
-            static_cast<float>(selected_resource_cell->y) + 0.5F);
-    }
+        flush_pending_depth_sorted_draws(active_textured_batch);
+        finish_textured_batches();
 
-    if (selected_building != entt::null && registry.valid(selected_building)
-        && registry.any_of<sim::components::GridPosition>(selected_building)) {
-        const auto& pos = registry.get<sim::components::GridPosition>(selected_building).cell;
-        draw_selection_outline(
-            static_cast<float>(pos.x) + 0.5F,
-            static_cast<float>(pos.y) + 0.5F);
-    }
+        glDisable(GL_DEPTH_TEST);
+        for (const entt::entity entity : unit_view) {
+            const auto& health = unit_view.get<sim::components::Health>(entity);
+            if (health.current.raw() <= 0) {
+                continue;
+            }
+            if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
+                continue;
+            }
 
-    if (hover_unit != entt::null && registry.valid(hover_unit)
-        && registry.any_of<sim::components::GridPosition>(hover_unit)) {
-        const auto [world_x, world_z] = unit_render_world_xz(registry, hover_unit, interpolation_alpha);
-        const bool is_selected =
-            std::find(selected_entities.begin(), selected_entities.end(), hover_unit) != selected_entities.end();
-        if (!is_selected) {
-            draw_unit_ground_highlight(
-                SceneHighlight{
+            const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+            if (fog != nullptr) {
+                const core::GridPos visibility_cell{
+                    static_cast<int>(std::floor(world_x)),
+                    static_cast<int>(std::floor(world_z)),
+                };
+                if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)
+                    && (!registry.any_of<sim::components::PlayerOwnedTag>(entity)
+                        || sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
+                    continue;
+                }
+            }
+
+            const auto& rgb = sim::components::player_slot_rgb(
+                g_draw_player_color_indices,
+                sim::components::entity_player_slot(registry, entity));
+            const float silhouette_r = rgb[0];
+            const float silhouette_g = rgb[1];
+            const float silhouette_b = rgb[2];
+
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
+                world_x,
+                world_z,
+                map,
+                building_footprints,
+                building_anchors,
+                building_sprites,
+                fog != nullptr ? &fog->visible : nullptr,
+                fog != nullptr ? &fog->explored : nullptr);
+            if (!occluder_sprites.empty()) {
+                draw_unit_occlusion_silhouette(
                     world_x,
                     world_z,
-                    hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_R
-                                        : constants::RENDER_HOVER_FRIENDLY_R,
-                    hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_G
-                                        : constants::RENDER_HOVER_FRIENDLY_G,
-                    hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_B
-                                        : constants::RENDER_HOVER_FRIENDLY_B,
-                    constants::RENDER_HOVER_OUTLINE_SCALE,
-                });
+                    silhouette_r,
+                    silhouette_g,
+                    silhouette_b,
+                    occluder_sprites);
+            }
         }
-    }
-    else if (hover_building != entt::null && registry.valid(hover_building)
-        && registry.any_of<sim::components::GridPosition>(hover_building)
-        && hover_building != selected_building) {
-        const auto& pos = registry.get<sim::components::GridPosition>(hover_building).cell;
-        draw_ground_highlight(
-            SceneHighlight{
-                static_cast<float>(pos.x) + 0.5F,
-                static_cast<float>(pos.y) + 0.5F,
-                constants::RENDER_HOVER_FRIENDLY_R,
-                constants::RENDER_HOVER_FRIENDLY_G,
-                constants::RENDER_HOVER_FRIENDLY_B,
-                constants::RENDER_HOVER_OUTLINE_SCALE,
-            });
-    }
-    else if (hover_resource_cell.has_value()
-        && (!selected_resource_cell.has_value()
-            || *hover_resource_cell != *selected_resource_cell)) {
-        draw_ground_highlight(
-            SceneHighlight{
-                static_cast<float>(hover_resource_cell->x) + 0.5F,
-                static_cast<float>(hover_resource_cell->y) + 0.5F,
-                constants::RENDER_HOVER_RESOURCE_R,
-                constants::RENDER_HOVER_RESOURCE_G,
-                constants::RENDER_HOVER_RESOURCE_B,
-                constants::RENDER_HOVER_OUTLINE_SCALE,
-            });
+        if (!scene_batch_.empty()) {
+            flush_scene_batch();
+        }
+        glEnable(GL_DEPTH_TEST);
     }
 
     const auto building_view = registry.view<
@@ -1261,18 +5725,47 @@ void GameRenderer::draw(
     for (const entt::entity entity : building_view) {
         const bool visible = fog == nullptr
             || sim::systems::is_entity_visible_to_slot(registry, *fog, entity, local_player_slot_);
-        const bool shrouded = !visible && fog != nullptr
-            && sim::systems::is_building_renderable_in_shroud(registry, *fog, entity, local_player_slot_);
+        const bool shrouded = is_shrouded_building(entity, visible);
         if (!visible && !shrouded) {
             continue;
         }
 
         const auto& pos = building_view.get<sim::components::GridPosition>(entity).cell;
+        const bool is_enemy = registry.any_of<sim::components::PlayerOwnedTag>(entity)
+            && sim::components::entity_player_slot(registry, entity) != local_player_slot_;
+        float brightness = 1.0F;
+        if (shrouded) {
+            brightness = constants::FOG_EXPLORED_SHROUD_BRIGHTNESS;
+        }
+
+        const bool under_construction = visible
+            ? registry.any_of<sim::components::UnderConstructionTag>(entity)
+            : remembered_under_construction(entity);
+        if (under_construction) {
+            continue;
+        }
+
+        if (use_textured_tiles
+            && (registry.any_of<sim::components::TownCenterTag>(entity)
+                || registry.any_of<sim::components::HouseTag>(entity)
+                || registry.any_of<sim::components::LumberCampTag>(entity)
+                || registry.any_of<sim::components::MillTag>(entity)
+                || registry.any_of<sim::components::MiningCampTag>(entity)
+                || registry.any_of<sim::components::BarracksTag>(entity)
+                || registry.any_of<sim::components::MageAcademyTag>(entity)
+                || registry.any_of<sim::components::TowerTag>(entity)
+                || registry.any_of<sim::components::MarketTag>(entity)
+                || registry.any_of<sim::components::ExtractorTag>(entity)
+                || registry.any_of<sim::components::GardenTag>(entity)
+                || registry.any_of<sim::components::ReservoirTag>(entity)
+                || registry.any_of<sim::components::FarmTag>(entity))) {
+            continue;
+        }
+
         float base_r = 0.55F;
         float base_g = 0.38F;
         float base_b = 0.18F;
-        if (registry.any_of<sim::components::PlayerOwnedTag>(entity)
-            && sim::components::entity_player_slot(registry, entity) != local_player_slot_) {
+        if (is_enemy) {
             base_r = 0.70F;
             base_g = 0.22F;
             base_b = 0.22F;
@@ -1295,76 +5788,216 @@ void GameRenderer::draw(
             b);
     }
 
-    const auto unit_view = registry.view<
-        sim::components::UnitTag,
-        sim::components::GridPosition,
-        sim::components::Health>();
-    for (const entt::entity entity : unit_view) {
-        const auto& health = unit_view.get<sim::components::Health>(entity);
-        if (health.current.raw() <= 0) {
-            continue;
-        }
+    finish_textured_batches();
 
-        const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
-        if (fog != nullptr) {
-            const core::GridPos visibility_cell{
-                static_cast<int>(std::floor(world_x)),
-                static_cast<int>(std::floor(world_z)),
-            };
-            if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)
-                && (!registry.any_of<sim::components::PlayerOwnedTag>(entity)
-                    || sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
+    if (!use_textured_tiles) {
+        collect_building_footprints();
+
+        const auto unit_view = registry.view<
+            sim::components::UnitTag,
+            sim::components::GridPosition,
+            sim::components::Health>();
+        for (const entt::entity entity : unit_view) {
+            const auto& health = unit_view.get<sim::components::Health>(entity);
+            if (health.current.raw() <= 0) {
                 continue;
+            }
+            if (registry.any_of<sim::components::GarrisonedTag>(entity)) {
+                continue;
+            }
+
+            const auto [world_x, world_z] = unit_render_world_xz(registry, entity, interpolation_alpha);
+            if (fog != nullptr) {
+                const core::GridPos visibility_cell{
+                    static_cast<int>(std::floor(world_x)),
+                    static_cast<int>(std::floor(world_z)),
+                };
+                if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)
+                    && (!registry.any_of<sim::components::PlayerOwnedTag>(entity)
+                        || sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
+                    continue;
+                }
+            }
+
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                registry.any_of<sim::components::MageUnitTag>(entity),
+                registry.any_of<sim::components::WorkerUnitTag>(entity),
+                false,
+                sim::components::entity_player_slot(registry, entity));
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
+
+            draw_entity_cylinder(
+                world_x,
+                world_z,
+                constants::RENDER_UNIT_HEIGHT,
+                constants::RENDER_UNIT_RADIUS,
+                r,
+                g,
+                b);
+            if (style.draw_hat) {
+                const float hat_total = constants::RENDER_UNIT_HEIGHT
+                    * (1.0F + constants::RENDER_MAGE_HAT_HEIGHT_SCALE);
+                const float hat_start = constants::RENDER_UNIT_HEIGHT / hat_total;
+                draw_entity_cylinder(
+                    world_x,
+                    world_z,
+                    hat_total,
+                    constants::RENDER_UNIT_RADIUS * constants::RENDER_MAGE_HAT_SCALE,
+                    style.hat_r,
+                    style.hat_g,
+                    style.hat_b,
+                    hat_start,
+                    1.0F);
+            }
+
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
+                world_x,
+                world_z,
+                map,
+                building_footprints,
+                building_anchors,
+                building_sprites,
+                fog != nullptr ? &fog->visible : nullptr,
+                fog != nullptr ? &fog->explored : nullptr);
+            if (!occluder_sprites.empty()) {
+                draw_unit_occlusion_silhouette(
+                    world_x,
+                    world_z,
+                    r,
+                    g,
+                    b,
+                    occluder_sprites);
             }
         }
 
-        float base_r = 0.25F;
-        float base_g = 0.55F;
-        float base_b = 0.85F;
-        if (registry.any_of<sim::components::EnemyTag>(entity)
-            || (registry.any_of<sim::components::PlayerOwnedTag>(entity)
-                && sim::components::entity_player_slot(registry, entity) != local_player_slot_)) {
-            base_r = 0.85F;
-            base_g = 0.25F;
-            base_b = 0.25F;
+        if (!scene_batch_.empty()) {
+            flush_scene_batch();
         }
-        else if (registry.any_of<sim::components::WorkerUnitTag>(entity)) {
-            base_r = 0.85F;
-            base_g = 0.75F;
-            base_b = 0.20F;
-        }
-
-        float r = base_r;
-        float g = base_g;
-        float b = base_b;
-        apply_team_color(base_r, base_g, base_b, r, g, b);
-        draw_entity_cylinder(
-            world_x,
-            world_z,
-            constants::RENDER_UNIT_HEIGHT,
-            constants::RENDER_UNIT_RADIUS,
-            r,
-            g,
-            b);
     }
 
-    flush_scene_batch();
+    if (use_textured_tiles && show_grid_lines_) {
+        finish_textured_batches();
+        glDisable(GL_DEPTH_TEST);
+        draw_iso_tile_grid_lines(map.width, map.height);
+        glEnable(GL_DEPTH_TEST);
+    }
 
+    if (!scene_batch_.empty()) {
+        flush_scene_batch();
+    }
+
+    if (placement_ghost_anchor.has_value()) {
+        const int footprint =
+            placement_ghost_footprint_tiles(hud_context_input.command_panel_mode);
+        if (placement_ghost_footprint_on_map(
+                map.width, map.height, *placement_ghost_anchor, footprint)) {
+            const float ghost_r = placement_ghost_valid ? 0.35F : 0.85F;
+            const float ghost_g = placement_ghost_valid ? 0.75F : 0.25F;
+            const float ghost_b = placement_ghost_valid ? 0.45F : 0.25F;
+            glDisable(GL_DEPTH_TEST);
+            draw_footprint_highlight(
+                placement_ghost_anchor->x,
+                placement_ghost_anchor->y,
+                footprint,
+                footprint,
+                ghost_r,
+                ghost_g,
+                ghost_b,
+                constants::RENDER_SELECTION_OUTLINE_SCALE);
+            const int center_x = placement_ghost_anchor->x + footprint / 2;
+            const int center_y = placement_ghost_anchor->y + footprint / 2;
+            unsigned int ghost_batch = 0U;
+            const BuildingSpriteVisual ghost_visual =
+                placement_ghost_visual(hud_context_input.command_panel_mode);
+            const sim::components::BuildingFootprint ghost_footprint{footprint, footprint};
+            const auto [ghost_offset_x, ghost_offset_y] =
+                textured_building_sprite_offset(ghost_footprint);
+            queue_iso_object_sprite(
+                center_x,
+                center_y,
+                ghost_visual.color,
+                textured_building_width_scale(ghost_footprint),
+                constants::RENDER_GHOST_BUILDING_ALPHA,
+                building_footprint_sort_key(
+                    placement_ghost_anchor->x,
+                    placement_ghost_anchor->y,
+                    footprint,
+                    footprint,
+                    false),
+                ghost_offset_x,
+                ghost_offset_y);
+            flush_pending_depth_sorted_draws(ghost_batch);
+            glEnable(GL_DEPTH_TEST);
+        }
+    }
+
+    draw_hitbox_overlays(simulation, interpolation_alpha);
+    draw_debug_path_overlays(simulation, interpolation_alpha);
+
+    render::HudUnitContext hud_context = hud_context_input;
+    if (selected_entities.size() == 1U) {
+        hud_context.selected_single_unit = selected_entities.front();
+    }
+    else if (selected_building != entt::null) {
+        hud_context.selected_single_unit = selected_building;
+    }
+    else {
+        hud_context.selected_single_unit = entt::null;
+    }
+    hud_context.hover_unit = hover_unit;
+    hud_context.hover_unit_is_enemy = hover_unit_is_enemy;
+    hud_context.selected_resource_cell = selected_resource_cell;
+    {
+        const float window_width = static_cast<float>(window_size_.x);
+        const float window_height = static_cast<float>(window_size_.y);
+        const auto corner0 = camera_.screen_to_world_xz(0.0F, 0.0F);
+        const auto corner1 = camera_.screen_to_world_xz(window_width, 0.0F);
+        const auto corner2 = camera_.screen_to_world_xz(window_width, window_height);
+        const auto corner3 = camera_.screen_to_world_xz(0.0F, window_height);
+        hud_context.has_camera_view = true;
+        hud_context.camera_world_min_x =
+            std::min(std::min(corner0.first, corner1.first), std::min(corner2.first, corner3.first));
+        hud_context.camera_world_max_x =
+            std::max(std::max(corner0.first, corner1.first), std::max(corner2.first, corner3.first));
+        hud_context.camera_world_min_z =
+            std::min(std::min(corner0.second, corner1.second), std::min(corner2.second, corner3.second));
+        hud_context.camera_world_max_z =
+            std::max(std::max(corner0.second, corner1.second), std::max(corner2.second, corner3.second));
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
-    hud_overlay_.draw(simulation, window_size_, fps, local_player_slot_, camera_.zoom(), network_stats);
-
+    glDepthMask(GL_FALSE);
     if (selection_box.active) {
         draw_screen_rect_outline(
             selection_box.start.x,
             selection_box.start.y,
             selection_box.current.x,
             selection_box.current.y,
-            0.35F,
-            0.95F,
-            0.35F);
+            constants::RENDER_SELECTION_BOX_R,
+            constants::RENDER_SELECTION_BOX_G,
+            constants::RENDER_SELECTION_BOX_B);
     }
 
-    glEnable(GL_DEPTH_TEST);
+    hud_overlay_.draw(
+        simulation,
+        window_size_,
+        fps,
+        tps,
+        local_player_slot_,
+        camera_.zoom(),
+        hud_context,
+        network_stats,
+        show_perf_hud_,
+        show_selection_debug_,
+        &building_sight_memory_,
+        &hud_snapshot);
+    if (offscreen) {
+        present_target_to_window();
+    }
 }
 
 void GameRenderer::draw_snapshot(
@@ -1379,211 +6012,655 @@ void GameRenderer::draw_snapshot(
     const std::optional<core::GridPos> selected_resource_cell,
     const entt::entity selected_building,
     const float fps,
-    const net::LockstepNetworkHudStats& network_stats)
+    const float tps,
+    const net::LockstepNetworkHudStats& network_stats,
+    const HudUnitContext& hud_context_input,
+    const std::optional<core::GridPos> placement_ghost_anchor,
+    const bool placement_ghost_valid)
 {
     if (active_camera_view() != CameraView::Classic) {
         return;
     }
 
-    glClearColor(0.05F, 0.06F, 0.08F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    building_range_display_ = hud_context_input.game_menu.building_range_display;
+
+    const bool offscreen = ensure_present_target();
+    if (offscreen) {
+        glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
+    }
+
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    if (window_size_.x > 0U && window_size_.y > 0U) {
+        glViewport(0, 0, static_cast<GLsizei>(window_size_.x), static_cast<GLsizei>(window_size_.y));
+    }
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0U);
+    clear_opaque_framebuffer(
+        constants::RENDER_CLEAR_R,
+        constants::RENDER_CLEAR_G,
+        constants::RENDER_CLEAR_B,
+        constants::RENDER_CLEAR_A);
 
     if (snapshot.map_width <= 0 || snapshot.map_height <= 0) {
+        if (offscreen) {
+            present_target_to_window();
+        }
         return;
     }
+
+    bind_draw_player_colors(snapshot.player_color_indices);
 
     if (!map_framed_) {
         try_frame_player_start(snapshot.map_width, snapshot.map_height, nullptr, &snapshot);
     }
 
     scene_batch_.clear();
+    textured_scene_batch_.clear();
+    pending_iso_sprites_.clear();
+    pending_unit_draws_.clear();
 
-    for (int y = 0; y < snapshot.map_height; ++y) {
-        for (int x = 0; x < snapshot.map_width; ++x) {
-            if (!snapshot.fog_visible.empty()
-                && is_fog_tile_unexplored(
-                    snapshot.fog_visible,
-                    snapshot.fog_explored,
-                    snapshot.map_width,
-                    snapshot.map_height,
-                    local_player_slot_,
-                    x,
-                    y)) {
-                draw_extruded_tile(x, y, 0.0F, 0.0F, 0.0F, 0.0F);
+    std::vector<core::GridPos> snapshot_building_anchors{};
+    std::vector<sim::components::BuildingFootprint> snapshot_building_footprints{};
+    std::vector<OccluderSprite> snapshot_building_sprites{};
+    const auto collect_snapshot_building_footprints = [&]() {
+        snapshot_building_anchors.clear();
+        snapshot_building_footprints.clear();
+        snapshot_building_sprites.clear();
+
+        for (const RenderEntityPose& pose : snapshot.buildings) {
+            if (pose.health_current <= 0 || pose.is_farm || pose.under_construction) {
                 continue;
             }
 
-            const int index = y * snapshot.map_width + x;
-            const auto live_tile = snapshot.tiles[static_cast<std::size_t>(index)];
-            const int live_forest_wood = snapshot.forest_wood[static_cast<std::size_t>(index)];
-            const bool use_memory = !snapshot.fog_visible.empty()
-                && !snapshot.fog_memory_tiles.empty()
-                && fog_tile_is_in_shroud(
-                    snapshot.fog_visible,
-                    snapshot.fog_explored,
-                    snapshot.map_width,
-                    snapshot.map_height,
-                    local_player_slot_,
-                    x,
-                    y);
-            const sim::components::TileType memory_tile =
-                use_memory
-                ? static_cast<sim::components::TileType>(
-                    snapshot.fog_memory_tiles[static_cast<std::size_t>(index)])
-                : live_tile;
-            const int memory_forest_wood =
-                use_memory && static_cast<std::size_t>(index) < snapshot.fog_memory_forest_wood.size()
-                ? snapshot.fog_memory_forest_wood[static_cast<std::size_t>(index)]
-                : live_forest_wood;
+            snapshot_building_anchors.push_back(core::GridPos{pose.grid_x, pose.grid_y});
+            snapshot_building_footprints.push_back(
+                sim::components::BuildingFootprint{pose.footprint_width, pose.footprint_height});
+            snapshot_building_sprites.push_back(
+                make_building_occluder_sprite(
+                    core::GridPos{pose.grid_x, pose.grid_y},
+                    sim::components::BuildingFootprint{pose.footprint_width, pose.footprint_height},
+                    building_visual_from_pose(pose)));
+        }
+    };
 
-            sim::components::TileType tile = live_tile;
-            int forest_wood = live_forest_wood;
-            float r = 0.20F;
-            float g = 0.32F;
-            float b = 0.18F;
-            float extrude = 0.0F;
-            resolve_tile_appearance(
-                live_tile,
-                live_forest_wood,
-                use_memory,
-                memory_tile,
-                memory_forest_wood,
-                tile,
-                forest_wood,
-                r,
-                g,
-                b,
-                extrude);
+    const bool use_textured_tiles = scene_textures_.is_loaded();
+    const std::vector<sim::systems::VisionSource> vision_sources =
+        ((fog_of_war_enabled_ && !snapshot.fog_visible.empty()) && use_textured_tiles)
+        ? collect_vision_sources_from_snapshot(snapshot, local_player_slot_)
+        : std::vector<sim::systems::VisionSource>{};
+    const std::vector<float>& fog_vertex_brightness =
+        ((fog_of_war_enabled_ && !snapshot.fog_visible.empty()) && use_textured_tiles)
+        ? ensure_fog_vertex_brightness(
+            snapshot.tick_count,
+            snapshot.fog_explored,
+            snapshot.map_width,
+            snapshot.map_height,
+            local_player_slot_,
+            vision_sources)
+        : fog_vertex_cache_;
+    const std::vector<float>* fog_vertex_brightness_ptr =
+        ((fog_of_war_enabled_ && !snapshot.fog_visible.empty()) && use_textured_tiles
+            && !fog_vertex_brightness.empty())
+        ? &fog_vertex_brightness
+        : nullptr;
+    unsigned int active_textured_batch = 0U;
 
-            if (!snapshot.fog_visible.empty()) {
-                const float brightness = fog_tile_brightness(
-                    snapshot.fog_visible,
-                    snapshot.fog_explored,
-                    snapshot.map_width,
-                    snapshot.map_height,
-                    local_player_slot_,
-                    x,
-                    y);
+    const auto flush_textured_batch_if_needed = [&](const unsigned int texture_id) {
+        if (texture_id == 0U) {
+            return;
+        }
+
+        if (active_textured_batch != 0U && active_textured_batch != texture_id) {
+            flush_textured_scene_batch(active_textured_batch);
+        }
+
+        active_textured_batch = texture_id;
+    };
+
+    const auto finish_textured_batches = [&]() {
+        if (active_textured_batch != 0U) {
+            flush_textured_scene_batch(active_textured_batch);
+            active_textured_batch = 0U;
+        }
+    };
+
+    if (use_textured_tiles) {
+        draw_batched_ground_tiles(
+            snapshot.map_width,
+            snapshot.map_height,
+            snapshot.ground,
+            snapshot.fog_visible,
+            snapshot.fog_explored,
+            fog_of_war_enabled_ && !snapshot.fog_visible.empty(),
+            fog_vertex_brightness_ptr,
+            snapshot.tick_count);
+    }
+    else {
+        for (int y = 0; y < snapshot.map_height; ++y) {
+            for (int x = 0; x < snapshot.map_width; ++x) {
+                const int index = y * snapshot.map_width + x;
+                const auto live_tile = snapshot.tiles[static_cast<std::size_t>(index)];
+                const int live_forest_wood = snapshot.forest_wood[static_cast<std::size_t>(index)];
+                const bool use_memory = (fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    && !snapshot.fog_memory_tiles.empty()
+                    && fog_tile_is_in_shroud(
+                        snapshot.fog_visible,
+                        snapshot.fog_explored,
+                        snapshot.map_width,
+                        snapshot.map_height,
+                        local_player_slot_,
+                        x,
+                        y);
+                const sim::components::TileType memory_tile =
+                    use_memory
+                    ? static_cast<sim::components::TileType>(
+                        snapshot.fog_memory_tiles[static_cast<std::size_t>(index)])
+                    : live_tile;
+                const int memory_forest_wood =
+                    use_memory && static_cast<std::size_t>(index) < snapshot.fog_memory_forest_wood.size()
+                    ? snapshot.fog_memory_forest_wood[static_cast<std::size_t>(index)]
+                    : live_forest_wood;
+
+                sim::components::TileType tile = live_tile;
+                int forest_wood = live_forest_wood;
+                float r = 0.20F;
+                float g = 0.32F;
+                float b = 0.18F;
+                float extrude = 0.0F;
+                resolve_tile_appearance(
+                    live_tile,
+                    live_forest_wood,
+                    use_memory,
+                    memory_tile,
+                    memory_forest_wood,
+                    tile,
+                    forest_wood,
+                    r,
+                    g,
+                    b,
+                    extrude);
+
+                float brightness = 1.0F;
+                if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
+                    brightness = fog_tile_brightness(
+                        snapshot.fog_visible,
+                        snapshot.fog_explored,
+                        snapshot.map_width,
+                        snapshot.map_height,
+                        local_player_slot_,
+                        x,
+                        y);
+                }
+
                 r *= brightness;
                 g *= brightness;
                 b *= brightness;
-            }
 
-            draw_extruded_tile(x, y, extrude, r, g, b);
-            if (show_grid_lines_ && (r > 0.0F || g > 0.0F || b > 0.0F)) {
-                draw_tile_grid_lines(x, y, extrude);
-            }
-        }
-    }
-
-    const auto find_unit_pose = [&](const entt::entity entity) -> const RenderEntityPose* {
-        for (const RenderEntityPose& pose : snapshot.units) {
-            if (pose.entity == entity) {
-                return &pose;
-            }
-        }
-
-        return nullptr;
-    };
-
-    for (const entt::entity entity : selected_entities) {
-        const RenderEntityPose* pose = find_unit_pose(entity);
-        if (pose == nullptr) {
-            continue;
-        }
-
-        const auto [world_x, world_z] = interpolate_render_pose(*pose, interpolation_alpha);
-        if (!snapshot.fog_visible.empty()) {
-            const core::GridPos visibility_cell =
-                snapshot_world_visibility_cell(world_x, world_z);
-            if (!snapshot_cell_is_visible(snapshot, visibility_cell)) {
-                continue;
-            }
-        }
-
-        draw_unit_selection_outline(world_x, world_z);
-    }
-
-    if (selected_resource_cell.has_value()) {
-        draw_selection_outline(
-            static_cast<float>(selected_resource_cell->x) + 0.5F,
-            static_cast<float>(selected_resource_cell->y) + 0.5F);
-    }
-
-    if (selected_building != entt::null) {
-        for (const RenderEntityPose& pose : snapshot.buildings) {
-            if (pose.entity != selected_building) {
-                continue;
-            }
-
-            draw_selection_outline(
-                static_cast<float>(pose.grid_x) + 0.5F,
-                static_cast<float>(pose.grid_y) + 0.5F);
-            break;
-        }
-    }
-
-    if (hover_unit != entt::null) {
-        const RenderEntityPose* pose = find_unit_pose(hover_unit);
-        if (pose != nullptr) {
-            const bool is_selected = std::find(selected_entities.begin(), selected_entities.end(), hover_unit)
-                != selected_entities.end();
-            if (!is_selected) {
-                const auto [world_x, world_z] = interpolate_render_pose(*pose, interpolation_alpha);
-                const bool render_hover = snapshot.fog_visible.empty()
-                    || snapshot_cell_is_visible(
-                        snapshot,
-                        snapshot_world_visibility_cell(world_x, world_z));
-                if (render_hover) {
-                    draw_unit_ground_highlight(
-                        SceneHighlight{
-                            world_x,
-                            world_z,
-                            hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_R
-                                                : constants::RENDER_HOVER_FRIENDLY_R,
-                            hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_G
-                                                : constants::RENDER_HOVER_FRIENDLY_G,
-                            hover_unit_is_enemy ? constants::RENDER_HOVER_ENEMY_B
-                                                : constants::RENDER_HOVER_FRIENDLY_B,
-                            constants::RENDER_HOVER_OUTLINE_SCALE,
-                        });
+                draw_extruded_tile(x, y, extrude, r, g, b);
+                if (show_grid_lines_ && (r > 0.0F || g > 0.0F || b > 0.0F)) {
+                    draw_tile_grid_lines(x, y, extrude);
                 }
             }
         }
     }
-    else if (hover_building != entt::null && hover_building != selected_building) {
+
+    finish_textured_batches();
+
+    if (!scene_batch_.empty()) {
+        flush_scene_batch();
+    }
+
+    draw_interaction_highlights(
+        nullptr,
+        &snapshot,
+        selected_entities,
+        hover_unit,
+        hover_unit_is_enemy,
+        hover_building,
+        hover_resource_cell,
+        selected_resource_cell,
+        selected_building,
+        interpolation_alpha);
+
+    if (use_textured_tiles) {
+        collect_snapshot_building_footprints();
+
+        for (int y = 0; y < snapshot.map_height; ++y) {
+            for (int x = 0; x < snapshot.map_width; ++x) {
+                if (!iso_tile_intersects_window(
+                        x,
+                        y,
+                        constants::RENDER_OBJECT_SCREEN_CULL_PAD_TILES)) {
+                    continue;
+                }
+
+                if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    && is_fog_tile_unexplored(
+                        snapshot.fog_visible,
+                        snapshot.fog_explored,
+                        snapshot.map_width,
+                        snapshot.map_height,
+                        local_player_slot_,
+                        x,
+                        y)) {
+                    continue;
+                }
+
+                if (cell_covered_by_building_footprint(
+                        x,
+                        y,
+                        snapshot_building_anchors,
+                        snapshot_building_footprints)) {
+                    continue;
+                }
+
+                const int index = y * snapshot.map_width + x;
+                const auto live_tile = snapshot.tiles[static_cast<std::size_t>(index)];
+                const int live_forest_wood = snapshot.forest_wood[static_cast<std::size_t>(index)];
+                const bool use_memory = (fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    && !snapshot.fog_memory_tiles.empty()
+                    && fog_tile_is_in_shroud(
+                        snapshot.fog_visible,
+                        snapshot.fog_explored,
+                        snapshot.map_width,
+                        snapshot.map_height,
+                        local_player_slot_,
+                        x,
+                        y);
+                const sim::components::TileType memory_tile =
+                    use_memory
+                    ? static_cast<sim::components::TileType>(
+                        snapshot.fog_memory_tiles[static_cast<std::size_t>(index)])
+                    : live_tile;
+                const int memory_forest_wood =
+                    use_memory
+                    && static_cast<std::size_t>(index) < snapshot.fog_memory_forest_wood.size()
+                    ? snapshot.fog_memory_forest_wood[static_cast<std::size_t>(index)]
+                    : live_forest_wood;
+
+                sim::components::TileType tile = live_tile;
+                int forest_wood = live_forest_wood;
+                float unused_r = 0.0F;
+                float unused_g = 0.0F;
+                float unused_b = 0.0F;
+                float unused_extrude = 0.0F;
+                resolve_tile_appearance(
+                    live_tile,
+                    live_forest_wood,
+                    use_memory,
+                    memory_tile,
+                    memory_forest_wood,
+                    tile,
+                    forest_wood,
+                    unused_r,
+                    unused_g,
+                    unused_b,
+                    unused_extrude);
+
+                const int live_bush_food =
+                    static_cast<std::size_t>(index) < snapshot.bush_food.size()
+                    ? snapshot.bush_food[static_cast<std::size_t>(index)]
+                    : 0;
+                const int memory_bush_food =
+                    use_memory
+                        && static_cast<std::size_t>(index) < snapshot.fog_memory_bush_food.size()
+                    ? snapshot.fog_memory_bush_food[static_cast<std::size_t>(index)]
+                    : live_bush_food;
+                const int bush_food = use_memory ? memory_bush_food : live_bush_food;
+                const int live_mine_money =
+                    static_cast<std::size_t>(index) < snapshot.mine_money.size()
+                    ? snapshot.mine_money[static_cast<std::size_t>(index)]
+                    : 0;
+                const int memory_mine_money =
+                    use_memory
+                        && static_cast<std::size_t>(index) < snapshot.fog_memory_mine_money.size()
+                    ? snapshot.fog_memory_mine_money[static_cast<std::size_t>(index)]
+                    : live_mine_money;
+                const int mine_money = use_memory ? memory_mine_money : live_mine_money;
+                const bool draw_forest = tile == sim::components::TileType::Forest && forest_wood > 0;
+                const bool draw_bush =
+                    (tile == sim::components::TileType::Berries
+                        || tile == sim::components::TileType::Blueberries)
+                    && bush_food > 0;
+                const bool draw_gold_mine =
+                    tile == sim::components::TileType::GoldMine && mine_money > 0;
+                if (!draw_forest && !draw_bush && !draw_gold_mine) {
+                    continue;
+                }
+
+                float brightness = 1.0F;
+                if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
+                    brightness = fog_tile_brightness(
+                        snapshot.fog_visible,
+                        snapshot.fog_explored,
+                        snapshot.map_width,
+                        snapshot.map_height,
+                        local_player_slot_,
+                        x,
+                        y);
+                }
+                brightness = fog_object_brightness(
+                    fog_vertex_brightness_ptr,
+                    snapshot.map_width,
+                    snapshot.map_height,
+                    x,
+                    y,
+                    brightness);
+
+                const SceneTextureKind object_kind = draw_forest
+                    ? forest_tree_texture_for_cell(
+                        x,
+                        y,
+                        static_cast<std::size_t>(index) < snapshot.ground.size()
+                            ? snapshot.ground[static_cast<std::size_t>(index)]
+                            : sim::components::GroundType::Grass)
+                    : (draw_gold_mine
+                        ? gold_mine_texture_for_cell(x, y)
+                        : (tile == sim::components::TileType::Blueberries
+                            ? SceneTextureKind::Blueberries
+                            : SceneTextureKind::Berries));
+                const float width_scale = draw_gold_mine
+                    ? constants::RENDER_GOLD_MINE_SPRITE_WIDTH_SCALE
+                    : (draw_forest
+                        ? tree_sprite_width_scale(object_kind)
+                        : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
+                float offset_x = 0.0F;
+                float offset_y = 0.0F;
+                if (draw_gold_mine) {
+                    offset_x = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_X;
+                    offset_y = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_Y;
+                }
+                else if (draw_forest) {
+                    const auto tree_offset = tree_sprite_offset_for_kind(object_kind);
+                    offset_x = tree_offset.first;
+                    offset_y = tree_offset.second;
+                }
+                else {
+                    offset_x = constants::RENDER_BERRY_SPRITE_OFFSET_X;
+                    offset_y = constants::RENDER_BERRY_SPRITE_OFFSET_Y;
+                }
+                queue_iso_object_sprite(
+                    x,
+                    y,
+                    object_kind,
+                    width_scale,
+                    brightness,
+                    static_cast<float>(x + y) + constants::RENDER_TREE_SORT_BIAS,
+                    offset_x,
+                    offset_y);
+            }
+        }
+
+        const int snapshot_mana_lake_frame = mana_lake_animation_frame();
         for (const RenderEntityPose& pose : snapshot.buildings) {
-            if (pose.entity != hover_building) {
+            if (!pose.is_mana_lake) {
                 continue;
             }
 
-            draw_ground_highlight(
-                SceneHighlight{
-                    static_cast<float>(pose.grid_x) + 0.5F,
-                    static_cast<float>(pose.grid_y) + 0.5F,
-                    constants::RENDER_HOVER_FRIENDLY_R,
-                    constants::RENDER_HOVER_FRIENDLY_G,
-                    constants::RENDER_HOVER_FRIENDLY_B,
-                    constants::RENDER_HOVER_OUTLINE_SCALE,
-                });
-            break;
+            bool covered_by_completed_extractor = false;
+            for (const RenderEntityPose& other : snapshot.buildings) {
+                if (!other.is_extractor || other.under_construction || other.health_current <= 0) {
+                    continue;
+                }
+
+                if (other.grid_x == pose.grid_x && other.grid_y == pose.grid_y) {
+                    covered_by_completed_extractor = true;
+                    break;
+                }
+            }
+            if (covered_by_completed_extractor) {
+                continue;
+            }
+
+            const sim::components::BuildingFootprint lake_footprint{
+                pose.footprint_width,
+                pose.footprint_height,
+            };
+            const auto [lake_offset_x, lake_offset_y] = mana_lake_sprite_offset(lake_footprint);
+            queue_iso_object_sprite(
+                pose.grid_x + pose.footprint_width / 2,
+                pose.grid_y + pose.footprint_height / 2,
+                SceneTextureKind::ManaLake,
+                textured_building_width_scale(lake_footprint)
+                    * constants::RENDER_MANA_LAKE_SPRITE_WIDTH_SCALE,
+                snapshot_cell_is_visible(snapshot, core::GridPos{pose.grid_x, pose.grid_y})
+                    ? 1.0F
+                    : constants::FOG_EXPLORED_SHROUD_BRIGHTNESS,
+                static_cast<float>(
+                    (pose.grid_x + pose.footprint_width - 1)
+                    + (pose.grid_y + pose.footprint_height - 1))
+                    + constants::RENDER_MANA_LAKE_SORT_BIAS,
+                lake_offset_x,
+                lake_offset_y,
+                snapshot_mana_lake_frame,
+                constants::MANA_LAKE_ANIMATION_FRAME_COUNT);
         }
-    }
-    else if (hover_resource_cell.has_value()
-        && (!selected_resource_cell.has_value()
-            || *hover_resource_cell != *selected_resource_cell)) {
-        draw_ground_highlight(
-            SceneHighlight{
-                static_cast<float>(hover_resource_cell->x) + 0.5F,
-                static_cast<float>(hover_resource_cell->y) + 0.5F,
-                constants::RENDER_HOVER_RESOURCE_R,
-                constants::RENDER_HOVER_RESOURCE_G,
-                constants::RENDER_HOVER_RESOURCE_B,
-                constants::RENDER_HOVER_OUTLINE_SCALE,
-            });
+
+        for (const RenderEntityPose& pose : snapshot.buildings) {
+            if ((!pose.is_town_center && !pose.is_house && !pose.is_lumber_camp && !pose.is_mill
+                    && !pose.is_mining_camp && !pose.is_barracks && !pose.is_mage_academy
+                    && !pose.is_tower && !pose.is_market && !pose.is_extractor && !pose.is_garden
+                    && !pose.is_reservoir && !pose.is_farm)
+                || pose.health_current <= 0
+                || (pose.under_construction && !pose.is_farm)) {
+                continue;
+            }
+
+            float brightness = 1.0F;
+            if (pose.shrouded) {
+                brightness = constants::FOG_EXPLORED_SHROUD_BRIGHTNESS;
+            }
+
+            const BuildingSpriteVisual visual = building_sprite_visual(
+                pose.is_house,
+                pose.is_lumber_camp,
+                pose.is_mill,
+                pose.is_mining_camp,
+                pose.is_barracks,
+                pose.is_mage_academy,
+                pose.is_tower,
+                pose.is_market,
+                pose.is_extractor,
+                pose.house_variant,
+                pose.is_garden,
+                pose.is_reservoir,
+                pose.is_farm,
+                pose.is_farm
+                    && (pose.under_construction || pose.farm_food_remaining <= 0));
+            const int center_x = pose.grid_x + pose.footprint_width / 2;
+            const int center_y = pose.grid_y + pose.footprint_height / 2;
+            const sim::components::BuildingFootprint footprint{
+                pose.footprint_width,
+                pose.footprint_height,
+            };
+            const float width_scale = textured_building_width_scale(footprint);
+            const auto [offset_x, offset_y] = textured_building_sprite_offset(footprint);
+            const float sort_key = pose.is_farm
+                ? farm_sprite_sort_key(pose.grid_x, pose.grid_y, false)
+                : building_footprint_sort_key(
+                    pose.grid_x,
+                    pose.grid_y,
+                    pose.footprint_width,
+                    pose.footprint_height,
+                    false);
+            queue_iso_object_sprite(
+                center_x,
+                center_y,
+                visual.color,
+                width_scale,
+                brightness,
+                sort_key,
+                offset_x,
+                offset_y);
+            if (visual.has_team_mask) {
+                const auto& rgb =
+                    sim::components::player_slot_rgb(g_draw_player_color_indices, pose.player_slot);
+                queue_iso_object_sprite(
+                    center_x,
+                    center_y,
+                    visual.mask,
+                    width_scale,
+                    brightness,
+                    pose.is_farm
+                        ? farm_sprite_sort_key(pose.grid_x, pose.grid_y, true)
+                        : building_footprint_sort_key(
+                            pose.grid_x,
+                            pose.grid_y,
+                            pose.footprint_width,
+                            pose.footprint_height,
+                            true),
+                    offset_x,
+                    offset_y,
+                    0,
+                    1,
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
+        }
+
+        sim::components::MapGrid snapshot_occlusion_map{};
+        snapshot_occlusion_map.width = snapshot.map_width;
+        snapshot_occlusion_map.height = snapshot.map_height;
+        snapshot_occlusion_map.tiles = snapshot.tiles;
+        snapshot_occlusion_map.ground = snapshot.ground;
+        snapshot_occlusion_map.forest_wood = snapshot.forest_wood;
+        snapshot_occlusion_map.bush_food = snapshot.bush_food;
+        snapshot_occlusion_map.mine_money = snapshot.mine_money;
+
+        for (const RenderEntityPose& pose : snapshot.units) {
+            if (pose.health_current <= 0 && !pose.is_projectile) {
+                continue;
+            }
+
+            const auto [world_x, world_z] = interpolate_render_pose(pose, interpolation_alpha);
+            if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
+                const core::GridPos visibility_cell =
+                    snapshot_world_visibility_cell(world_x, world_z);
+                if (!snapshot_cell_is_visible(snapshot, visibility_cell)
+                    && !(pose.is_projectile
+                        && pose.projectile_reveal_slot == local_player_slot_)) {
+                    continue;
+                }
+            }
+
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                pose.is_mage, pose.is_worker, pose.is_projectile, pose.player_slot);
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
+            const float sort_key = cap_unit_sort_below_buildings(
+                unit_depth_sort_key(world_x, world_z),
+                world_x,
+                world_z,
+                snapshot_building_anchors,
+                snapshot_building_footprints,
+                snapshot_building_sprites);
+            PendingUnitDraw unit_draw{
+                sort_key,
+                world_x,
+                world_z,
+                r,
+                g,
+                b,
+                r,
+                g,
+                b,
+            };
+            if (style.draw_hat) {
+                unit_draw.draw_hat = true;
+                unit_draw.silhouette_r = style.hat_r;
+                unit_draw.silhouette_g = style.hat_g;
+                unit_draw.silhouette_b = style.hat_b;
+            }
+            if (pose.is_projectile) {
+                unit_draw.radius = constants::ROCK_PROJECTILE_RADIUS;
+                unit_draw.height = constants::ROCK_PROJECTILE_RADIUS * 2.0F;
+                if (pose.is_arrow) {
+                    unit_draw.radius = constants::ARROW_PROJECTILE_RADIUS;
+                    unit_draw.height = constants::ARROW_PROJECTILE_RADIUS * 2.0F;
+                    unit_draw.r = constants::RENDER_ARROW_PROJECTILE_R;
+                    unit_draw.g = constants::RENDER_ARROW_PROJECTILE_G;
+                    unit_draw.b = constants::RENDER_ARROW_PROJECTILE_B;
+                }
+            }
+            queue_unit_draw(unit_draw);
+        }
+
+        flush_pending_depth_sorted_draws(active_textured_batch);
+        finish_textured_batches();
+
+        glDisable(GL_DEPTH_TEST);
+        for (const RenderEntityPose& pose : snapshot.units) {
+            if (pose.health_current <= 0 && !pose.is_projectile) {
+                continue;
+            }
+
+            const auto [world_x, world_z] = interpolate_render_pose(pose, interpolation_alpha);
+            if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
+                const core::GridPos visibility_cell =
+                    snapshot_world_visibility_cell(world_x, world_z);
+                if (!snapshot_cell_is_visible(snapshot, visibility_cell)
+                    && !(pose.is_projectile
+                        && pose.projectile_reveal_slot == local_player_slot_)) {
+                    continue;
+                }
+            }
+
+            const auto& rgb = sim::components::player_slot_rgb(
+                g_draw_player_color_indices, pose.player_slot);
+            const float silhouette_r = rgb[0];
+            const float silhouette_g = rgb[1];
+            const float silhouette_b = rgb[2];
+
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
+                world_x,
+                world_z,
+                snapshot_occlusion_map,
+                snapshot_building_footprints,
+                snapshot_building_anchors,
+                snapshot_building_sprites,
+                (fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    ? &snapshot.fog_visible
+                    : nullptr,
+                (fog_of_war_enabled_ && !snapshot.fog_explored.empty())
+                    ? &snapshot.fog_explored
+                    : nullptr);
+            if (!occluder_sprites.empty()) {
+                draw_unit_occlusion_silhouette(
+                    world_x,
+                    world_z,
+                    silhouette_r,
+                    silhouette_g,
+                    silhouette_b,
+                    occluder_sprites);
+            }
+        }
+        if (!scene_batch_.empty()) {
+            flush_scene_batch();
+        }
+        glEnable(GL_DEPTH_TEST);
     }
 
     for (const RenderEntityPose& pose : snapshot.buildings) {
+        if (pose.is_mana_lake) {
+            continue;
+        }
+
+        if (use_textured_tiles
+            && (pose.is_town_center || pose.is_house || pose.is_lumber_camp || pose.is_extractor
+                || pose.is_mill || pose.is_mining_camp || pose.is_barracks || pose.is_mage_academy
+                || pose.is_tower || pose.is_market || pose.is_garden || pose.is_reservoir
+                || pose.is_farm)) {
+            continue;
+        }
+
         float base_r = 0.55F;
         float base_g = 0.38F;
         float base_b = 0.18F;
@@ -1611,71 +6688,216 @@ void GameRenderer::draw_snapshot(
             b);
     }
 
-    for (const RenderEntityPose& pose : snapshot.units) {
-        if (pose.health_current <= 0) {
-            continue;
-        }
+    finish_textured_batches();
 
-        const auto [world_x, world_z] = interpolate_render_pose(pose, interpolation_alpha);
-        if (!snapshot.fog_visible.empty()) {
-            const core::GridPos visibility_cell =
-                snapshot_world_visibility_cell(world_x, world_z);
-            if (!snapshot_cell_is_visible(snapshot, visibility_cell)) {
+    if (!use_textured_tiles) {
+        collect_snapshot_building_footprints();
+
+        sim::components::MapGrid snapshot_occlusion_map{};
+        snapshot_occlusion_map.width = snapshot.map_width;
+        snapshot_occlusion_map.height = snapshot.map_height;
+        snapshot_occlusion_map.tiles = snapshot.tiles;
+        snapshot_occlusion_map.ground = snapshot.ground;
+        snapshot_occlusion_map.forest_wood = snapshot.forest_wood;
+        snapshot_occlusion_map.bush_food = snapshot.bush_food;
+        snapshot_occlusion_map.mine_money = snapshot.mine_money;
+
+        for (const RenderEntityPose& pose : snapshot.units) {
+            if (pose.health_current <= 0 && !pose.is_projectile) {
                 continue;
+            }
+
+            const auto [world_x, world_z] = interpolate_render_pose(pose, interpolation_alpha);
+            if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
+                const core::GridPos visibility_cell =
+                    snapshot_world_visibility_cell(world_x, world_z);
+                if (!snapshot_cell_is_visible(snapshot, visibility_cell)
+                    && !(pose.is_projectile
+                        && pose.projectile_reveal_slot == local_player_slot_)) {
+                    continue;
+                }
+            }
+
+            const UnitPlaceholderStyle style = unit_placeholder_style(
+                pose.is_mage, pose.is_worker, pose.is_projectile, pose.player_slot);
+            float r = style.r;
+            float g = style.g;
+            float b = style.b;
+            apply_team_color(style.r, style.g, style.b, r, g, b);
+            draw_entity_cylinder(
+                world_x,
+                world_z,
+                constants::RENDER_UNIT_HEIGHT,
+                constants::RENDER_UNIT_RADIUS,
+                r,
+                g,
+                b);
+            if (style.draw_hat) {
+                const float hat_total = constants::RENDER_UNIT_HEIGHT
+                    * (1.0F + constants::RENDER_MAGE_HAT_HEIGHT_SCALE);
+                const float hat_start = constants::RENDER_UNIT_HEIGHT / hat_total;
+                draw_entity_cylinder(
+                    world_x,
+                    world_z,
+                    hat_total,
+                    constants::RENDER_UNIT_RADIUS * constants::RENDER_MAGE_HAT_SCALE,
+                    style.hat_r,
+                    style.hat_g,
+                    style.hat_b,
+                    hat_start,
+                    1.0F);
+            }
+
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
+                world_x,
+                world_z,
+                snapshot_occlusion_map,
+                snapshot_building_footprints,
+                snapshot_building_anchors,
+                snapshot_building_sprites,
+                (fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    ? &snapshot.fog_visible
+                    : nullptr,
+                (fog_of_war_enabled_ && !snapshot.fog_explored.empty())
+                    ? &snapshot.fog_explored
+                    : nullptr);
+            if (!occluder_sprites.empty()) {
+                draw_unit_occlusion_silhouette(
+                    world_x,
+                    world_z,
+                    r,
+                    g,
+                    b,
+                    occluder_sprites);
             }
         }
 
-        float base_r = 0.25F;
-        float base_g = 0.55F;
-        float base_b = 0.85F;
-        if (pose.is_enemy) {
-            base_r = 0.85F;
-            base_g = 0.25F;
-            base_b = 0.25F;
+        if (!scene_batch_.empty()) {
+            flush_scene_batch();
         }
-        else if (pose.is_worker) {
-            base_r = 0.85F;
-            base_g = 0.75F;
-            base_b = 0.20F;
-        }
-
-        float r = base_r;
-        float g = base_g;
-        float b = base_b;
-        apply_team_color(base_r, base_g, base_b, r, g, b);
-        draw_entity_cylinder(
-            world_x,
-            world_z,
-            constants::RENDER_UNIT_HEIGHT,
-            constants::RENDER_UNIT_RADIUS,
-            r,
-            g,
-            b);
     }
 
-    flush_scene_batch();
+    if (use_textured_tiles && show_grid_lines_) {
+        finish_textured_batches();
+        glDisable(GL_DEPTH_TEST);
+        draw_iso_tile_grid_lines(snapshot.map_width, snapshot.map_height);
+        glEnable(GL_DEPTH_TEST);
+    }
 
+    if (!scene_batch_.empty()) {
+        flush_scene_batch();
+    }
+
+    if (placement_ghost_anchor.has_value()) {
+        const int footprint =
+            placement_ghost_footprint_tiles(hud_context_input.command_panel_mode);
+        if (placement_ghost_footprint_on_map(
+                snapshot.map_width,
+                snapshot.map_height,
+                *placement_ghost_anchor,
+                footprint)) {
+            const float ghost_r = placement_ghost_valid ? 0.35F : 0.85F;
+            const float ghost_g = placement_ghost_valid ? 0.75F : 0.25F;
+            const float ghost_b = placement_ghost_valid ? 0.45F : 0.25F;
+            glDisable(GL_DEPTH_TEST);
+            draw_footprint_highlight(
+                placement_ghost_anchor->x,
+                placement_ghost_anchor->y,
+                footprint,
+                footprint,
+                ghost_r,
+                ghost_g,
+                ghost_b,
+                constants::RENDER_SELECTION_OUTLINE_SCALE);
+            const int center_x = placement_ghost_anchor->x + footprint / 2;
+            const int center_y = placement_ghost_anchor->y + footprint / 2;
+            unsigned int ghost_batch = 0U;
+            const BuildingSpriteVisual ghost_visual =
+                placement_ghost_visual(hud_context_input.command_panel_mode);
+            const sim::components::BuildingFootprint ghost_footprint{footprint, footprint};
+            const auto [ghost_offset_x, ghost_offset_y] =
+                textured_building_sprite_offset(ghost_footprint);
+            queue_iso_object_sprite(
+                center_x,
+                center_y,
+                ghost_visual.color,
+                textured_building_width_scale(ghost_footprint),
+                constants::RENDER_GHOST_BUILDING_ALPHA,
+                building_footprint_sort_key(
+                    placement_ghost_anchor->x,
+                    placement_ghost_anchor->y,
+                    footprint,
+                    footprint,
+                    false),
+                ghost_offset_x,
+                ghost_offset_y);
+            flush_pending_depth_sorted_draws(ghost_batch);
+            glEnable(GL_DEPTH_TEST);
+        }
+    }
+
+    draw_hitbox_overlays_snapshot(snapshot, interpolation_alpha);
+    draw_debug_path_overlays_snapshot(snapshot, interpolation_alpha);
+
+    render::HudUnitContext hud_context = hud_context_input;
+    if (selected_entities.size() == 1U) {
+        hud_context.selected_single_unit = selected_entities.front();
+    }
+    else if (selected_building != entt::null) {
+        hud_context.selected_single_unit = selected_building;
+    }
+    else {
+        hud_context.selected_single_unit = entt::null;
+    }
+    hud_context.hover_unit = hover_unit;
+    hud_context.hover_unit_is_enemy = hover_unit_is_enemy;
+    hud_context.selected_resource_cell = selected_resource_cell;
+    {
+        const float window_width = static_cast<float>(window_size_.x);
+        const float window_height = static_cast<float>(window_size_.y);
+        const auto corner0 = camera_.screen_to_world_xz(0.0F, 0.0F);
+        const auto corner1 = camera_.screen_to_world_xz(window_width, 0.0F);
+        const auto corner2 = camera_.screen_to_world_xz(window_width, window_height);
+        const auto corner3 = camera_.screen_to_world_xz(0.0F, window_height);
+        hud_context.has_camera_view = true;
+        hud_context.camera_world_min_x =
+            std::min(std::min(corner0.first, corner1.first), std::min(corner2.first, corner3.first));
+        hud_context.camera_world_max_x =
+            std::max(std::max(corner0.first, corner1.first), std::max(corner2.first, corner3.first));
+        hud_context.camera_world_min_z =
+            std::min(std::min(corner0.second, corner1.second), std::min(corner2.second, corner3.second));
+        hud_context.camera_world_max_z =
+            std::max(std::max(corner0.second, corner1.second), std::max(corner2.second, corner3.second));
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
-    hud_overlay_.draw_snapshot(
-        snapshot,
-        window_size_,
-        fps,
-        local_player_slot_,
-        camera_.zoom(),
-        network_stats);
-
+    glDepthMask(GL_FALSE);
     if (selection_box.active) {
         draw_screen_rect_outline(
             selection_box.start.x,
             selection_box.start.y,
             selection_box.current.x,
             selection_box.current.y,
-            0.35F,
-            0.95F,
-            0.35F);
+            constants::RENDER_SELECTION_BOX_R,
+            constants::RENDER_SELECTION_BOX_G,
+            constants::RENDER_SELECTION_BOX_B);
     }
 
-    glEnable(GL_DEPTH_TEST);
+    hud_overlay_.draw_snapshot(
+        snapshot,
+        window_size_,
+        fps,
+        tps,
+        local_player_slot_,
+        camera_.zoom(),
+        hud_context,
+        network_stats,
+        show_perf_hud_,
+        show_selection_debug_);
+    if (offscreen) {
+        present_target_to_window();
+    }
 }
 
 void GameRenderer::clear_frame() const
@@ -1684,8 +6906,13 @@ void GameRenderer::clear_frame() const
         return;
     }
 
-    glClearColor(0.05F, 0.06F, 0.08F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    clear_opaque_framebuffer(
+        constants::RENDER_CLEAR_R,
+        constants::RENDER_CLEAR_G,
+        constants::RENDER_CLEAR_B,
+        constants::RENDER_CLEAR_A);
 }
 
 void GameRenderer::draw_waiting_overlay(

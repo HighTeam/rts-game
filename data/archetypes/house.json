@@ -1,0 +1,10 @@
+{
+  "id": "house",
+  "kind": "structure",
+  "display_name": "House",
+  "max_hp": 150,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "build_wood_cost": 30,
+  "vision_range": 4
+}

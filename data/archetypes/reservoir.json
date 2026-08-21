@@ -1,0 +1,11 @@
+{
+  "id": "reservoir",
+  "kind": "structure",
+  "display_name": "Mana reservoir",
+  "max_hp": 300,
+  "footprint_width": 2,
+  "footprint_height": 2,
+  "build_wood_cost": 100,
+  "build_money_cost": 50,
+  "vision_range": 4
+}

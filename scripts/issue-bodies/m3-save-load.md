@@ -2,6 +2,6 @@
 
 Epic from [docs/BACKLOG.md](../docs/BACKLOG.md) — M3.
 
-- [ ] Serialize full sim state (straightforward if ECS components are clean data)
-- [ ] Singleplayer save/load
-- [ ] Multiplayer save/load (snapshot + input log — reuse reconnect mechanism)
+- [x] Serialize full sim state — `encode_sim_snapshot` / `apply_snapshot` (reconnect path)
+- [x] Singleplayer save/load — menu Save/Load → `saves/quicksave.aoa` (`sim/persistence/save_game.*`)
+- [ ] Multiplayer save/load (snapshot bytes already include input log; coordinated peer load still TODO)

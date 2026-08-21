@@ -21,6 +21,7 @@ struct MoveSegment {
     math::Fixed to_y{};
     int ticks_elapsed{0};
     int ticks_total{0};
+    int blocked_ticks{0};
 };
 
 } // namespace aoa::sim::components

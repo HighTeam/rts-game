@@ -1,9 +1,11 @@
+#include "net/lockstep_debug_log.hpp"
 #include "net/lockstep_runner.hpp"
 
 #include "core/constants.hpp"
 #include "net/enet_transport.hpp"
 #include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
+#include "sim/player/player_economy.hpp"
 #include "sim/player/player_command.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
@@ -19,10 +21,15 @@
 #include "sim/snapshot/sim_snapshot.hpp"
 #include "sim/systems/disconnected_player_ai.hpp"
 #include "sim/systems/gameplay_systems.hpp"
+#include "sim/systems/pathfinding.hpp"
 
+#include <array>
 #include <chrono>
 #include <iostream>
+#include <vector>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace aoa::net {
 
@@ -256,7 +263,13 @@ bool wait_for_lockstep_connection(LockstepSession& host, LockstepSession& client
             continue;
         }
 
-        if (!client.is_connected() || !client.is_session_ready()) {
+        const std::uint8_t required_clients =
+            static_cast<std::uint8_t>(host.session_player_count() - 1U);
+        if (expected_connected_clients < required_clients) {
+            return true;
+        }
+
+        if (!host.is_session_ready() || !client.is_session_ready()) {
             continue;
         }
 
@@ -370,6 +383,94 @@ bool wait_for_lockstep_connection(LockstepSession& host, LockstepSession& client
         && host_hash == client_three_simulation.state_hash();
 }
 
+[[nodiscard]] bool wait_for_lockstep_session_ready(
+    LockstepSession& session,
+    const std::chrono::milliseconds timeout_ms)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (session.is_desynced() || session.is_host_gone()) {
+            return false;
+        }
+
+        if (session.is_connected() && session.is_session_ready()) {
+            return true;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(constants::LOCKSTEP_TICK_IDLE_SLEEP_MS));
+    }
+
+    return session.is_connected() && session.is_session_ready();
+}
+
+[[nodiscard]] bool wait_for_lockstep_host_clients(
+    LockstepSession& session,
+    const std::uint8_t expected_clients,
+    const std::chrono::milliseconds timeout_ms)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (session.is_desynced()) {
+            return false;
+        }
+
+        if (session.connected_peer_count() >= expected_clients && session.is_session_ready()) {
+            return true;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(constants::LOCKSTEP_TICK_IDLE_SLEEP_MS));
+    }
+
+    return session.connected_peer_count() >= expected_clients && session.is_session_ready();
+}
+
+[[nodiscard]] bool advance_lockstep_session_ticks(
+    LockstepSession& session,
+    sim::Simulation& simulation,
+    const std::uint64_t ticks_to_advance,
+    const std::chrono::milliseconds timeout_ms)
+{
+    std::uint64_t start_tick = 0U;
+    {
+        std::lock_guard lock(session.simulation_access_mutex());
+        start_tick = simulation.tick_count();
+    }
+
+    const std::uint64_t target_tick = start_tick + ticks_to_advance;
+    const auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (session.is_desynced()) {
+            return false;
+        }
+
+        if (session.is_peer_disconnected() && !session.is_ai_fallback()) {
+            return false;
+        }
+
+        if (session.is_host_gone() || session.is_reconnecting()) {
+            return false;
+        }
+
+        {
+            std::lock_guard lock(session.simulation_access_mutex());
+            if (simulation.tick_count() >= target_tick) {
+                return true;
+            }
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(constants::LOCKSTEP_TICK_IDLE_SLEEP_MS));
+    }
+
+    std::lock_guard lock(session.simulation_access_mutex());
+    return simulation.tick_count() >= target_tick;
+}
+
 bool advance_lockstep_session(LockstepSession& session, const std::uint64_t target_ticks)
 {
     std::uint64_t completed_ticks = 0U;
@@ -417,7 +518,7 @@ void issue_smoke_gather_command(LockstepSession& host, sim::Simulation& simulati
     command.type = sim::player::PlayerCommandType::Gather;
     command.unit_ids = {worker};
     command.cell = {20, 12};
-    host.submit_local_command(std::move(command));
+    (void)host.submit_local_command(std::move(command));
 }
 
 void issue_smoke_spawn_worker_command(LockstepSession& host, sim::Simulation& simulation)
@@ -431,7 +532,7 @@ void issue_smoke_spawn_worker_command(LockstepSession& host, sim::Simulation& si
     sim::player::PlayerCommand command{};
     command.type = sim::player::PlayerCommandType::SpawnWorker;
     command.target_entity = town_center;
-    host.submit_local_command(std::move(command));
+    (void)host.submit_local_command(std::move(command));
 }
 
 } // namespace
@@ -672,115 +773,6 @@ int run_lockstep_disconnect_smoke()
     return 0;
 }
 
-int run_lockstep_peer_silence_smoke()
-{
-    if (!EnetTransport::global_initialize()) {
-        std::cerr << "lockstep-peer-silence-smoke: enet_initialize failed\n";
-        return 1;
-    }
-
-    sim::Simulation host_simulation{};
-    sim::Simulation client_simulation{};
-
-    LockstepSession host{
-        LockstepRole::Host,
-        constants::LOCKSTEP_HOST_PLAYER_SLOT,
-        host_simulation};
-    LockstepSession client{
-        LockstepRole::Client,
-        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
-        client_simulation};
-
-    if (!host.start_host(constants::LOCKSTEP_PEER_SILENCE_SMOKE_PORT)) {
-        std::cerr << "lockstep-peer-silence-smoke: failed to start host\n";
-        EnetTransport::global_deinitialize();
-        return 1;
-    }
-
-    if (!client.connect("127.0.0.1", constants::LOCKSTEP_PEER_SILENCE_SMOKE_PORT)) {
-        std::cerr << "lockstep-peer-silence-smoke: failed to connect client\n";
-        EnetTransport::global_deinitialize();
-        return 1;
-    }
-
-    if (!wait_for_lockstep_connection(host, client)) {
-        std::cerr << "lockstep-peer-silence-smoke: timed out waiting for connection\n";
-        EnetTransport::global_deinitialize();
-        return 1;
-    }
-
-    const std::uint64_t warmup_ticks = constants::LOCKSTEP_PEER_SILENCE_SMOKE_WARMUP_TICKS;
-    std::uint64_t host_ticks = 0U;
-    std::uint64_t client_ticks = 0U;
-
-    while (host_ticks < warmup_ticks || client_ticks < warmup_ticks) {
-        host.poll();
-        client.poll();
-
-        if (host.is_desynced() || client.is_desynced()) {
-            std::cerr << "lockstep-peer-silence-smoke: desync during warmup\n";
-            EnetTransport::global_deinitialize();
-            return 1;
-        }
-
-        if (host_ticks < warmup_ticks && host.try_advance_tick()) {
-            ++host_ticks;
-        }
-
-        if (client_ticks < warmup_ticks && client.try_advance_tick()) {
-            ++client_ticks;
-        }
-    }
-
-    const auto silence_deadline = std::chrono::steady_clock::now()
-        + std::chrono::milliseconds(constants::LOCKSTEP_PEER_SILENCE_SMOKE_WAIT_MS);
-    bool host_ai_started = false;
-    bool client_reconnecting = false;
-
-    while (std::chrono::steady_clock::now() < silence_deadline) {
-        host.poll();
-        client.poll();
-
-        if (host.try_advance_tick()) {
-            // Host keeps simulating; client stays silent (no try_advance_tick).
-        }
-
-        if (host.is_ai_fallback()) {
-            host_ai_started = true;
-        }
-
-        if (client.is_reconnecting()) {
-            client_reconnecting = true;
-        }
-
-        if (host_ai_started && client_reconnecting && !host.is_connected()) {
-            break;
-        }
-    }
-
-    if (!host_ai_started) {
-        std::cerr << "lockstep-peer-silence-smoke: host did not enter AI fallback after peer silence\n";
-        EnetTransport::global_deinitialize();
-        return 1;
-    }
-
-    if (host.is_connected()) {
-        std::cerr << "lockstep-peer-silence-smoke: host still connected to silent peer\n";
-        EnetTransport::global_deinitialize();
-        return 1;
-    }
-
-    if (!client_reconnecting) {
-        std::cerr << "lockstep-peer-silence-smoke: client did not enter reconnect after host AI takeover\n";
-        EnetTransport::global_deinitialize();
-        return 1;
-    }
-
-    EnetTransport::global_deinitialize();
-    std::cout << "lockstep-peer-silence-smoke: ok ai_at_tick=" << host_simulation.tick_count() << '\n';
-    return 0;
-}
-
 int run_lockstep_reconnect_smoke()
 {
     if (!EnetTransport::global_initialize()) {
@@ -924,10 +916,10 @@ int run_lockstep_4_smoke()
         return 1;
     }
 
-    sim::Simulation host_simulation{};
-    sim::Simulation client_one_simulation{};
-    sim::Simulation client_two_simulation{};
-    sim::Simulation client_three_simulation{};
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
 
     LockstepSession host{
         LockstepRole::Host,
@@ -1022,6 +1014,633 @@ int run_lockstep_4_smoke()
     return 0;
 }
 
+int run_lockstep_2h2ai_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-2h2ai-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client{
+        LockstepRole::Client,
+        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
+        client_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_ai{};
+    slot_is_ai[2] = true;
+    slot_is_ai[3] = true;
+    host_simulation.set_player_ai_controlled(2U, true);
+    host_simulation.set_player_ai_controlled(3U, true);
+    client_simulation.set_player_ai_controlled(2U, true);
+    client_simulation.set_player_ai_controlled(3U, true);
+    host.configure_ai_slots(slot_is_ai);
+    client.configure_ai_slots(slot_is_ai);
+
+    if (!host.start_host(constants::LOCKSTEP_2H2AI_SMOKE_PORT)) {
+        std::cerr << "lockstep-2h2ai-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client.connect("127.0.0.1", constants::LOCKSTEP_2H2AI_SMOKE_PORT)) {
+        std::cerr << "lockstep-2h2ai-smoke: failed to connect client\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    bool ready = false;
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        client.poll();
+        if (host.is_desynced() || client.is_desynced()) {
+            std::cerr << "lockstep-2h2ai-smoke: desync during handshake\n";
+            EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        if (host.is_lobby_full() && host.is_session_ready() && client.is_session_ready()
+            && host.is_connected() && client.is_connected()) {
+            ready = true;
+            break;
+        }
+    }
+
+    if (!ready) {
+        std::cerr << "lockstep-2h2ai-smoke: handshake timed out lobby_full="
+                  << host.is_lobby_full() << " host_ready=" << host.is_session_ready()
+                  << " client_ready=" << client.is_session_ready() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_both_lockstep_sessions(
+            host,
+            client,
+            host_simulation,
+            client_simulation,
+            constants::LOCKSTEP_2H2AI_SMOKE_TICKS)) {
+        std::cerr << "lockstep-2h2ai-smoke: advance/hash failed host=0x" << std::hex
+                  << host_simulation.state_hash() << " client=0x" << client_simulation.state_hash()
+                  << std::dec << " desync=" << (host.is_desynced() || client.is_desynced())
+                  << " tick=" << host_simulation.tick_count() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    const std::uint64_t tick_before_leave = host_simulation.tick_count();
+    client.disconnect_transport();
+
+    bool ai_took_over = false;
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        if (host.has_disconnected_human_slots()) {
+            ai_took_over = true;
+            break;
+        }
+
+        (void)host.try_advance_tick();
+        if (host.has_disconnected_human_slots()) {
+            ai_took_over = true;
+            break;
+        }
+    }
+
+    if (!ai_took_over) {
+        std::cerr << "lockstep-2h2ai-smoke: host did not AI-takeover after P2 leave\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    std::uint64_t ticks_after_leave = 0U;
+    for (int attempt = 0; attempt < constants::LOCKSTEP_ADVANCE_ATTEMPTS; ++attempt) {
+        host.poll();
+        if (host.try_advance_tick()) {
+            ++ticks_after_leave;
+            if (ticks_after_leave >= 10U) {
+                break;
+            }
+        }
+    }
+
+    if (ticks_after_leave < 10U || host_simulation.tick_count() <= tick_before_leave) {
+        std::cerr << "lockstep-2h2ai-smoke: host stalled after P2 leave advanced="
+                  << ticks_after_leave << " tick=" << host_simulation.tick_count() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-2h2ai-smoke: ok ticks=" << host_simulation.tick_count()
+              << " hash=0x" << std::hex << host_simulation.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+int run_lockstep_4_stress_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-4-stress-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_one{
+        LockstepRole::Client,
+        1U,
+        client_one_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_two{
+        LockstepRole::Client,
+        2U,
+        client_two_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_three{
+        LockstepRole::Client,
+        3U,
+        client_three_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepDebugLog::enable(constants::LOCKSTEP_HOST_PLAYER_SLOT, LockstepRole::Host);
+    LockstepDebugLog::enable(1U, LockstepRole::Client);
+    LockstepDebugLog::enable(2U, LockstepRole::Client);
+    LockstepDebugLog::enable(3U, LockstepRole::Client);
+
+    host.set_auto_input_enabled(true);
+    client_one.set_auto_input_enabled(true);
+    client_two.set_auto_input_enabled(true);
+    client_three.set_auto_input_enabled(true);
+
+    if (!host.start_host(constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_one.connect("127.0.0.1", constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: client 1 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_one, 1U)) {
+        std::cerr << "lockstep-4-stress-smoke: client 1 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_two.connect("127.0.0.1", constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: client 2 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_two, 2U)) {
+        std::cerr << "lockstep-4-stress-smoke: client 2 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_three.connect("127.0.0.1", constants::LOCKSTEP_4_STRESS_PORT)) {
+        std::cerr << "lockstep-4-stress-smoke: client 3 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_three, constants::LOCKSTEP_4_MAX_CLIENTS)) {
+        std::cerr << "lockstep-4-stress-smoke: client 3 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!host.is_session_ready()) {
+        std::cerr << "lockstep-4-stress-smoke: host session not ready\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_four_lockstep_sessions(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation,
+            constants::LOCKSTEP_4_STRESS_TICKS)) {
+        std::cerr << "lockstep-4-stress-smoke: advance/hash failed host=0x" << std::hex
+                  << host_simulation.state_hash() << " c1=0x" << client_one_simulation.state_hash()
+                  << " c2=0x" << client_two_simulation.state_hash() << " c3=0x"
+                  << client_three_simulation.state_hash() << std::dec << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-4-stress-smoke: ok ticks=" << constants::LOCKSTEP_4_STRESS_TICKS
+              << " hash=0x" << std::hex << host_simulation.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+[[nodiscard]] bool lockstep_four_sim_hashes_match(
+    const sim::Simulation& host_simulation,
+    const sim::Simulation& client_one_simulation,
+    const sim::Simulation& client_two_simulation,
+    const sim::Simulation& client_three_simulation)
+{
+    const std::uint64_t host_hash = host_simulation.state_hash();
+    return host_hash == client_one_simulation.state_hash()
+        && host_hash == client_two_simulation.state_hash()
+        && host_hash == client_three_simulation.state_hash();
+}
+
+[[nodiscard]] bool advance_three_lockstep_sessions_after_disconnect(
+    LockstepSession& host,
+    LockstepSession& client_one,
+    LockstepSession& client_two,
+    sim::Simulation& host_simulation,
+    sim::Simulation& client_one_simulation,
+    sim::Simulation& client_two_simulation,
+    const std::uint64_t target_ticks)
+{
+    const std::uint64_t start_tick = host_simulation.tick_count();
+    const std::uint64_t target_absolute_tick = start_tick + target_ticks;
+
+    for (int attempt = 0; attempt < constants::LOCKSTEP_ADVANCE_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+
+        if (lockstep_sessions_desynced(host, client_one) || lockstep_sessions_desynced(host, client_two)) {
+            return false;
+        }
+
+        if (host_simulation.tick_count() < target_absolute_tick) {
+            (void)host.try_advance_tick();
+        }
+
+        if (client_one_simulation.tick_count() < target_absolute_tick) {
+            (void)client_one.try_advance_tick();
+        }
+
+        if (client_two_simulation.tick_count() < target_absolute_tick) {
+            (void)client_two.try_advance_tick();
+        }
+
+        if (host_simulation.tick_count() >= target_absolute_tick
+            && client_one_simulation.tick_count() >= target_absolute_tick
+            && client_two_simulation.tick_count() >= target_absolute_tick) {
+            break;
+        }
+    }
+
+    if (host_simulation.tick_count() < target_absolute_tick
+        || client_one_simulation.tick_count() < target_absolute_tick
+        || client_two_simulation.tick_count() < target_absolute_tick) {
+        return false;
+    }
+
+    return lockstep_sim_hashes_match(host_simulation, client_one_simulation)
+        && lockstep_sim_hashes_match(host_simulation, client_two_simulation);
+}
+
+[[nodiscard]] bool wait_for_lockstep_4_reconnect_resync(
+    LockstepSession& host,
+    LockstepSession& client_one,
+    LockstepSession& client_two,
+    LockstepSession& client_three,
+    sim::Simulation& host_simulation,
+    sim::Simulation& client_one_simulation,
+    sim::Simulation& client_two_simulation,
+    sim::Simulation& client_three_simulation)
+{
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+        client_three.poll();
+
+        if (lockstep_sessions_desynced(host, client_one)
+            || lockstep_sessions_desynced(host, client_two)
+            || lockstep_sessions_desynced(host, client_three)) {
+            return false;
+        }
+
+        if (!host.is_connected() || !client_three.is_connected()) {
+            continue;
+        }
+
+        if (!client_three.is_session_ready() || client_three.is_awaiting_reconnect_handshake()) {
+            continue;
+        }
+
+        if (!lockstep_four_sim_hashes_match(
+                host_simulation,
+                client_one_simulation,
+                client_two_simulation,
+                client_three_simulation)) {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+int run_lockstep_4_reconnect_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-4-reconnect-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_one{
+        LockstepRole::Client,
+        1U,
+        client_one_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_two{
+        LockstepRole::Client,
+        2U,
+        client_two_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+    LockstepSession client_three{
+        LockstepRole::Client,
+        3U,
+        client_three_simulation,
+        constants::LOCKSTEP_4_PLAYER_COUNT};
+
+    if (!host.start_host(constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_one.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 1 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_one, 1U)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 1 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_two.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 2 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_two, 2U)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 2 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_three.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 3 connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_client_ready(host, client_three, constants::LOCKSTEP_4_MAX_CLIENTS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: client 3 handshake timed out\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!host.is_session_ready()) {
+        std::cerr << "lockstep-4-reconnect-smoke: host session not ready\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_four_lockstep_sessions(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation,
+            constants::LOCKSTEP_4_RECONNECT_WARMUP_TICKS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: warmup advance failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    client_three.disconnect_transport();
+
+    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+        client_three.poll();
+
+        if (host.connected_peer_count() <= constants::LOCKSTEP_4_MAX_CLIENTS - 1U) {
+            break;
+        }
+    }
+
+    if (!advance_three_lockstep_sessions_after_disconnect(
+            host,
+            client_one,
+            client_two,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            constants::LOCKSTEP_4_RECONNECT_AI_TICKS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: sim stalled after P4 disconnect at tick "
+                  << host_simulation.tick_count() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_three.connect("127.0.0.1", constants::LOCKSTEP_4_RECONNECT_SMOKE_PORT)) {
+        std::cerr << "lockstep-4-reconnect-smoke: P4 reconnect connect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_4_reconnect_resync(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation)) {
+        std::cerr << "lockstep-4-reconnect-smoke: P4 resync timed out host_tick="
+                  << host_simulation.tick_count() << " p4_ready=" << client_three.is_session_ready()
+                  << " p4_connected=" << client_three.is_connected() << '\n';
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!advance_four_lockstep_sessions(
+            host,
+            client_one,
+            client_two,
+            client_three,
+            host_simulation,
+            client_one_simulation,
+            client_two_simulation,
+            client_three_simulation,
+            constants::LOCKSTEP_4_RECONNECT_LIVE_TICKS)) {
+        std::cerr << "lockstep-4-reconnect-smoke: live advance after reconnect failed\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-4-reconnect-smoke: ok ticks=" << host_simulation.tick_count() << " hash=0x"
+              << std::hex << host_simulation.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+int run_lockstep_peer_silence_smoke()
+{
+    if (!EnetTransport::global_initialize()) {
+        std::cerr << "lockstep-peer-silence-smoke: enet_initialize failed\n";
+        return 1;
+    }
+
+    sim::Simulation host_simulation{};
+    sim::Simulation client_simulation{};
+
+    LockstepSession host{
+        LockstepRole::Host,
+        constants::LOCKSTEP_HOST_PLAYER_SLOT,
+        host_simulation};
+    LockstepSession client{
+        LockstepRole::Client,
+        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
+        client_simulation};
+
+    if (!host.start_host(constants::LOCKSTEP_PEER_SILENCE_SMOKE_PORT)) {
+        std::cerr << "lockstep-peer-silence-smoke: failed to start host\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client.connect("127.0.0.1", constants::LOCKSTEP_PEER_SILENCE_SMOKE_PORT)) {
+        std::cerr << "lockstep-peer-silence-smoke: failed to connect client\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!wait_for_lockstep_connection(host, client)) {
+        std::cerr << "lockstep-peer-silence-smoke: timed out waiting for connection\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    const std::uint64_t warmup_ticks = constants::LOCKSTEP_PEER_SILENCE_SMOKE_WARMUP_TICKS;
+    std::uint64_t host_ticks = 0U;
+    std::uint64_t client_ticks = 0U;
+
+    while (host_ticks < warmup_ticks || client_ticks < warmup_ticks) {
+        host.poll();
+        client.poll();
+
+        if (host.is_desynced() || client.is_desynced()) {
+            std::cerr << "lockstep-peer-silence-smoke: desync during warmup\n";
+            EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        if (host_ticks < warmup_ticks && host.try_advance_tick()) {
+            ++host_ticks;
+        }
+
+        if (client_ticks < warmup_ticks && client.try_advance_tick()) {
+            ++client_ticks;
+        }
+    }
+
+    const auto silence_deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(constants::LOCKSTEP_PEER_SILENCE_SMOKE_WAIT_MS);
+    bool host_ai_started = false;
+    bool client_reconnecting = false;
+
+    while (std::chrono::steady_clock::now() < silence_deadline) {
+        host.poll();
+        client.poll();
+
+        if (host.try_advance_tick()) {
+            // Host keeps simulating; client stays silent (no try_advance_tick).
+        }
+
+        if (host.is_ai_fallback()) {
+            host_ai_started = true;
+        }
+
+        if (client.is_reconnecting()) {
+            client_reconnecting = true;
+        }
+
+        if (host_ai_started && client_reconnecting && !host.is_connected()) {
+            break;
+        }
+    }
+
+    if (!host_ai_started) {
+        std::cerr << "lockstep-peer-silence-smoke: host did not enter AI fallback after peer silence\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (host.is_connected()) {
+        std::cerr << "lockstep-peer-silence-smoke: host still connected to silent peer\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    if (!client_reconnecting) {
+        std::cerr << "lockstep-peer-silence-smoke: client did not enter reconnect after host AI takeover\n";
+        EnetTransport::global_deinitialize();
+        return 1;
+    }
+
+    EnetTransport::global_deinitialize();
+    std::cout << "lockstep-peer-silence-smoke: ok ai_at_tick=" << host_simulation.tick_count() << '\n';
+    return 0;
+}
+
+
 int run_lockstep_4_disconnect_smoke()
 {
     if (!EnetTransport::global_initialize()) {
@@ -1029,10 +1648,10 @@ int run_lockstep_4_disconnect_smoke()
         return 1;
     }
 
-    sim::Simulation host_simulation{};
-    sim::Simulation client_one_simulation{};
-    sim::Simulation client_two_simulation{};
-    sim::Simulation client_three_simulation{};
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
 
     LockstepSession host{
         LockstepRole::Host,
@@ -1217,6 +1836,7 @@ int run_lockstep_4_disconnect_smoke()
     return 0;
 }
 
+
 int run_lockstep_host(const LockstepRunOptions& options)
 {
     if (!EnetTransport::global_initialize()) {
@@ -1224,11 +1844,18 @@ int run_lockstep_host(const LockstepRunOptions& options)
         return 1;
     }
 
-    sim::Simulation simulation{};
+    sim::Simulation simulation{options.session_player_count};
     LockstepSession session{
         LockstepRole::Host,
         constants::LOCKSTEP_HOST_PLAYER_SLOT,
-        simulation};
+        simulation,
+        options.session_player_count};
+
+    if (options.lockstep_debug) {
+        LockstepDebugLog::enable(constants::LOCKSTEP_HOST_PLAYER_SLOT, LockstepRole::Host);
+    }
+
+    session.set_auto_input_enabled(options.auto_input);
 
     const std::uint16_t port =
         options.port == 0U ? constants::DEFAULT_PORT : options.port;
@@ -1239,17 +1866,19 @@ int run_lockstep_host(const LockstepRunOptions& options)
         return 1;
     }
 
-    std::cout << "lockstep-host: listening on port " << port << '\n';
+    std::cout << "lockstep-host: listening on port " << port << " for "
+              << static_cast<int>(options.session_player_count) << " players\n";
 
-    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
-        session.poll();
-        if (session.is_connected() && session.is_session_ready()) {
-            break;
-        }
-    }
+    session.start_background_tick_loop();
 
-    if (!session.is_connected() || !session.is_session_ready()) {
-        std::cerr << "lockstep-host: timed out waiting for client\n";
+    const std::uint8_t expected_clients =
+        static_cast<std::uint8_t>(options.session_player_count - 1U);
+    const auto join_timeout = std::chrono::milliseconds(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS);
+
+    if (!wait_for_lockstep_host_clients(session, expected_clients, join_timeout)) {
+        session.stop_background_tick_loop();
+        std::cerr << "lockstep-host: timed out waiting for " << static_cast<int>(expected_clients)
+                  << " client(s)\n";
         EnetTransport::global_deinitialize();
         return 1;
     }
@@ -1257,7 +1886,13 @@ int run_lockstep_host(const LockstepRunOptions& options)
     const std::uint64_t target_ticks =
         options.tick_count == 0U ? constants::LOCKSTEP_DEFAULT_TICK_COUNT : options.tick_count;
 
-    if (!advance_lockstep_session(session, target_ticks)) {
+    const auto advance_timeout = std::chrono::milliseconds(
+        static_cast<long long>(target_ticks) * 1000LL
+        / static_cast<long long>(aoa::constants::SIM_TICKS_PER_SECOND)
+        + static_cast<long long>(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS));
+
+    if (!advance_lockstep_session_ticks(session, simulation, target_ticks, advance_timeout)) {
+        session.stop_background_tick_loop();
         if (session.is_desynced()) {
             std::cerr << "lockstep-host: desync at tick " << session.desync_tick() << '\n';
         }
@@ -1274,6 +1909,8 @@ int run_lockstep_host(const LockstepRunOptions& options)
         EnetTransport::global_deinitialize();
         return 1;
     }
+
+    session.stop_background_tick_loop();
 
     std::cout << "lockstep-host: ok ticks=" << target_ticks << " hash=0x" << std::hex
               << simulation.state_hash() << std::dec << '\n';
@@ -1300,11 +1937,18 @@ int run_lockstep_join(const LockstepRunOptions& options)
         return 1;
     }
 
-    sim::Simulation simulation{};
+    sim::Simulation simulation{options.session_player_count};
     LockstepSession session{
         LockstepRole::Client,
-        constants::LOCKSTEP_CLIENT_PLAYER_SLOT,
-        simulation};
+        options.player_slot,
+        simulation,
+        options.session_player_count};
+
+    if (options.lockstep_debug) {
+        LockstepDebugLog::enable(options.player_slot, LockstepRole::Client);
+    }
+
+    session.set_auto_input_enabled(options.auto_input);
 
     if (!session.connect(parsed_address->first.c_str(), parsed_address->second)) {
         std::cerr << "lockstep-join: failed to connect to " << *options.join_address << '\n';
@@ -1312,14 +1956,15 @@ int run_lockstep_join(const LockstepRunOptions& options)
         return 1;
     }
 
-    for (int attempt = 0; attempt < constants::LOCKSTEP_CONNECT_ATTEMPTS; ++attempt) {
-        session.poll();
-        if (session.is_connected() && session.is_session_ready()) {
-            break;
-        }
-    }
+    std::cout << "lockstep-join: connecting as player "
+              << static_cast<int>(options.player_slot + 1U) << " to " << *options.join_address
+              << '\n';
 
-    if (!session.is_connected() || !session.is_session_ready()) {
+    session.start_background_tick_loop();
+
+    const auto join_timeout = std::chrono::milliseconds(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS);
+    if (!wait_for_lockstep_session_ready(session, join_timeout)) {
+        session.stop_background_tick_loop();
         std::cerr << "lockstep-join: timed out waiting for host\n";
         EnetTransport::global_deinitialize();
         return 1;
@@ -1328,7 +1973,13 @@ int run_lockstep_join(const LockstepRunOptions& options)
     const std::uint64_t target_ticks =
         options.tick_count == 0U ? constants::LOCKSTEP_DEFAULT_TICK_COUNT : options.tick_count;
 
-    if (!advance_lockstep_session(session, target_ticks)) {
+    const auto advance_timeout = std::chrono::milliseconds(
+        static_cast<long long>(target_ticks) * 1000LL
+        / static_cast<long long>(aoa::constants::SIM_TICKS_PER_SECOND)
+        + static_cast<long long>(constants::LOCKSTEP_JOIN_HANDSHAKE_GRACE_MS));
+
+    if (!advance_lockstep_session_ticks(session, simulation, target_ticks, advance_timeout)) {
+        session.stop_background_tick_loop();
         if (session.is_desynced()) {
             std::cerr << "lockstep-join: desync at tick " << session.desync_tick() << '\n';
         }
@@ -1350,6 +2001,8 @@ int run_lockstep_join(const LockstepRunOptions& options)
         EnetTransport::global_deinitialize();
         return 1;
     }
+
+    session.stop_background_tick_loop();
 
     std::cout << "lockstep-join: ok ticks=" << target_ticks << " hash=0x" << std::hex
               << simulation.state_hash() << std::dec << '\n';
@@ -1445,16 +2098,8 @@ int run_snapshot_double_spawn_smoke()
         client.tick();
 
         if (host.state_hash() != client.state_hash()) {
-            const entt::entity host_town_center =
-                sim::scenario::find_scenario_entity(host.registry(), "town_center");
-            const entt::entity client_town_center =
-                sim::scenario::find_scenario_entity(client.registry(), "town_center");
-            const int host_wood = host_town_center != entt::null
-                ? host.registry().get<sim::components::Stockpile>(host_town_center).wood
-                : -1;
-            const int client_wood = client_town_center != entt::null
-                ? client.registry().get<sim::components::Stockpile>(client_town_center).wood
-                : -1;
+            const int host_wood = sim::player::sum_player_stockpile(host.registry(), 0U).wood;
+            const int client_wood = sim::player::sum_player_stockpile(client.registry(), 0U).wood;
             std::cerr << "snapshot-double-spawn-smoke: hash mismatch after spawn " << spawn_index + 1
                       << " at tick " << host.tick_count() << " host=0x" << std::hex
                       << host.state_hash() << " client=0x" << client.state_hash() << std::dec
@@ -1579,7 +2224,6 @@ int run_snapshot_smoke()
             }
 
             map.forest_wood[index] = 0;
-            map.tiles[index] = sim::components::TileType::Grass;
             break;
         }
 
@@ -1784,6 +2428,94 @@ int run_snapshot_heavy_smoke()
 
     std::cout << "snapshot-heavy-smoke: ok ticks=" << source.tick_count() << " hash=0x"
               << std::hex << source.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+int run_sim_8ai_bench()
+{
+    constexpr std::uint8_t player_count = 8U;
+    constexpr std::uint64_t bench_ticks = 40U;
+
+    const auto time_ms = [](const auto& start) {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start)
+            .count();
+    };
+
+    const auto print_result = [&](const char* label, const double ms) {
+        std::cout << "sim-8ai-bench " << label << ": ticks=" << bench_ticks
+                  << " total_ms=" << static_cast<int>(ms + 0.5)
+                  << " ms_per_tick=" << (ms / static_cast<double>(bench_ticks)) << '\n';
+    };
+
+    {
+        sim::Simulation simulation{player_count};
+        simulation.set_compute_state_hash(false);
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t tick = 0U; tick < bench_ticks; ++tick) {
+            simulation.tick();
+        }
+        print_result("idle_no_hash", time_ms(start));
+    }
+
+    {
+        sim::Simulation simulation{player_count};
+        simulation.set_compute_state_hash(true);
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t tick = 0U; tick < bench_ticks; ++tick) {
+            simulation.tick();
+        }
+        print_result("idle_hash", time_ms(start));
+    }
+
+    {
+        sim::Simulation simulation{player_count};
+        for (std::uint8_t slot = 1U; slot < player_count; ++slot) {
+            simulation.set_player_ai_controlled(slot, true);
+        }
+        simulation.set_compute_state_hash(false);
+        sim::systems::reset_pathfind_profile();
+        std::uint64_t ai_command_sequence = 1U;
+        double ai_ms = 0.0;
+        double tick_ms = 0.0;
+        for (std::uint64_t tick = 0U; tick < bench_ticks; ++tick) {
+            const std::uint64_t execute_tick = simulation.next_command_execute_tick();
+            const auto ai_start = std::chrono::steady_clock::now();
+            for (std::uint8_t slot = 0U; slot < player_count; ++slot) {
+                if (!simulation.is_player_ai_controlled(slot)) {
+                    continue;
+                }
+
+                if ((simulation.tick_count() + static_cast<std::uint64_t>(slot))
+                        % static_cast<std::uint64_t>(aoa::constants::AI_THINK_INTERVAL_TICKS)
+                    != 0U) {
+                    continue;
+                }
+
+                std::vector<sim::player::PlayerCommand> ai_commands =
+                    sim::systems::generate_ai_commands_for_slot(
+                        simulation.registry(),
+                        slot,
+                        execute_tick,
+                        ai_command_sequence);
+                for (sim::player::PlayerCommand& command : ai_commands) {
+                    simulation.enqueue_player_command(std::move(command));
+                }
+            }
+            ai_ms += time_ms(ai_start);
+
+            const auto tick_start = std::chrono::steady_clock::now();
+            simulation.tick();
+            tick_ms += time_ms(tick_start);
+        }
+        print_result("ai_think_only", ai_ms);
+        print_result("ai_tick_only", tick_ms);
+        const sim::systems::PathfindProfile profile = sim::systems::pathfind_profile();
+        std::cout << "sim-8ai-bench pathfind: calls=" << profile.calls
+                  << " failed=" << profile.failed
+                  << " expanded=" << profile.expanded_nodes << '\n';
+    }
+
     return 0;
 }
 

@@ -18,6 +18,19 @@ enum class NetMessageKind : std::uint8_t {
     ResyncReady = 7,
     LatencyProbe = 8,
     LatencyPong = 9,
+    SlotAiTakeover = 10,
+    SlotAiResume = 11,
+    Chat = 12,
+    LobbyJoin = 13,
+    LobbyState = 14,
+    LobbyReady = 15,
+    LobbyLeave = 16,
+    LobbyMatchStart = 17,
+    LobbyColor = 18,
+    LobbyReject = 19,
+    LobbyTeam = 20,
+    MatchPause = 21,
+    PlayerResign = 22,
 };
 
 [[nodiscard]] std::vector<std::byte> encode_net_message(

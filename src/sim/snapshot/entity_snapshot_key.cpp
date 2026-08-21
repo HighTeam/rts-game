@@ -1,5 +1,8 @@
 #include "sim/snapshot/entity_snapshot_key.hpp"
 
+#include "core/constants.hpp"
+#include "sim/components/building_footprint.hpp"
+#include "sim/components/combat.hpp"
 #include "sim/components/entity_snapshot_identity.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
@@ -26,8 +29,68 @@ std::optional<EntitySnapshotCategory> category_for_entity(
         return EntitySnapshotCategory::Militia;
     }
 
+    if (registry.any_of<components::MageUnitTag>(entity)) {
+        return EntitySnapshotCategory::Mage;
+    }
+
+    if (registry.any_of<components::Projectile>(entity)) {
+        return EntitySnapshotCategory::Projectile;
+    }
+
     if (registry.any_of<components::TownCenterTag>(entity)) {
         return EntitySnapshotCategory::TownCenter;
+    }
+
+    if (registry.any_of<components::HouseTag>(entity)) {
+        return EntitySnapshotCategory::House;
+    }
+
+    if (registry.any_of<components::LumberCampTag>(entity)) {
+        return EntitySnapshotCategory::LumberCamp;
+    }
+
+    if (registry.any_of<components::ExtractorTag>(entity)) {
+        return EntitySnapshotCategory::Extractor;
+    }
+
+    if (registry.any_of<components::ManaLakeTag>(entity)) {
+        return EntitySnapshotCategory::ManaLake;
+    }
+
+    if (registry.any_of<components::MillTag>(entity)) {
+        return EntitySnapshotCategory::Mill;
+    }
+
+    if (registry.any_of<components::MiningCampTag>(entity)) {
+        return EntitySnapshotCategory::MiningCamp;
+    }
+
+    if (registry.any_of<components::BarracksTag>(entity)) {
+        return EntitySnapshotCategory::Barracks;
+    }
+
+    if (registry.any_of<components::MageAcademyTag>(entity)) {
+        return EntitySnapshotCategory::MageAcademy;
+    }
+
+    if (registry.any_of<components::TowerTag>(entity)) {
+        return EntitySnapshotCategory::Tower;
+    }
+
+    if (registry.any_of<components::MarketTag>(entity)) {
+        return EntitySnapshotCategory::Market;
+    }
+
+    if (registry.any_of<components::GardenTag>(entity)) {
+        return EntitySnapshotCategory::Garden;
+    }
+
+    if (registry.any_of<components::ReservoirTag>(entity)) {
+        return EntitySnapshotCategory::Reservoir;
+    }
+
+    if (registry.any_of<components::FarmTag>(entity)) {
+        return EntitySnapshotCategory::Farm;
     }
 
     return std::nullopt;
@@ -95,6 +158,262 @@ std::vector<entt::entity> collect_entities_for_key(
         }
         break;
     }
+    case EntitySnapshotCategory::House: {
+        const auto view = registry.view<
+            components::HouseTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::LumberCamp: {
+        const auto view = registry.view<
+            components::LumberCampTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Extractor: {
+        const auto view = registry.view<
+            components::ExtractorTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::ManaLake: {
+        const auto view = registry.view<components::ManaLakeTag, components::PlayerSlot>();
+        for (const entt::entity entity : view) {
+            if (view.get<components::PlayerSlot>(entity).value != player_slot) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Mill: {
+        const auto view = registry.view<
+            components::MillTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::MiningCamp: {
+        const auto view = registry.view<
+            components::MiningCampTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Barracks: {
+        const auto view = registry.view<
+            components::BarracksTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::MageAcademy: {
+        const auto view = registry.view<
+            components::MageAcademyTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Tower: {
+        const auto view = registry.view<
+            components::TowerTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Market: {
+        const auto view = registry.view<
+            components::MarketTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Garden: {
+        const auto view = registry.view<
+            components::GardenTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Reservoir: {
+        const auto view = registry.view<
+            components::ReservoirTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Farm: {
+        const auto view = registry.view<
+            components::FarmTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Mage: {
+        const auto view = registry.view<
+            components::MageUnitTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity entity : view) {
+            if (components::entity_player_slot(registry, entity) != player_slot) {
+                continue;
+            }
+
+            if (view.get<components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
+    case EntitySnapshotCategory::Projectile: {
+        const auto view = registry.view<components::Projectile, components::PlayerSlot>();
+        for (const entt::entity entity : view) {
+            if (view.get<components::PlayerSlot>(entity).value != player_slot) {
+                continue;
+            }
+
+            entities.push_back(entity);
+        }
+        break;
+    }
     }
 
     std::sort(entities.begin(), entities.end(), [](const entt::entity left, const entt::entity right) {
@@ -148,7 +467,69 @@ entt::entity resolve_entity_snapshot_key_from_entt_order(
     return entities[static_cast<std::size_t>(key.ordinal)];
 }
 
+std::optional<EntitySnapshotKey> ensure_entity_snapshot_key(
+    entt::registry& registry,
+    const entt::entity entity)
+{
+    const auto existing = compute_entity_snapshot_key(registry, entity);
+    if (existing.has_value()) {
+        return existing;
+    }
+
+    if (!registry.valid(entity)) {
+        return std::nullopt;
+    }
+
+    const auto category = category_for_entity(registry, entity);
+    if (!category.has_value()) {
+        return std::nullopt;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
+    const EntitySnapshotKey key{
+        player_slot,
+        *category,
+        next_entity_snapshot_ordinal(registry, player_slot, *category),
+    };
+    set_entity_snapshot_identity(registry, entity, key);
+    return key;
+}
+
 } // namespace
+
+entt::entity find_owned_building_at_cell(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const core::GridPos cell)
+{
+    const auto view = registry.view<
+        components::BuildingTag,
+        components::PlayerOwnedTag,
+        components::GridPosition,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        components::BuildingFootprint footprint{1, 1};
+        if (registry.any_of<components::BuildingFootprint>(entity)) {
+            footprint = registry.get<components::BuildingFootprint>(entity);
+        }
+        footprint = components::effective_building_footprint(
+            footprint, registry.any_of<components::TownCenterTag>(entity));
+        if (components::building_contains_cell(
+                view.get<components::GridPosition>(entity), footprint, cell)) {
+            return entity;
+        }
+    }
+
+    return entt::null;
+}
 
 bool compare_entity_snapshot_keys(const EntitySnapshotKey& left, const EntitySnapshotKey& right)
 {
@@ -179,6 +560,10 @@ std::optional<EntitySnapshotKey> compute_entity_snapshot_key(
     entt::registry& registry,
     const entt::entity entity)
 {
+    if (!registry.valid(entity)) {
+        return std::nullopt;
+    }
+
     if (registry.any_of<components::EntitySnapshotIdentity>(entity)) {
         return registry.get<components::EntitySnapshotIdentity>(entity).key;
     }
@@ -230,7 +615,34 @@ void set_entity_snapshot_identity(
     const entt::entity entity,
     const EntitySnapshotKey key)
 {
-    registry.emplace_or_replace<components::EntitySnapshotIdentity>(entity, components::EntitySnapshotIdentity{key});
+    registry.emplace_or_replace<components::EntitySnapshotIdentity>(
+        entity, components::EntitySnapshotIdentity{key});
+    refresh_unit_sex_from_identity(registry, entity);
+}
+
+void refresh_unit_sex_from_identity(entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.any_of<components::UnitTag>(entity)
+        || !registry.any_of<components::EntitySnapshotIdentity>(entity)) {
+        return;
+    }
+
+    const EntitySnapshotKey& key = registry.get<components::EntitySnapshotIdentity>(entity).key;
+    std::uint32_t rng = constants::UNIT_SEX_SPAWN_SALT
+        ^ (static_cast<std::uint32_t>(key.player_slot) * constants::UNIT_SEX_SPAWN_SLOT_MIX)
+        ^ (static_cast<std::uint32_t>(key.category) * constants::UNIT_SEX_SPAWN_CATEGORY_MIX)
+        ^ (static_cast<std::uint32_t>(key.ordinal) * constants::UNIT_SEX_SPAWN_ORDINAL_MIX);
+    if (rng == 0U) {
+        rng = 1U;
+    }
+
+    rng ^= rng << 13U;
+    rng ^= rng >> 17U;
+    rng ^= rng << 5U;
+    const constants::UnitSex sex = (rng & 1U) == 0U
+        ? constants::UnitSex::Male
+        : constants::UnitSex::Female;
+    registry.emplace_or_replace<components::UnitSex>(entity, components::UnitSex{sex});
 }
 
 void assign_snapshot_identities(entt::registry& registry)
@@ -304,24 +716,69 @@ std::vector<entt::entity> sort_entities_by_snapshot_key(
 
 void annotate_command_entity_keys(entt::registry& registry, player::PlayerCommand& command)
 {
+    const std::vector<EntitySnapshotKey> previous_unit_keys = command.unit_keys;
     command.unit_keys.clear();
     command.unit_keys.reserve(command.unit_ids.size());
 
+    bool units_failed = false;
     for (const entt::entity unit : command.unit_ids) {
-        const auto key = compute_entity_snapshot_key(registry, unit);
+        const auto key = ensure_entity_snapshot_key(registry, unit);
         if (!key.has_value()) {
-            command.unit_keys.clear();
-            return;
+            units_failed = true;
+            break;
         }
 
         command.unit_keys.push_back(*key);
     }
 
-    command.target_entity_key.reset();
+    if (units_failed) {
+        if (previous_unit_keys.size() == command.unit_ids.size()) {
+            command.unit_keys = previous_unit_keys;
+        }
+        else {
+            command.unit_keys.clear();
+        }
+    }
+
+    const std::optional<EntitySnapshotKey> previous_target_key = command.target_entity_key;
     if (command.type == player::PlayerCommandType::Attack
-        || command.type == player::PlayerCommandType::SpawnWorker) {
+        || command.type == player::PlayerCommandType::SpawnWorker
+        || command.type == player::PlayerCommandType::SpawnMilitia
+        || command.type == player::PlayerCommandType::SpawnMage
+        || command.type == player::PlayerCommandType::DestroyBuilding
+        || command.type == player::PlayerCommandType::ResumeBuild
+        || command.type == player::PlayerCommandType::Garrison
+        || command.type == player::PlayerCommandType::UnloadGarrison
+        || command.type == player::PlayerCommandType::AdvanceAge
+        || command.type == player::PlayerCommandType::RenewFarm
+        || command.type == player::PlayerCommandType::ResearchCartography
+        || command.type == player::PlayerCommandType::ResearchTrades
+        || command.type == player::PlayerCommandType::ResearchSpy
+        || command.type == player::PlayerCommandType::MarketSellWood
+        || command.type == player::PlayerCommandType::MarketSellFood
+        || command.type == player::PlayerCommandType::MarketBuyWood
+        || command.type == player::PlayerCommandType::MarketBuyFood) {
         if (command.target_entity != entt::null) {
-            command.target_entity_key = compute_entity_snapshot_key(registry, command.target_entity);
+            const auto key = ensure_entity_snapshot_key(registry, command.target_entity);
+            if (key.has_value()) {
+                command.target_entity_key = key;
+            }
+            else if (!previous_target_key.has_value()) {
+                command.target_entity_key.reset();
+            }
+            else {
+                command.target_entity_key = previous_target_key;
+            }
+        }
+    }
+
+    if (command.type == player::PlayerCommandType::DestroyBuilding
+        && !command.target_entity_key.has_value()) {
+        const entt::entity building =
+            find_owned_building_at_cell(registry, command.player_slot, command.cell);
+        if (building != entt::null) {
+            command.target_entity = building;
+            command.target_entity_key = ensure_entity_snapshot_key(registry, building);
         }
     }
 }
@@ -341,6 +798,16 @@ void resolve_command_entity_ids(entt::registry& registry, player::PlayerCommand&
 
     if (command.target_entity_key.has_value()) {
         command.target_entity = resolve_entity_snapshot_key(registry, *command.target_entity_key);
+    }
+
+    if (command.type == player::PlayerCommandType::DestroyBuilding
+        && (!registry.valid(command.target_entity)
+            || !registry.any_of<components::BuildingTag>(command.target_entity))) {
+        const entt::entity building =
+            find_owned_building_at_cell(registry, command.player_slot, command.cell);
+        if (building != entt::null) {
+            command.target_entity = building;
+        }
     }
 }
 

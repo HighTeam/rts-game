@@ -1,8 +1,26 @@
 {
   "civ_id": "earth",
   "display_name": "Earth",
-  "unit_archetypes": ["worker", "militia"],
-  "structure_archetypes": ["town_center"],
-  "resource_node_archetypes": ["forest_patch"],
-  "starting_stockpile_wood": 100
+  "unit_archetypes": ["worker", "militia", "mage"],
+  "structure_archetypes": [
+    "town_center",
+    "house",
+    "lumber_camp",
+    "mill",
+    "mining_camp",
+    "barracks",
+    "mage_academy",
+    "tower",
+    "market",
+    "extractor",
+    "garden",
+    "reservoir",
+    "farm",
+    "mana_lake"
+  ],
+  "resource_node_archetypes": ["forest_patch", "berry_bush", "blueberry_bush", "gold_mine"],
+  "starting_stockpile_food": 50,
+  "starting_stockpile_wood": 60,
+  "starting_stockpile_money": 35,
+  "starting_stockpile_mana": 0
 }

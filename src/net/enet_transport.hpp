@@ -50,6 +50,7 @@ public:
     void disconnect_peer();
     void disconnect_peer_slot(std::uint8_t client_slot);
     void poll(std::uint32_t timeout_ms);
+    void flush_outbound();
 
     [[nodiscard]] bool send_reliable(std::span<const std::byte> data, std::uint8_t channel);
     [[nodiscard]] bool send_reliable_to_client(
@@ -74,6 +75,9 @@ public:
     [[nodiscard]] bool consume_peer_lost_slot(std::uint8_t& lost_client_slot);
     [[nodiscard]] bool consume_peer_connected();
     [[nodiscard]] bool consume_peer_connected_slot(std::uint8_t& connected_client_slot);
+    [[nodiscard]] bool rebind_client_to_player_slot(
+        std::uint8_t connected_client_slot,
+        std::uint8_t player_slot);
     [[nodiscard]] std::uint8_t connected_client_count() const;
     [[nodiscard]] std::uint32_t peer_round_trip_time_ms() const;
     [[nodiscard]] std::uint32_t peer_round_trip_time_ms(std::uint8_t client_slot) const;

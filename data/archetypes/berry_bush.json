@@ -1,0 +1,6 @@
+{
+  "id": "berry_bush",
+  "kind": "resource_node",
+  "display_name": "Berries",
+  "food_capacity": 75
+}

@@ -38,16 +38,38 @@ cmake --preset x64-release
 cmake --build --preset x64-release
 ```
 
+## Running the game
+
+Launching the binary without CLI flags opens the main menu (slideshow background, looping
+`assets/music/main_menu_theme.wav`):
+
+```powershell
+.\build\x64-release\Release\AgeofAffinities.exe
+```
+
+| Menu entry | Behaviour |
+|------------|-----------|
+| Singleplayer | Fresh 2-player simulation with the second slot AI-controlled |
+| Multiplayer | Player name, then **Host** (player count, map, civil cap, fog) or **Connect** (address, port) |
+| Settings | Same Game/Audio panel as the in-game menu (fullscreen, Master/Music/SFX) |
+| Exit | Quits; `Esc` on the main menu does the same |
+
+In the multiplayer lobby the host starts the match once every connected player is ready. Slots are
+assigned automatically (host is player 1, peers fill the next free slots). Exiting a match through
+the in-game menu's **Exit to Main Menu** disconnects the session and returns to the menu.
+
+The `--lockstep-host` / `--lockstep-join` flags below bypass the menu and behave as before.
+
 ## Headless mode and harness
 
 Same binary, no window — for desync/regression runs:
 
 ```powershell
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
-.\build\x64-debug\Debug\aoa.exe --harness
-.\build\x64-debug\Debug\aoa.exe --net-smoke
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --print-hash
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\AgeofAffinities.exe --harness
+.\build\x64-debug\Debug\AgeofAffinities.exe --net-smoke
 ```
 
 | Mode | Use |
@@ -60,8 +82,10 @@ Same binary, no window — for desync/regression runs:
 | `--lockstep-reconnect-smoke` | Three disconnect → AI → reconnect → live lockstep cycles in-process; verifies hash match each time |
 | `--lockstep-4-smoke` | Four peers (host + 3 clients) in-process; empty batches; hash match after 40 ticks |
 | `--snapshot-smoke` | Encode sim snapshot + input log, restore via replay, verify hash match |
-| `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless` |
-| `--lockstep-join HOST:PORT` | Lockstep client (player 2); graphical unless `--headless` |
+| `--lockstep-host` | Lockstep host (player 1); graphical unless `--headless`; optional `--players N` or `--lockstep-players N` (2, 4, or 8) |
+| `--lockstep-join HOST:PORT` | Lockstep client; graphical unless `--headless`; optional `--player-slot N` (2–8); same `--players` as host |
+
+Scale testing playbook (4–8 players, two-PC layouts): [M3_SCALE_TESTING.md](M3_SCALE_TESTING.md)
 
 For lockstep, `--ticks N` applies only with `--headless` (graphical sessions run until you close the window or the opponent disconnects). Headless lockstep defaults to 100 ticks without `--ticks`.
 
@@ -74,9 +98,28 @@ Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNE
 | Folder | Role |
 |--------|------|
 | `raw-assets/` | Gitignored source art (local only) |
-| `assets/` | Shipped runtime copies (POST_BUILD copy next to `aoa.exe`) |
+| `assets/` | Shipped runtime copies (POST_BUILD copy next to `AgeofAffinities.exe`) |
 
 See [assets/README.md](../assets/README.md) and [DECISIONS.md](DECISIONS.md).
+
+## Windows installer (`aoa-setup.exe`)
+
+Unsigned NSIS setup (signing is deferred). Install [NSIS](https://nsis.sourceforge.io/) once:
+
+```powershell
+winget install NSIS.NSIS
+```
+
+Then:
+
+```powershell
+cmake --build build\x64-release --config Release --target aoa
+cmake --build build\x64-release --config Release --target aoa_setup
+```
+
+Or: `.\scripts\package-setup.ps1`
+
+Output: `build\x64-release\Release\aoa-setup.exe`. It installs `AgeofAffinities.exe`, SFML/runtime DLLs, `assets.dat`, `scenarios\`, and `patterns\`. Pattern Maker is an optional component. `aoa_pack_assets.exe` is not shipped.
 
 ## Open in Visual Studio
 
@@ -92,12 +135,12 @@ Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): command
 
 ```powershell
 # Terminal 1 — graphical (default)
-.\build\x64-debug\Debug\aoa.exe --lockstep-host --port 27000
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-host --port 27000
 
 # Terminal 2
-.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000
 
 # Headless scripted run (100 ticks default)
-.\build\x64-debug\Debug\aoa.exe --lockstep-host --headless --ticks 100
-.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --ticks 100
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-host --headless --ticks 100
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000 --headless --ticks 100
 ```

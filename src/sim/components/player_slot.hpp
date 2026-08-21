@@ -2,6 +2,7 @@
 
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/tags.hpp"
 
 #include <cstdint>
@@ -37,7 +38,16 @@ struct PlayerSlot {
         return false;
     }
 
-    return entity_player_slot(registry, entity) != local_player_slot;
+    const std::uint8_t owner_slot = entity_player_slot(registry, entity);
+    const auto session_view = registry.view<WorldTag, MatchSession>();
+    if (session_view.begin() != session_view.end()) {
+        return !slot_treats_as_ally(
+            session_view.get<MatchSession>(*session_view.begin()),
+            local_player_slot,
+            owner_slot);
+    }
+
+    return owner_slot != local_player_slot;
 }
 
 [[nodiscard]] inline bool is_valid_attack_target(
@@ -45,7 +55,7 @@ struct PlayerSlot {
     const entt::entity attacker,
     const entt::entity target)
 {
-    if (!registry.valid(target) || !registry.any_of<Health, GridPosition>(target)) {
+    if (!registry.valid(target) || !registry.all_of<Health, GridPosition>(target)) {
         return false;
     }
 
@@ -65,7 +75,17 @@ struct PlayerSlot {
         return false;
     }
 
-    return entity_player_slot(registry, attacker) != entity_player_slot(registry, target);
+    const std::uint8_t attacker_slot = entity_player_slot(registry, attacker);
+    const std::uint8_t target_slot = entity_player_slot(registry, target);
+    const auto session_view = registry.view<WorldTag, MatchSession>();
+    if (session_view.begin() != session_view.end()) {
+        return !slot_treats_as_ally(
+            session_view.get<MatchSession>(*session_view.begin()),
+            attacker_slot,
+            target_slot);
+    }
+
+    return attacker_slot != target_slot;
 }
 
 } // namespace aoa::sim::components

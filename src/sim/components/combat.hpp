@@ -1,7 +1,9 @@
 #pragma once
 
+#include "core/constants.hpp"
 #include "core/grid.hpp"
 
+#include <cstdint>
 #include <entt/entt.hpp>
 
 namespace aoa::sim::components {
@@ -13,6 +15,23 @@ struct AttackOrder {
 
 struct AttackCooldown {
     int ticks_remaining{0};
+};
+
+struct BuildOrder {
+    entt::entity building{entt::null};
+    int hit_cooldown_ticks{0};
+};
+
+struct GarrisonOrder {
+    entt::entity building{entt::null};
+};
+
+struct Projectile {
+    entt::entity target{entt::null};
+    std::uint8_t owner_slot{0U};
+    int pierce_damage{0};
+    bool is_arrow{false};
+    std::uint8_t reveal_to_slot{constants::MATCH_WINNER_NONE};
 };
 
 } // namespace aoa::sim::components
