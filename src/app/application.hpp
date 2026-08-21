@@ -86,6 +86,8 @@ struct LaunchOptions {
     bool run_lockstep_disconnect_smoke{false};
     bool run_lockstep_reconnect_smoke{false};
     bool run_lockstep_4_smoke{false};
+    bool run_lockstep_4_disconnect_smoke{false};
+    bool run_lockstep_peer_silence_smoke{false};
     bool run_lockstep_2h2ai_smoke{false};
     bool run_sim_8ai_bench{false};
     bool run_lockstep_4_stress_smoke{false};

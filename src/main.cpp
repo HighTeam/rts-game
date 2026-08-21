@@ -104,6 +104,14 @@ int main(int argc, char** argv)
             return aoa::net::run_lockstep_4_smoke();
         }
 
+        if (options.run_lockstep_4_disconnect_smoke) {
+            return aoa::net::run_lockstep_4_disconnect_smoke();
+        }
+
+        if (options.run_lockstep_peer_silence_smoke) {
+            return aoa::net::run_lockstep_peer_silence_smoke();
+        }
+
         if (options.run_lockstep_2h2ai_smoke) {
             return aoa::net::run_lockstep_2h2ai_smoke();
         }

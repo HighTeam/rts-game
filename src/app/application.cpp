@@ -192,6 +192,16 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--lockstep-4-disconnect-smoke") {
+            options.run_lockstep_4_disconnect_smoke = true;
+            continue;
+        }
+
+        if (arg == "--lockstep-peer-silence-smoke") {
+            options.run_lockstep_peer_silence_smoke = true;
+            continue;
+        }
+
         if (arg == "--lockstep-2h2ai-smoke") {
             options.run_lockstep_2h2ai_smoke = true;
             continue;
@@ -315,7 +325,10 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
                          "       aoa --lockstep-disconnect-smoke\n"
                          "       aoa --lockstep-reconnect-smoke\n"
                          "       aoa --lockstep-4-smoke\n"
+                         "       aoa --lockstep-4-disconnect-smoke\n"
+                         "       aoa --lockstep-peer-silence-smoke\n"
                          "       aoa --lockstep-4-stress-smoke\n"
+                         "       aoa --lockstep-4-reconnect-smoke\n"
                          "       aoa --snapshot-smoke\n"
                          "       aoa --lockstep-host [--port PORT] [--players N | --lockstep-players N]\n"
                          "                           [--headless] [--ticks N] [--lockstep-debug]\n"
@@ -968,6 +981,13 @@ AppFlow run_lockstep_match(
     while (window.isOpen() && !leave_match) {
         update_lockstep_window_title(window, session, role, player_slot);
 
+        session.service_network_latency();
+
+        if (session.consume_snapshot_restored()) {
+            game_input.clear_selection();
+            renderer.reset_camera_frame();
+        }
+
         const std::shared_ptr<const render::SimRenderSnapshot> input_frame = session.render_snapshot();
         const render::SimRenderSnapshot* input_snapshot = input_frame.get();
 
@@ -1077,6 +1097,7 @@ AppFlow run_lockstep_match(
                 }
             }
         }
+
 
         game_input.update_continuous(window, renderer, simulation, input_snapshot);
 

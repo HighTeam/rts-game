@@ -1029,6 +1029,13 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
         }
 
+        if (record.move_path.next_index < 0
+            || record.move_path.next_index > static_cast<int>(cell_count)) {
+
+            return std::nullopt;
+
+        }
+
 
 
         record.move_path.cells.clear();

@@ -83,7 +83,11 @@ std::string LockstepDebugLog::timestamp_now()
         now.time_since_epoch()) % 1000;
 
     std::tm local_time{};
+#ifdef _WIN32
     localtime_s(&local_time, &time);
+#else
+    localtime_r(&time, &local_time);
+#endif
 
     std::ostringstream formatted{};
     formatted << std::put_time(&local_time, "%H:%M:%S") << '.'

@@ -31,6 +31,10 @@ struct LockstepRunOptions {
 
 [[nodiscard]] int run_lockstep_4_smoke();
 
+[[nodiscard]] int run_lockstep_4_disconnect_smoke();
+
+[[nodiscard]] int run_lockstep_peer_silence_smoke();
+
 [[nodiscard]] int run_lockstep_2h2ai_smoke();
 
 [[nodiscard]] int run_sim_8ai_bench();

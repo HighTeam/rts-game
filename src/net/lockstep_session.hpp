@@ -18,6 +18,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -123,6 +124,7 @@ private:
     void send_join_accepted_to_all_connected_clients();
     void apply_post_join_accepted_host_state();
     void send_reconnect_snapshot();
+    void send_reconnect_snapshot(std::uint8_t target_enet_slot);
     void maybe_retry_reconnect_handshake();
     void maybe_retry_resync_ready();
     void maybe_retry_host_resync_handshake();
@@ -131,7 +133,7 @@ private:
     void handle_resync_ready(std::uint8_t player_slot);
     void handle_reconnect_request(
         std::uint8_t player_slot,
-        std::uint8_t enet_client_slot,
+        std::uint8_t sender_enet_slot,
         std::uint64_t claim_token);
     [[nodiscard]] bool is_slot_reclaimable_mid_match(std::uint8_t player_slot) const;
     [[nodiscard]] bool try_accept_mid_match_lobby_rejoin(
@@ -152,6 +154,12 @@ private:
     void handle_join_accepted();
     void handle_opponent_lost();
     void enter_ai_fallback();
+    void enable_slot_ai_control(std::uint8_t player_slot);
+    void note_player_slot_transport_down(std::uint8_t player_slot);
+    void prepare_ai_controlled_slots_for_tick(std::uint64_t execute_tick);
+    void flush_pending_ai_input_batches(std::uint64_t execute_tick);
+    void inject_ai_commands_for_slot(std::uint64_t execute_tick, std::uint8_t player_slot);
+    [[nodiscard]] std::uint8_t missing_live_remote_slots_mask(std::uint64_t execute_tick) const;
     void enter_host_lost();
     void try_reconnect();
     void resume_player_control(std::uint8_t player_slot);
@@ -182,6 +190,11 @@ private:
     [[nodiscard]] bool send_input_batch(
         std::uint64_t execute_tick,
         const std::vector<sim::player::PlayerCommand>& commands);
+    [[nodiscard]] bool send_slot_input_batch(
+        std::uint64_t execute_tick,
+        std::uint8_t batch_player_slot,
+        const std::vector<sim::player::PlayerCommand>& commands);
+    void apply_remote_input_batch(const TickInputBatch& batch);
     void send_state_hash(std::uint64_t execute_tick, std::uint64_t state_hash);
     void ensure_local_batch_sent(std::uint64_t execute_tick);
     void ensure_local_batches_pipelined();
@@ -192,12 +205,16 @@ private:
     [[nodiscard]] bool apply_reconnect_snapshot_locally(const std::span<const std::byte> snapshot_bytes);
     void restore_match_identity_after_snapshot();
     [[nodiscard]] bool commands_blocked_during_resync() const;
+    void process_received_packet(const ReceivedPacket& packet);
     void process_received_packet(const std::vector<std::byte>& packet, std::uint8_t sender_slot);
     void handle_chat_message(const std::vector<std::byte>& payload, std::uint8_t sender_slot);
     void verify_state_hash(std::uint64_t execute_tick, std::uint64_t remote_hash);
     [[nodiscard]] bool try_advance_live_tick();
     [[nodiscard]] bool try_advance_ai_fallback_tick();
-    void handle_peer_connected();
+    void handle_peer_connected(std::uint8_t connected_enet_slot);
+    void bind_player_to_enet_slot(std::uint8_t player_slot, std::uint8_t enet_slot);
+    void clear_enet_slot_mapping(std::uint8_t enet_slot);
+    [[nodiscard]] std::optional<std::uint8_t> enet_slot_for_player(std::uint8_t player_slot) const;
     void note_opponent_transport_down();
     void take_over_unconnected_human_slots();
     [[nodiscard]] bool can_run_live_lockstep() const;
@@ -205,6 +222,8 @@ private:
     void clear_state_hash_tracking();
     [[nodiscard]] bool should_send_reconnect_snapshot() const;
     [[nodiscard]] bool is_remote_input_batch_current(const TickInputBatch& batch) const;
+    [[nodiscard]] bool is_valid_remote_player_slot(std::uint8_t player_slot) const;
+    [[nodiscard]] bool should_drop_batch_for_reconnect_handshake(std::uint8_t batch_player_slot) const;
     void inject_ai_commands(std::uint64_t execute_tick);
     void inject_ai_commands_for_disconnected_slots(std::uint64_t execute_tick);
     void note_sim_tick_completed();
@@ -216,6 +235,8 @@ private:
     std::mutex inbound_packet_mutex_{};
     std::mutex network_service_mutex_{};
     std::vector<ReceivedPacket> inbound_packet_queue_{};
+    std::array<std::uint8_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_slot_to_enet_slot_{};
+    std::uint8_t pending_reconnect_enet_slot_{0U};
     std::atomic<std::shared_ptr<const render::SimRenderSnapshot>> render_snapshot_{};
     render::BuildingSightMemory building_sight_memory_{};
     std::atomic<std::uint64_t> render_clock_anchor_ns_{0U};
@@ -258,6 +279,7 @@ private:
     bool sync_status_chat_announced_{false};
     bool resync_strict_batch_gate_{false};
     bool client_resync_ready_{false};
+    std::uint8_t pending_reconnect_player_slot_{constants::LOCKSTEP_INVALID_PLAYER_SLOT};
     bool resync_ready_sent_{false};
     bool snapshot_restored_pending_{false};
     std::chrono::steady_clock::time_point last_reconnect_request_sent_{};
@@ -268,6 +290,9 @@ private:
     std::uint8_t disconnected_slots_mask_{0U};
     std::uint8_t resync_pending_slots_mask_{0U};
     std::uint8_t ai_controlled_slot_{0U};
+    std::uint8_t ai_controlled_slots_mask_{0U};
+    std::unordered_set<std::uint64_t> ai_input_batches_sent_{};
+    std::vector<TickInputBatch> pending_ai_input_batches_{};
     std::array<std::string, constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names_{};
     std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> reconnect_tokens_{};
     std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_ai_{};
