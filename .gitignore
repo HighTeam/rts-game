@@ -69,7 +69,7 @@ vcpkg_installed/
 Testing/
 .cache/
 
-
+generated/
 raw-assets/
 
 # Local art library; only packer-used files are force-tracked in git.
@@ -79,3 +79,7 @@ raw-assets/
 /client_err.txt
 /client_out.txt
 .used-assets-list.txt
+
+.cursor/
+.wrangler/
+RELEASE_NOTES.md
