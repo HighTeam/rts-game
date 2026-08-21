@@ -2,6 +2,7 @@
 
 #include "sim/simulation.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -21,6 +22,12 @@ inline constexpr std::string_view AUTOSAVE_MP_FILENAME = "autosave.mp.aoa";
 [[nodiscard]] std::filesystem::path default_autosave_path();
 
 [[nodiscard]] std::filesystem::path default_autosave_mp_path();
+
+[[nodiscard]] std::vector<std::byte> encode_save_bytes(const Simulation& simulation);
+
+[[nodiscard]] bool write_save_bytes(
+    const std::filesystem::path& path,
+    const std::vector<std::byte>& bytes);
 
 [[nodiscard]] bool save_simulation_to_file(
     const Simulation& simulation,

@@ -48,6 +48,10 @@ enum class PlayerCommandType : std::uint8_t {
     MarketBuyWood = 32,
     MarketBuyFood = 33,
     ResearchSpy = 34,
+    ResearchTrades = 35,
+    SendTrade = 36,
+    SetDiplomacy = 37,
+    Resign = 38,
 };
 
 struct PlayerCommand {

@@ -50,6 +50,7 @@ public:
     void disconnect_peer();
     void disconnect_peer_slot(std::uint8_t client_slot);
     void poll(std::uint32_t timeout_ms);
+    void flush_outbound();
 
     [[nodiscard]] bool send_reliable(std::span<const std::byte> data, std::uint8_t channel);
     [[nodiscard]] bool send_reliable_to_client(

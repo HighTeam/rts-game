@@ -2,14 +2,15 @@
   "id": "tower",
   "kind": "structure",
   "display_name": "Tower",
-  "max_hp": 600,
+  "max_hp": 900,
   "footprint_width": 1,
   "footprint_height": 1,
-  "build_wood_cost": 90,
-  "build_money_cost": 45,
-  "pierce_attack": 12,
-  "pierce_armor": 6,
-  "attack_cooldown_ticks": 20,
-  "attack_range": 5,
-  "vision_range": 7
+  "build_wood_cost": 125,
+  "build_money_cost": 50,
+  "melee_armor": 1,
+  "pierce_attack": 6,
+  "pierce_armor": 8,
+  "attack_cooldown_ticks": 40,
+  "attack_range": 7,
+  "vision_range": 8
 }

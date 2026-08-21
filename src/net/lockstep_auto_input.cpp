@@ -222,7 +222,7 @@ void maybe_inject_lockstep_auto_input(LockstepSession& session, sim::Simulation&
     }
 
     sim::snapshot::annotate_command_entity_keys(registry, command);
-    session.submit_local_command(std::move(command));
+    (void)session.submit_local_command(std::move(command));
 }
 
 } // namespace aoa::net

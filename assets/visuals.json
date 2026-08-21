@@ -62,9 +62,11 @@
   "nature": {
     "mana_lake": "textures/HighTeam/Magic Lakes/magic_lake1.png"
   },
-  "hud": {
+    "hud": {
     "icon_atlas": "textures/Shikashi's Fantasy Icons Pack/2 - Transparent & Drop Shadow.png",
-    "earth_build_icons": "textures/HighTeam/generated/earth/earth-hud-icons1.png"
+    "earth_build_icons": "textures/HighTeam/generated/earth/earth-hud-icons1.png",
+    "unit_portraits": "textures/HighTeam/generated/other/units-icons1.png",
+    "civ_logos": "textures/HighTeam/generated/other/civil-logos1.png"
   },
   "menu_slideshow": [
     "textures/Tree bg pack/Tree Background2.png",

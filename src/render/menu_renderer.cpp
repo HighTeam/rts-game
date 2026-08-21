@@ -370,7 +370,7 @@ void MenuRenderer::draw_button(
         button_b);
 
     const float text_width =
-        HudOverlay::text_width_px(button.label.size(), constants::HUD_PIXEL_SCALE);
+        HudOverlay::text_width_px(button.label, constants::HUD_PIXEL_SCALE);
     const float dim = button.disabled ? constants::HUD_MENU_DISABLED_DIM : 1.0F;
     float text_r = constants::HUD_TEXT_R;
     float text_g = constants::HUD_TEXT_G;
@@ -746,7 +746,8 @@ void MenuRenderer::draw_pattern_preview(
 void MenuRenderer::draw_settings(const MenuRenderContext& context) const
 {
     const app::GameMenuState& settings = context.state->settings;
-    const app::GameMenuRect panel = app::settings_panel_rect(window_size_);
+    const app::GameMenuRect panel =
+        app::settings_panel_rect(window_size_, settings.center_settings_panel);
     draw_panel(panel);
 
     for (const app::GameMenuButton& button : app::build_settings_buttons(settings, window_size_)) {
@@ -769,7 +770,8 @@ void MenuRenderer::draw_settings(const MenuRenderContext& context) const
     }
 
     if (settings.screen == app::GameMenuScreen::SettingsGame) {
-        const app::GameMenuRect slider = app::scroll_speed_slider_rect(window_size_);
+        const app::GameMenuRect slider =
+            app::scroll_speed_slider_rect(window_size_, settings.center_settings_panel);
         const int percent = static_cast<int>(
             (settings.scroll_speed / constants::CAMERA_SCROLL_SPEED_DEFAULT) * 100.0F + 0.5F);
         hud_overlay_.draw_text(
@@ -813,7 +815,8 @@ void MenuRenderer::draw_settings(const MenuRenderContext& context) const
 
     const auto draw_volume_slider =
         [&](const int row, const std::string& label, const float value) {
-            const app::GameMenuRect slider = app::volume_slider_rect(window_size_, row);
+            const app::GameMenuRect slider =
+                app::volume_slider_rect(window_size_, row, settings.center_settings_panel);
             hud_overlay_.draw_text(
                 window_size_,
                 slider.x,

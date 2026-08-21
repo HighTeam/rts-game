@@ -643,7 +643,8 @@ namespace {
 {
     const float width = static_cast<float>(constants::MAIN_MENU_DIALOG_WIDTH_PX);
     const float height = PADDING * 2.0F + title_height() + SPLIT_BLOCK * 4.0F + LABEL_GAP
-        + ROW_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT * 4.0F + BUTTON_GAP * 3.0F + label_height();
+        + ROW_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT * 4.0F + BUTTON_GAP * 3.0F + label_height()
+        + (state.reconnect_available ? BUTTON_HEIGHT + BUTTON_GAP : 0.0F);
 
     MenuLayout layout{};
     layout.panel = centered_panel(window_size, width, height);
@@ -654,6 +655,15 @@ namespace {
     push_text_field(layout, MenuTextField::PlayerName, "Player Name", state.player_name, cursor_y);
     push_split_line(layout, cursor_y);
     const bool name_empty = name_blocks_multiplayer(state);
+    if (state.reconnect_available) {
+        push_full_width_button(
+            layout,
+            MainMenuAction::ReconnectMatch,
+            std::string(constants::MULTIPLAYER_RECONNECT_PROMPT_LABEL),
+            cursor_y,
+            name_empty);
+        layout.buttons.back().selected = true;
+    }
     push_full_width_button(
         layout,
         MainMenuAction::OpenBrowseGames,
@@ -682,7 +692,7 @@ namespace {
 {
     const float width = static_cast<float>(constants::MAIN_MENU_DIALOG_WIDTH_PX);
     const float height = PADDING * 2.0F + title_height() + SPLIT_BLOCK * 2.0F
-        + (ROW_HEIGHT + BUTTON_GAP) * 4.0F + LABEL_GAP + ROW_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT;
+        + (ROW_HEIGHT + BUTTON_GAP) * 5.0F + LABEL_GAP + ROW_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT;
 
     MenuLayout layout{};
     layout.panel = centered_panel(window_size, width, height);
@@ -710,6 +720,13 @@ namespace {
         layout,
         MainMenuAction::ToggleFog,
         fog_label(state.host_settings.fog_of_war_enabled),
+        cursor_y);
+    push_option_row(
+        layout,
+        MainMenuAction::CycleAllowSpectators,
+        state.host_settings.allow_spectators
+            ? std::string(constants::LOBBY_ALLOW_SPECTATORS_YES)
+            : std::string(constants::LOBBY_ALLOW_SPECTATORS_NO),
         cursor_y);
     push_text_field(layout, MenuTextField::HostPort, "Port", state.host_port, cursor_y);
     cursor_y -= BUTTON_GAP;
@@ -1047,11 +1064,12 @@ namespace {
         const MenuRect row = lobby_row_rect(layout.panel, slot);
         const net::LobbySlotInfo& info = lobby.slots[static_cast<std::size_t>(slot)];
         std::string name = "P" + std::to_string(slot + 1);
-        if (slot == 0) {
-            name += " " + std::string(constants::SINGLEPLAYER_SLOT_HOST_LABEL);
-        }
-        else if (info.occupied && !info.name.empty()) {
+        if (info.occupied && !info.name.empty()) {
             name += " " + info.name;
+        }
+        else if (static_cast<std::uint8_t>(slot) == lobby.recipient_slot
+            && !state.player_name.empty()) {
+            name += " " + state.player_name;
         }
 
         const float label_y = row.y + (row.height - label_height()) * 0.5F;
@@ -1211,6 +1229,22 @@ namespace {
         settings_locked);
     push_option_row(
         layout,
+        MainMenuAction::CycleBlockTeamChanges,
+        lobby.settings.block_team_changes
+            ? std::string(constants::LOBBY_BLOCK_TEAM_CHANGES_YES)
+            : std::string(constants::LOBBY_BLOCK_TEAM_CHANGES_NO),
+        cursor_y,
+        settings_locked);
+    push_option_row(
+        layout,
+        MainMenuAction::CycleAllowSpectators,
+        lobby.settings.allow_spectators
+            ? std::string(constants::LOBBY_ALLOW_SPECTATORS_YES)
+            : std::string(constants::LOBBY_ALLOW_SPECTATORS_NO),
+        cursor_y,
+        settings_locked);
+    push_option_row(
+        layout,
         MainMenuAction::CycleVictoryCondition,
         victory_condition_button_label(),
         cursor_y,
@@ -1226,7 +1260,8 @@ namespace {
                 MainMenuAction::LobbyReady,
                 local_ready ? "Not Ready" : "Ready",
                 MenuRect{},
-                false,
+                lobby.recipient_slot < lobby.slots.size()
+                    && lobby.slots[lobby.recipient_slot].kind == net::LobbySlotKind::Spectator,
             },
             MenuButton{MainMenuAction::LobbyStart, "Start", MenuRect{}, !is_host || !can_start},
         });

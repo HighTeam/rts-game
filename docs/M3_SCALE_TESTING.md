@@ -2,7 +2,7 @@
 
 You do **not** need 4–8 physical PCs. Use **automated smokes** on one machine for sync proof, and **two PCs** only for a short LAN spot-check (firewall + real ping).
 
-Default game port: **27000**. Build path below assumes Release at `build\x64-release\Release\aoa.exe`.
+Default game port: **27000**. Build path below assumes Release at `build\x64-release\Release\AgeofAffinities.exe`.
 
 ---
 
@@ -22,7 +22,7 @@ Optional: tag or note commit hash so host and join PCs match (e.g. `git checkout
 From repo root, in order:
 
 ```powershell
-$exe = ".\build\x64-release\Release\aoa.exe"
+$exe = ".\build\x64-release\Release\AgeofAffinities.exe"
 
 & $exe --harness
 & $exe --lockstep-smoke
@@ -52,7 +52,7 @@ If any fail, fix before LAN or long soaks.
 ### 2a. Headless CI-style (what you already ran)
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-4-smoke
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-4-smoke
 ```
 
 One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check** until manual multi-join CLI lands.
@@ -75,14 +75,14 @@ Full checklist and portable copy steps: [LAN_SOAK.md](LAN_SOAK.md) **§2–§4**
 
 ```powershell
 cd D:\aoa-lan
-.\aoa.exe --lockstep-host --port 27000 --lockstep-debug
+.\AgeofAffinities.exe --lockstep-host --port 27000 --lockstep-debug
 ```
 
 **PC B (client)** — replace `192.168.x.x` with PC A’s LAN IP (`ipconfig`):
 
 ```powershell
 cd D:\aoa-lan
-.\aoa.exe --lockstep-join 192.168.x.x:27000 --lockstep-debug
+.\AgeofAffinities.exe --lockstep-join 192.168.x.x:27000 --lockstep-debug
 ```
 
 Logs (with `--lockstep-debug`): `D:\aoa-lan\logs\lockstep_p1_host.log`, `lockstep_p2_client.log`.
@@ -108,20 +108,20 @@ Goal: **sync** without four monitors. One graphical host; other slots headless.
 
 ```powershell
 # Terminal 1 — host
-.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --players 4 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-host --port 27000 --players 4 --lockstep-debug
 
 # Terminal 2 — local headless P2 (connect after host is listening)
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 4 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000 --players 4 --headless --player-slot 2 --lockstep-debug
 ```
 
 **PC B** — `HOST_IP` = PC A’s IPv4:
 
 ```powershell
 # Terminal 1 — graphical P3
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 4 --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join HOST_IP:27000 --players 4 --player-slot 3 --lockstep-debug
 
 # Terminal 2 — headless P4
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 4 --headless --player-slot 4 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join HOST_IP:27000 --players 4 --headless --player-slot 4 --lockstep-debug
 ```
 
 **Connect order:** start host → join P2 → wait for `lockstep-join: joined` → join P3 → join P4 (one client at a time, slots 2→3→4).
@@ -145,26 +145,26 @@ Optional: run **one** graphical client on PC B (e.g. P5) instead of headless for
 **PC A**
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-host --port 27000 --players 8 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-host --port 27000 --players 8 --lockstep-debug
 
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 2 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 3 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 4 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 2 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 3 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000 --players 8 --headless --player-slot 4 --lockstep-debug
 ```
 
 **PC B** — `HOST_IP` = PC A’s IPv4:
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 5 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 6 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 7 --lockstep-debug
-.\build\x64-release\Release\aoa.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 8 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 5 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 6 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 7 --lockstep-debug
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-join HOST_IP:27000 --players 8 --headless --player-slot 8 --lockstep-debug
 ```
 
 **Automated 8-player sync (planned):**
 
 ```powershell
-.\build\x64-release\Release\aoa.exe --lockstep-8-smoke
+.\build\x64-release\Release\AgeofAffinities.exe --lockstep-8-smoke
 ```
 
 **Single-PC 8-player soak (planned):** seven headless joins to `127.0.0.1:27000` + one host; script `scripts/run-scale-soak-localhost.ps1 -Players 8 -Minutes 60`.

@@ -14,6 +14,7 @@ namespace aoa::sim::components {
 enum class MatchAnnouncementKind : std::uint8_t {
     AgeAdvanced = 0,
     AttackedBy = 1,
+    RelationshipChanged = 2,
 };
 
 struct MatchAnnouncement {
@@ -91,6 +92,28 @@ inline void note_player_attacked(
         victim_slot,
         attacker_slot,
         0U,
+    });
+}
+
+inline void push_relationship_changed_announcement(
+    entt::registry& registry,
+    const std::uint8_t target_slot,
+    const std::uint8_t actor_slot,
+    const bool allied)
+{
+    if (target_slot == actor_slot
+        || target_slot >= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)
+        || actor_slot >= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
+        return;
+    }
+
+    auto& queue = match_announcement_queue(registry);
+    const std::lock_guard<std::mutex> lock(queue.mutex);
+    queue.events.push_back(MatchAnnouncement{
+        MatchAnnouncementKind::RelationshipChanged,
+        target_slot,
+        actor_slot,
+        allied ? 1U : 0U,
     });
 }
 

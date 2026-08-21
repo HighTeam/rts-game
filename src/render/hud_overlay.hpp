@@ -2,6 +2,7 @@
 
 #include "app/chat_state.hpp"
 #include "app/command_panel.hpp"
+#include "app/diplomacy.hpp"
 #include "app/game_menu.hpp"
 #include "core/grid.hpp"
 #include "net/lockstep_network_hud.hpp"
@@ -50,6 +51,7 @@ struct HudUnitContext {
     int selected_garden_percent{0};
     bool selected_building_is_mana_lake{false};
     bool selected_building_is_town_center{false};
+    bool selected_building_under_construction{false};
     int selected_garrison_count{0};
     int selected_garrison_capacity{0};
     bool has_selected_building_owner{false};
@@ -64,7 +66,13 @@ struct HudUnitContext {
     float camera_world_max_x{0.0F};
     float camera_world_max_z{0.0F};
     app::GameMenuState game_menu{};
+    app::DiplomacyState diplomacy{};
+    bool tab_scoreboard{false};
+    std::uint8_t local_player_slot{0U};
     bool multiplayer{false};
+    bool local_is_spectator{false};
+    bool minimap_show_units{true};
+    bool pointer_attack_mode{false};
     std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names{};
     bool has_match_session{false};
     sim::components::MatchSession match_session{};
@@ -96,6 +104,8 @@ struct HudInfoPanel {
     int garden_percent{0};
     bool has_relation{false};
     bool is_friend{false};
+    bool has_unit_portrait{false};
+    UnitPortrait unit_portrait{UnitPortrait::Count};
     bool has_process{false};
     int process_percent{0};
     bool process_is_research{false};
@@ -192,6 +202,7 @@ public:
         float alpha) const;
 
     [[nodiscard]] static float text_width_px(std::size_t character_count, int pixel_scale);
+    [[nodiscard]] static float text_width_px(const std::string& text, int pixel_scale);
     [[nodiscard]] static float text_height_px(int pixel_scale);
 
 private:
@@ -200,6 +211,8 @@ private:
     [[nodiscard]] unsigned int hud_tinted_texture_shader_program() const;
     [[nodiscard]] HudIconAtlas& icon_atlas() const;
     [[nodiscard]] EarthBuildIconAtlas& earth_build_icon_atlas() const;
+    [[nodiscard]] UnitPortraitAtlas& unit_portrait_atlas() const;
+    [[nodiscard]] CivLogoAtlas& civ_logo_atlas() const;
 
     void draw_string(
         sf::Vector2u window_size,
@@ -245,15 +258,18 @@ private:
         int money,
         int mana,
         int mana_max,
-        int cap_current,
-        int cap_max) const;
+    int cap_current,
+    int cap_max,
+    constants::Civilization civilization,
+    constants::HudStyle hud_style = constants::HudStyle::Default) const;
 
     void draw_command_panel(
         sf::Vector2u window_size,
         app::CommandPanelMode mode,
         const app::CommandPanelBuildOptions& build_options,
         sf::Vector2f mouse_screen_position,
-        int pressed_slot = -1) const;
+        int pressed_slot,
+        const HudUnitContext& unit_context) const;
 
     void draw_minimap(
         sf::Vector2u window_size,
@@ -261,7 +277,10 @@ private:
         std::uint8_t local_player_slot,
         const HudUnitContext& unit_context) const;
 
-    void draw_info_panel(sf::Vector2u window_size, const HudInfoPanel& panel) const;
+    void draw_info_panel(
+        sf::Vector2u window_size,
+        const HudInfoPanel& panel,
+        constants::HudStyle hud_style = constants::HudStyle::Default) const;
 
     void draw_chat(
         sf::Vector2u window_size,
@@ -270,7 +289,8 @@ private:
 
     void draw_age_title(
         sf::Vector2u window_size,
-        constants::PlayerAge age) const;
+        constants::PlayerAge age,
+        constants::HudStyle hud_style = constants::HudStyle::Default) const;
 
     void draw_game_menu(sf::Vector2u window_size, const HudUnitContext& unit_context) const;
     void draw_match_result(
@@ -289,6 +309,10 @@ private:
     mutable bool icon_atlas_load_attempted_{false};
     mutable EarthBuildIconAtlas earth_build_icon_atlas_{};
     mutable bool earth_build_icon_atlas_load_attempted_{false};
+    mutable UnitPortraitAtlas unit_portrait_atlas_{};
+    mutable bool unit_portrait_atlas_load_attempted_{false};
+    mutable CivLogoAtlas civ_logo_atlas_{};
+    mutable bool civ_logo_atlas_load_attempted_{false};
 };
 
 void enable_rgb_blend_keep_framebuffer_opaque();

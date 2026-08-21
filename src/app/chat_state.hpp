@@ -12,6 +12,12 @@
 
 namespace aoa::app {
 
+enum class ChatChannel : std::uint8_t {
+    All = 0,
+    Allies = 1,
+    Personal = 2,
+};
+
 struct ChatTextSpan {
     std::string text{};
     bool use_player_color{false};
@@ -24,6 +30,8 @@ struct ChatLine {
     std::vector<ChatTextSpan> spans{};
     std::chrono::steady_clock::time_point created_at{};
     bool system{false};
+    bool personal{false};
+    ChatChannel channel{ChatChannel::All};
 };
 
 class ChatState {
@@ -34,21 +42,29 @@ public:
         message_hook_ = std::move(hook);
     }
 
-    void push_message(const std::uint8_t player_slot, std::string text)
+    void push_message(
+        const std::uint8_t player_slot,
+        std::string text,
+        const ChatChannel channel = ChatChannel::All)
     {
-        push_line(player_slot, std::move(text), false, constants::CHAT_MESSAGE_TTL_MS);
+        push_line(player_slot, std::move(text), false, false, channel, constants::CHAT_MESSAGE_TTL_MS);
     }
 
-    void push_system_message(std::string text)
+    void push_system_message(std::string text, const ChatChannel channel = ChatChannel::All)
     {
         push_line(
             constants::CHAT_SYSTEM_PLAYER_SLOT,
             std::move(text),
             true,
+            false,
+            channel,
             constants::CHAT_SYSTEM_MESSAGE_TTL_MS);
     }
 
-    void push_system_spans(std::vector<ChatTextSpan> spans)
+    void push_system_spans(
+        std::vector<ChatTextSpan> spans,
+        const ChatChannel channel = ChatChannel::All,
+        const bool personal = false)
     {
         if (spans.empty()) {
             return;
@@ -65,6 +81,8 @@ public:
         line.spans = std::move(spans);
         line.created_at = std::chrono::steady_clock::now();
         line.system = true;
+        line.personal = personal;
+        line.channel = channel;
         if (line.text.size() > static_cast<std::size_t>(aoa::constants::CHAT_MAX_MESSAGE_LENGTH)) {
             line.text.resize(static_cast<std::size_t>(aoa::constants::CHAT_MAX_MESSAGE_LENGTH));
         }
@@ -84,11 +102,19 @@ public:
         return lines_;
     }
 
+    [[nodiscard]] std::deque<ChatLine> log_snapshot() const
+    {
+        std::lock_guard lock(mutex_);
+        return lines_;
+    }
+
 private:
     void push_line(
         const std::uint8_t player_slot,
         std::string text,
         const bool system,
+        const bool personal,
+        const ChatChannel channel,
         const int ttl_ms)
     {
         if (text.empty()) {
@@ -113,6 +139,8 @@ private:
                 .text = std::move(text),
                 .created_at = std::chrono::steady_clock::now(),
                 .system = system,
+                .personal = personal,
+                .channel = channel,
             });
             while (static_cast<int>(lines_.size()) > aoa::constants::CHAT_MAX_VISIBLE_LINES) {
                 lines_.pop_front();

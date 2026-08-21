@@ -52,6 +52,10 @@ constexpr const char* ATLAS_RELATIVE_PATH =
     "textures/Shikashi's Fantasy Icons Pack/2 - Transparent & Drop Shadow.png";
 constexpr const char* EARTH_BUILD_ICONS_RELATIVE_PATH =
     "textures/HighTeam/generated/earth/earth-hud-icons1.png";
+constexpr const char* UNIT_PORTRAITS_RELATIVE_PATH =
+    "textures/HighTeam/generated/other/units-icons1.png";
+constexpr const char* CIV_LOGOS_RELATIVE_PATH =
+    "textures/HighTeam/generated/other/civil-logos1.png";
 
 void invert_icon_tile_rgb(sf::Image& image, const IconTile tile)
 {
@@ -211,6 +215,86 @@ void EarthBuildIconAtlas::icon_uv(
     const float tile_size = static_cast<float>(constants::EARTH_HUD_BUILD_ICON_TILE_SIZE_PX);
     const float width = static_cast<float>(atlas_width_);
     const float x0 = static_cast<float>(icon) * tile_size;
+    u0 = x0 / width;
+    v0 = 0.0F;
+    u1 = (x0 + tile_size) / width;
+    v1 = 1.0F;
+}
+
+bool UnitPortraitAtlas::load(const std::filesystem::path& assets_directory)
+{
+    destroy_gl_resources();
+    (void)assets_directory;
+    return upload_icon_texture(
+        UNIT_PORTRAITS_RELATIVE_PATH, texture_id_, atlas_width_, atlas_height_);
+}
+
+void UnitPortraitAtlas::destroy_gl_resources()
+{
+    if (texture_id_ != 0U) {
+        glDeleteTextures(1, &texture_id_);
+        texture_id_ = 0U;
+    }
+    atlas_width_ = 0;
+    atlas_height_ = 0;
+}
+
+void UnitPortraitAtlas::icon_uv(
+    const UnitPortrait portrait,
+    float& u0,
+    float& v0,
+    float& u1,
+    float& v1) const
+{
+    if (!ready() || portrait >= UnitPortrait::Count) {
+        u0 = v0 = 0.0F;
+        u1 = v1 = 1.0F;
+        return;
+    }
+
+    const float tile_size = static_cast<float>(constants::HUD_UNIT_PORTRAIT_TILE_SIZE_PX);
+    const float width = static_cast<float>(atlas_width_);
+    const float x0 = static_cast<float>(portrait) * tile_size;
+    u0 = x0 / width;
+    v0 = 0.0F;
+    u1 = (x0 + tile_size) / width;
+    v1 = 1.0F;
+}
+
+bool CivLogoAtlas::load(const std::filesystem::path& assets_directory)
+{
+    destroy_gl_resources();
+    (void)assets_directory;
+    return upload_icon_texture(
+        CIV_LOGOS_RELATIVE_PATH, texture_id_, atlas_width_, atlas_height_);
+}
+
+void CivLogoAtlas::destroy_gl_resources()
+{
+    if (texture_id_ != 0U) {
+        glDeleteTextures(1, &texture_id_);
+        texture_id_ = 0U;
+    }
+    atlas_width_ = 0;
+    atlas_height_ = 0;
+}
+
+void CivLogoAtlas::icon_uv(
+    const CivLogo logo,
+    float& u0,
+    float& v0,
+    float& u1,
+    float& v1) const
+{
+    if (!ready() || logo >= CivLogo::Count) {
+        u0 = v0 = 0.0F;
+        u1 = v1 = 1.0F;
+        return;
+    }
+
+    const float tile_size = static_cast<float>(constants::HUD_CIV_LOGO_TILE_SIZE_PX);
+    const float width = static_cast<float>(atlas_width_);
+    const float x0 = static_cast<float>(logo) * tile_size;
     u0 = x0 / width;
     v0 = 0.0F;
     u1 = (x0 + tile_size) / width;

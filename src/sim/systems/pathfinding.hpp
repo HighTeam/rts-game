@@ -41,6 +41,13 @@ struct PathfindProfile {
 void reset_pathfind_profile();
 [[nodiscard]] PathfindProfile pathfind_profile();
 
+[[nodiscard]] bool is_unstarted_construction(const entt::registry& registry, entt::entity entity);
+
+[[nodiscard]] bool unstarted_construction_visible_to_slot(
+    const entt::registry& registry,
+    entt::entity entity,
+    std::uint8_t viewer_slot);
+
 [[nodiscard]] bool is_tile_walkable(
     const components::MapGrid& map,
     core::GridPos pos,

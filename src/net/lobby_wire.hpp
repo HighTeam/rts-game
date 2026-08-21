@@ -42,6 +42,8 @@ struct LobbySettings {
     std::int16_t map_width{static_cast<std::int16_t>(aoa::constants::MAP_TEST_WIDTH)};
     std::int16_t map_height{static_cast<std::int16_t>(aoa::constants::MAP_TEST_HEIGHT)};
     bool map_size_locked{false};
+    bool block_team_changes{false};
+    bool allow_spectators{false};
 };
 
 struct LobbySlotInfo {

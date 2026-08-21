@@ -32,6 +32,9 @@ struct AppShellSettings {
     float music_volume{constants::AUDIO_MUSIC_VOLUME};
     float sfx_volume{constants::AUDIO_SFX_VOLUME};
     float scroll_speed{constants::CAMERA_SCROLL_SPEED_DEFAULT};
+    constants::BuildingRangeDisplayMode building_range_display{
+        constants::BuildingRangeDisplayMode::Never};
+    constants::HudStyle hud_style{constants::HudStyle::Default};
 };
 
 struct SingleplayerSetup {
@@ -62,6 +65,9 @@ struct LockstepMatchSetup {
     sim::components::FogOfWarMode fog_mode{sim::components::FogOfWarMode::Enabled};
     bool cheats_enabled{false};
     std::array<bool, constants::MAX_PLAYER_SLOTS> slot_is_ai{};
+    std::array<bool, constants::MAX_PLAYER_SLOTS> slot_is_spectator{};
+    bool local_is_spectator{false};
+    std::uint8_t playing_player_count{2U};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_colors{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> slot_teams{};
     bool lockstep_debug{false};
@@ -125,12 +131,15 @@ AppFlow run_graphical(
     AppShellSettings& shell_settings,
     const SingleplayerSetup& setup = {});
 
+struct MainMenuState;
+
 AppFlow run_lockstep_match(
     sf::Window& window,
     WindowDisplaySettings& display_settings,
     sim::Simulation& simulation,
     const LockstepMatchSetup& setup,
-    AppShellSettings& shell_settings);
+    AppShellSettings& shell_settings,
+    MainMenuState* menu_state = nullptr);
 
 int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& options);
 

@@ -3,11 +3,9 @@
 
 
 #include "app/chat_state.hpp"
-
 #include "app/command_panel.hpp"
-
+#include "app/diplomacy.hpp"
 #include "app/game_cursor.hpp"
-
 #include "app/game_menu.hpp"
 
 #include "audio/game_audio.hpp"
@@ -77,6 +75,8 @@ public:
     void set_lockstep_session(net::LockstepSession* session) { lockstep_session_ = session; }
 
     void set_local_player_slot(const std::uint8_t player_slot) { local_player_slot_ = player_slot; }
+    void set_local_is_spectator(const bool spectator) { local_is_spectator_ = spectator; }
+    [[nodiscard]] bool local_is_spectator() const { return local_is_spectator_; }
 
     void set_chat_state(ChatState* chat_state) { chat_state_ = chat_state; }
     void set_match_roster(
@@ -130,7 +130,31 @@ public:
 
     [[nodiscard]] float scroll_speed() const { return game_menu_.scroll_speed; }
 
+    void set_building_range_display(const constants::BuildingRangeDisplayMode mode)
+    {
+        game_menu_.building_range_display = mode;
+    }
+
+    [[nodiscard]] constants::BuildingRangeDisplayMode building_range_display() const
+    {
+        return game_menu_.building_range_display;
+    }
+
+    void set_hud_style(const constants::HudStyle style)
+    {
+        game_menu_.hud_style = style;
+    }
+
+    [[nodiscard]] constants::HudStyle hud_style() const
+    {
+        return game_menu_.hud_style;
+    }
+
     [[nodiscard]] bool is_game_menu_open() const { return game_menu_.is_open(); }
+    [[nodiscard]] bool is_simulation_paused() const
+    {
+        return game_menu_.is_open() || match_paused_;
+    }
 
     [[nodiscard]] bool consume_exit_game_request()
     {
@@ -259,7 +283,7 @@ private:
 
 
 
-    void submit_player_command(sim::Simulation& simulation, sim::player::PlayerCommand command);
+    bool submit_player_command(sim::Simulation& simulation, sim::player::PlayerCommand command);
 
     void play_order_ack_sfx(
         sim::Simulation& simulation,
@@ -371,6 +395,18 @@ private:
 
     void sync_audio_volumes_from_menu();
 
+    void sync_diplomacy_draft(sim::Simulation& simulation);
+
+    void sync_diplomacy_chat_focus();
+
+    bool handle_diplomacy_click(
+        const sf::Window& window,
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot,
+        float mouse_x,
+        float mouse_y,
+        bool subtract = false);
+
     [[nodiscard]] CursorShape resolve_cursor_shape(
 
         sim::Simulation& simulation,
@@ -405,6 +441,8 @@ private:
 
     bool attack_targeting_mode_{false};
     bool garrison_targeting_mode_{false};
+    bool local_is_spectator_{false};
+    bool minimap_show_units_{true};
 
     bool chat_composing_{false};
 
@@ -413,12 +451,15 @@ private:
     ChatState* chat_state_{nullptr};
     bool multiplayer_{false};
     std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names_{};
+    DiplomacyState diplomacy_{};
+    bool tab_scoreboard_{false};
 
     GameCursor* game_cursor_{nullptr};
 
     audio::GameAudio* game_audio_{nullptr};
 
     GameMenuState game_menu_{};
+    bool match_paused_{false};
 
     bool exit_game_requested_{false};
     bool exit_to_main_menu_requested_{false};

@@ -81,6 +81,7 @@ bool command_needs_entity_key_annotation(const PlayerCommand& command)
         && command.type != PlayerCommandType::ResumeBuild
         && command.type != PlayerCommandType::RenewFarm
         && command.type != PlayerCommandType::ResearchCartography
+        && command.type != PlayerCommandType::ResearchTrades
         && command.type != PlayerCommandType::ResearchSpy
         && command.type != PlayerCommandType::MarketSellWood
         && command.type != PlayerCommandType::MarketSellFood
@@ -292,6 +293,15 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
             issue_research_cartography_order(registry, command.target_entity);
         }
         break;
+    case PlayerCommandType::ResearchTrades:
+        if (registry.valid(command.target_entity)
+            && registry.all_of<components::MarketTag, components::PlayerOwnedTag>(
+                command.target_entity)
+            && components::entity_player_slot(registry, command.target_entity)
+                == command.player_slot) {
+            issue_research_trades_order(registry, command.target_entity);
+        }
+        break;
     case PlayerCommandType::ResearchSpy:
         if (registry.valid(command.target_entity)
             && registry.all_of<components::TownCenterTag, components::PlayerOwnedTag>(
@@ -337,7 +347,32 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
             issue_market_buy_food_order(registry, command.target_entity);
         }
         break;
+    case PlayerCommandType::SendTrade:
+        issue_send_trade_order(
+            registry,
+            command.player_slot,
+            static_cast<std::uint8_t>(command.cell.x),
+            command.cell.y,
+            command.goal_world_x.to_int(),
+            command.goal_world_y.to_int(),
+            static_cast<int>(entt::to_integral(command.target_entity)));
+        break;
+    case PlayerCommandType::SetDiplomacy:
+        issue_set_diplomacy_order(
+            registry,
+            command.player_slot,
+            static_cast<std::uint8_t>(command.cell.x),
+            command.cell.y != 0);
+        break;
+    case PlayerCommandType::Resign:
+        issue_resign_order(registry, command.player_slot);
+        break;
     case PlayerCommandType::DestroyBuilding:
+        if (!registry.valid(command.target_entity)
+            || !registry.any_of<components::BuildingTag>(command.target_entity)) {
+            command.target_entity = snapshot::find_owned_building_at_cell(
+                registry, command.player_slot, command.cell);
+        }
         if (town_center_matches_slot(registry, command.target_entity, command.player_slot)
             || (registry.valid(command.target_entity)
                 && registry.all_of<components::BuildingTag, components::PlayerOwnedTag>(

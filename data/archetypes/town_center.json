@@ -12,6 +12,6 @@
   "pierce_attack": 8,
   "pierce_armor": 4,
   "attack_cooldown_ticks": 24,
-  "attack_range": 6,
-  "vision_range": 8
+  "attack_range": 7,
+  "vision_range": 9
 }

@@ -527,6 +527,12 @@ void EnetTransport::poll(const std::uint32_t timeout_ms)
     std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
 }
 
+void EnetTransport::flush_outbound()
+{
+    std::lock_guard lock(mutex_);
+    flush_outbound_locked();
+}
+
 bool EnetTransport::enqueue_outbound(OutboundPacket packet)
 {
     if (!network_thread_running_.load()) {

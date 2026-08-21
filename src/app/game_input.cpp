@@ -40,11 +40,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace aoa::app {
 
@@ -66,7 +68,54 @@ sim::player::PlayerCommand make_command(
     }
     command.type = type;
     command.unit_ids = units;
+    if (render_snapshot != nullptr && !units.empty()) {
+        command.unit_keys.reserve(units.size());
+        for (const entt::entity unit : units) {
+            bool found = false;
+            for (const render::RenderEntityPose& pose : render_snapshot->units) {
+                if (pose.entity != unit || !pose.snapshot_key.has_value()) {
+                    continue;
+                }
+
+                command.unit_keys.push_back(*pose.snapshot_key);
+                found = true;
+                break;
+            }
+
+            if (!found) {
+                command.unit_keys.clear();
+                break;
+            }
+        }
+    }
     return command;
+}
+
+void bind_building_target(
+    sim::player::PlayerCommand& command,
+    const entt::entity building,
+    sim::Simulation& simulation,
+    const render::SimRenderSnapshot* render_snapshot)
+{
+    command.target_entity = building;
+    if (render_snapshot != nullptr) {
+        for (const render::RenderEntityPose& pose : render_snapshot->buildings) {
+            if (pose.entity != building) {
+                continue;
+            }
+
+            command.cell = core::GridPos{pose.grid_x, pose.grid_y};
+            command.target_entity_key = pose.snapshot_key;
+            return;
+        }
+    }
+
+    auto& registry = simulation.registry();
+    if (!registry.valid(building) || !registry.any_of<sim::components::GridPosition>(building)) {
+        return;
+    }
+
+    command.cell = registry.get<sim::components::GridPosition>(building).cell;
 }
 
 void fill_move_command_from_screen(
@@ -176,18 +225,23 @@ void GameInput::play_select_ack_if_own_units(
     game_audio_->play_random_select_ack();
 }
 
-void GameInput::submit_player_command(
+bool GameInput::submit_player_command(
     sim::Simulation& simulation,
     sim::player::PlayerCommand command)
 {
+    if (local_is_spectator_) {
+        return false;
+    }
+
+    command.player_slot = local_player_slot_;
     play_order_ack_sfx(simulation, nullptr, command);
 
     if (lockstep_session_ != nullptr) {
-        lockstep_session_->submit_local_command(std::move(command));
-        return;
+        return lockstep_session_->submit_local_command(std::move(command));
     }
 
     simulation.enqueue_player_command(std::move(command));
+    return true;
 }
 
 bool GameInput::selection_has_worker(
@@ -354,7 +408,7 @@ bool GameInput::try_issue_garrison_on_building(
         sim::player::PlayerCommandType::Garrison,
         selection_.units,
         render_snapshot);
-    command.target_entity = building;
+    bind_building_target(command, building, simulation, render_snapshot);
     submit_player_command(simulation, std::move(command));
     garrison_targeting_mode_ = false;
     return true;
@@ -399,6 +453,7 @@ CommandPanelBuildOptions GameInput::current_build_options(
         options.unlocked_farm = sim::components::slot_has_built_mill(session, local_player_slot_)
             || sim::player::player_has_completed_mill(registry, local_player_slot_);
         options.has_cartography = sim::components::slot_has_cartography(session, local_player_slot_);
+        options.has_trades = sim::components::slot_has_trades(session, local_player_slot_);
         options.has_spy = sim::components::slot_has_spy(session, local_player_slot_);
         options.spy_money_cost = sim::player::count_enemy_units(registry, local_player_slot_)
             * constants::SPY_GOLD_PER_ENEMY_UNIT;
@@ -542,6 +597,8 @@ CommandPanelBuildOptions GameInput::current_build_options(
             && town_mana >= options.age_mana_cost;
         options.can_afford_cartography = !options.has_cartography
             && town_money >= options.cartography_money_cost;
+        options.can_afford_trades = !options.has_trades
+            && town_money >= options.trades_money_cost;
         options.can_afford_spy = !options.has_spy && town_money >= options.spy_money_cost;
         options.can_sell_wood = town_wood >= options.market_trade_amount;
         options.can_sell_food = town_food >= options.market_trade_amount;
@@ -550,6 +607,8 @@ CommandPanelBuildOptions GameInput::current_build_options(
         if (world != entt::null && registry.any_of<sim::components::MatchSession>(world)) {
             options.can_afford_cartography = !options.has_cartography
                 && town_money >= options.cartography_money_cost;
+            options.can_afford_trades = !options.has_trades
+                && town_money >= options.trades_money_cost;
             options.can_afford_spy = !options.has_spy && town_money >= options.spy_money_cost;
         }
         if (selection_.building != entt::null) {
@@ -640,6 +699,9 @@ CommandPanelBuildOptions GameInput::current_build_options(
     options.can_afford_cartography = !options.has_cartography
         && sim::player::can_afford_player_money(
             registry, local_player_slot_, options.cartography_money_cost);
+    options.can_afford_trades = !options.has_trades
+        && sim::player::can_afford_player_money(
+            registry, local_player_slot_, options.trades_money_cost);
     options.can_afford_spy = !options.has_spy
         && sim::player::can_afford_player_money(
             registry, local_player_slot_, options.spy_money_cost);
@@ -911,8 +973,9 @@ bool GameInput::apply_command_panel_action(
             sim::player::PlayerCommandType::KillUnits,
             selection_.units,
             render_snapshot);
-        submit_player_command(simulation, std::move(command));
-        clear_selection();
+        if (submit_player_command(simulation, std::move(command))) {
+            clear_selection();
+        }
         return true;
     }
     case CommandPanelAction::BuildTownCenter:
@@ -1028,7 +1091,7 @@ bool GameInput::apply_command_panel_action(
                 command.execute_tick = simulation.next_command_execute_tick();
             }
             command.type = sim::player::PlayerCommandType::AdvanceAge;
-            command.target_entity = selection_.building;
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
             submit_player_command(simulation, std::move(command));
         }
         return true;
@@ -1043,7 +1106,7 @@ bool GameInput::apply_command_panel_action(
                 command.execute_tick = simulation.next_command_execute_tick();
             }
             command.type = sim::player::PlayerCommandType::UnloadGarrison;
-            command.target_entity = selection_.building;
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
             submit_player_command(simulation, std::move(command));
         }
         return true;
@@ -1058,7 +1121,7 @@ bool GameInput::apply_command_panel_action(
                 command.execute_tick = simulation.next_command_execute_tick();
             }
             command.type = sim::player::PlayerCommandType::SpawnMage;
-            command.target_entity = selection_.building;
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
             submit_player_command(simulation, std::move(command));
         }
         return true;
@@ -1073,7 +1136,7 @@ bool GameInput::apply_command_panel_action(
                 command.execute_tick = simulation.next_command_execute_tick();
             }
             command.type = sim::player::PlayerCommandType::SpawnWorker;
-            command.target_entity = selection_.building;
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
             submit_player_command(simulation, std::move(command));
         }
         return true;
@@ -1088,7 +1151,7 @@ bool GameInput::apply_command_panel_action(
                 command.execute_tick = simulation.next_command_execute_tick();
             }
             command.type = sim::player::PlayerCommandType::SpawnMilitia;
-            command.target_entity = selection_.building;
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
             submit_player_command(simulation, std::move(command));
         }
         return true;
@@ -1103,12 +1166,14 @@ bool GameInput::apply_command_panel_action(
                 command.execute_tick = simulation.next_command_execute_tick();
             }
             command.type = sim::player::PlayerCommandType::DestroyBuilding;
-            command.target_entity = selection_.building;
-            submit_player_command(simulation, std::move(command));
-            clear_selection();
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
+            if (submit_player_command(simulation, std::move(command))) {
+                clear_selection();
+            }
         }
         return true;
     case CommandPanelAction::ResearchCartography:
+    case CommandPanelAction::ResearchTrades:
     case CommandPanelAction::ResearchSpy:
     case CommandPanelAction::MarketSellWood:
     case CommandPanelAction::MarketSellFood:
@@ -1126,6 +1191,9 @@ bool GameInput::apply_command_panel_action(
             if (action == CommandPanelAction::ResearchCartography) {
                 command.type = sim::player::PlayerCommandType::ResearchCartography;
             }
+            else if (action == CommandPanelAction::ResearchTrades) {
+                command.type = sim::player::PlayerCommandType::ResearchTrades;
+            }
             else if (action == CommandPanelAction::ResearchSpy) {
                 command.type = sim::player::PlayerCommandType::ResearchSpy;
             }
@@ -1141,7 +1209,7 @@ bool GameInput::apply_command_panel_action(
             else {
                 command.type = sim::player::PlayerCommandType::MarketBuyFood;
             }
-            command.target_entity = selection_.building;
+            bind_building_target(command, selection_.building, simulation, render_snapshot);
             submit_player_command(simulation, std::move(command));
         }
         return true;
@@ -1160,19 +1228,31 @@ bool GameInput::handle_command_panel_click(
     const sf::Vector2f screen_position)
 {
     (void)renderer;
-    if (hit_test_command_panel_frame(window.getSize(), screen_position.x, screen_position.y)
-        && !is_placement_command_mode(command_panel_mode_)) {
-        const CommandPanelAction action = hit_test_command_panel(
-            command_panel_mode_,
-            window.getSize(),
-            screen_position.x,
-            screen_position.y,
-            current_build_options(simulation, render_snapshot));
-        if (action == CommandPanelAction::None) {
+    if (is_placement_command_mode(command_panel_mode_)) {
+        return false;
+    }
+
+    const CommandPanelAction action = hit_test_command_panel(
+        command_panel_mode_,
+        window.getSize(),
+        screen_position.x,
+        screen_position.y,
+        current_build_options(simulation, render_snapshot),
+        game_menu_.hud_style);
+    if (action != CommandPanelAction::None) {
+        if (local_is_spectator_) {
             return true;
         }
 
         return apply_command_panel_action(simulation, render_snapshot, action);
+    }
+
+    if (hit_test_command_panel_frame(
+            window.getSize(),
+            screen_position.x,
+            screen_position.y,
+            game_menu_.hud_style)) {
+        return true;
     }
 
     return false;
@@ -1214,25 +1294,33 @@ namespace {
 [[nodiscard]] bool hit_test_hud_blocks_world_pick(
     const sf::Vector2u window_size,
     const float mouse_x,
-    const float mouse_y)
+    const float mouse_y,
+    const constants::HudStyle hud_style)
 {
-    if (hit_test_command_panel_frame(window_size, mouse_x, mouse_y)) {
+    if (hit_test_command_panel_frame(window_size, mouse_x, mouse_y, hud_style)) {
         return true;
     }
 
-    if (hit_test_minimap_panel_frame(window_size, mouse_x, mouse_y)) {
+    if (hit_test_minimap_panel_frame(window_size, mouse_x, mouse_y, hud_style)) {
         return true;
     }
 
-    if (hit_test_status_panel_frame(window_size, mouse_x, mouse_y)) {
+    if (hit_test_status_panel_frame(window_size, mouse_x, mouse_y, hud_style)) {
         return true;
     }
 
-    if (hit_test_resource_bar_frame(window_size, mouse_x, mouse_y)) {
+    if (hit_test_resource_bar_frame(window_size, mouse_x, mouse_y, hud_style)) {
         return true;
     }
 
-    return menu_button_rect(window_size).contains(mouse_x, mouse_y);
+    if (!hud_is_classic_aoe(hud_style)
+        && (default_left_decor_rect(window_size).contains(mouse_x, mouse_y)
+            || default_right_decor_rect(window_size).contains(mouse_x, mouse_y))) {
+        return true;
+    }
+
+    return hud_menu_button_rect(window_size, hud_style).contains(mouse_x, mouse_y)
+        || hud_diplomacy_button_rect(window_size, hud_style).contains(mouse_x, mouse_y);
 }
 
 void apply_hover_stick(
@@ -1455,7 +1543,8 @@ bool GameInput::handle_minimap_navigation(
         screen_position.x,
         screen_position.y,
         map_width,
-        map_height);
+        map_height,
+        game_menu_.hud_style);
     if (!world.has_value()) {
         return false;
     }
@@ -1506,7 +1595,8 @@ void GameInput::update_hover(
     if (hit_test_hud_blocks_world_pick(
             window.getSize(),
             screen_position.x,
-            screen_position.y)) {
+            screen_position.y,
+            game_menu_.hud_style)) {
         return;
     }
 
@@ -1806,8 +1896,12 @@ void GameInput::apply_game_menu_action(
     const auto write_save = [&](const std::string& stem) -> bool {
         const std::filesystem::path path = sim::persistence::save_path_for_stem(stem);
         if (lockstep_session_ != nullptr) {
-            std::lock_guard lock(lockstep_session_->simulation_access_mutex());
-            return sim::persistence::save_simulation_to_file(simulation, path);
+            std::vector<std::byte> save_bytes{};
+            {
+                std::lock_guard lock(lockstep_session_->simulation_access_mutex());
+                save_bytes = sim::persistence::encode_save_bytes(simulation);
+            }
+            return sim::persistence::write_save_bytes(path, save_bytes);
         }
 
         return sim::persistence::save_simulation_to_file(simulation, path);
@@ -1831,7 +1925,17 @@ void GameInput::apply_game_menu_action(
         game_menu_.toggle();
         return;
     case GameMenuAction::Resume:
+        match_paused_ = false;
+        if (lockstep_session_ != nullptr) {
+            lockstep_session_->request_match_pause(false);
+        }
         game_menu_.close();
+        return;
+    case GameMenuAction::Pause:
+        match_paused_ = true;
+        if (lockstep_session_ != nullptr) {
+            lockstep_session_->request_match_pause(true);
+        }
         return;
     case GameMenuAction::Save:
         open_save_screen();
@@ -1842,11 +1946,21 @@ void GameInput::apply_game_menu_action(
         }
         open_load_screen();
         return;
+    case GameMenuAction::Resign:
+        game_menu_.screen = GameMenuScreen::ConfirmResign;
+        game_menu_.dragging_slider = GameMenuSlider::None;
+        game_menu_.filename_focused = false;
+        return;
     case GameMenuAction::ExitToMainMenu:
-        exit_to_main_menu_requested_ = true;
-        game_menu_.close();
+        game_menu_.screen = GameMenuScreen::ConfirmLeave;
+        game_menu_.dragging_slider = GameMenuSlider::None;
+        game_menu_.filename_focused = false;
         return;
     case GameMenuAction::OpenSettings:
+        if (game_menu_.is_settings_screen()) {
+            game_menu_.open_main();
+            return;
+        }
         game_menu_.screen = GameMenuScreen::SettingsGame;
         game_menu_.dragging_slider = GameMenuSlider::None;
         game_menu_.filename_focused = false;
@@ -1890,6 +2004,13 @@ void GameInput::apply_game_menu_action(
         }
         game_menu_.fps_limit = next_video_fps_limit(game_menu_.fps_limit);
         video_apply_requested_ = true;
+        return;
+    case GameMenuAction::CycleBuildingRangeDisplay:
+        game_menu_.building_range_display = next_building_range_display(
+            game_menu_.building_range_display);
+        return;
+    case GameMenuAction::CycleHudStyle:
+        game_menu_.hud_style = next_hud_style(game_menu_.hud_style);
         return;
     case GameMenuAction::BeginDragMaster:
         game_menu_.dragging_slider = GameMenuSlider::Master;
@@ -1947,6 +2068,36 @@ void GameInput::apply_game_menu_action(
         return;
     }
     case GameMenuAction::DialogYes: {
+        if (game_menu_.screen == GameMenuScreen::ConfirmResign) {
+            sim::player::PlayerCommand command{};
+            command.player_slot = local_player_slot_;
+            command.type = sim::player::PlayerCommandType::Resign;
+            command.execute_tick = simulation.next_command_execute_tick();
+            submit_player_command(simulation, std::move(command));
+            match_paused_ = false;
+            game_menu_.close();
+            return;
+        }
+
+        if (game_menu_.screen == GameMenuScreen::ConfirmLeave) {
+            if (!local_is_spectator_) {
+                if (lockstep_session_ != nullptr) {
+                    (void)lockstep_session_->request_voluntary_resign();
+                }
+                else {
+                    sim::player::PlayerCommand command{};
+                    command.player_slot = local_player_slot_;
+                    command.type = sim::player::PlayerCommandType::Resign;
+                    command.execute_tick = simulation.next_command_execute_tick();
+                    submit_player_command(simulation, std::move(command));
+                }
+            }
+            match_paused_ = false;
+            exit_to_main_menu_requested_ = true;
+            game_menu_.close();
+            return;
+        }
+
         const auto stem = sim::persistence::normalize_save_stem(game_menu_.filename_draft);
         if (!stem.has_value()) {
             game_menu_.screen = game_menu_.dialog_return_screen;
@@ -2059,7 +2210,8 @@ bool GameInput::handle_game_menu_event(
         const float mouse_y = static_cast<float>(mouse.y);
 
         if (!game_menu_.is_open()) {
-            if (menu_button_rect(window_size).contains(mouse_x, mouse_y)) {
+            if (hud_menu_button_rect(window_size, game_menu_.hud_style)
+                    .contains(mouse_x, mouse_y)) {
                 game_menu_.multiplayer = lockstep_session_ != nullptr;
                 game_menu_.open_main();
                 left_button_down_ = false;
@@ -2070,14 +2222,19 @@ bool GameInput::handle_game_menu_event(
             return false;
         }
 
+        const GameMenuAction rail_action = hit_test_menu_button(
+            build_main_menu_buttons(
+                window_size,
+                lockstep_session_ != nullptr,
+                false),
+            mouse_x,
+            mouse_y);
+        if (rail_action != GameMenuAction::None) {
+            apply_game_menu_action(rail_action, simulation);
+            return true;
+        }
+
         if (game_menu_.screen == GameMenuScreen::Main) {
-            const GameMenuAction action = hit_test_menu_button(
-                build_main_menu_buttons(window_size, lockstep_session_ != nullptr),
-                mouse_x,
-                mouse_y);
-            if (action != GameMenuAction::None) {
-                apply_game_menu_action(action, simulation);
-            }
             return true;
         }
 
@@ -2118,7 +2275,8 @@ bool GameInput::handle_game_menu_event(
         }
 
         if (game_menu_.screen == GameMenuScreen::SettingsGame) {
-            if (scroll_speed_slider_rect(window_size).contains(mouse_x, mouse_y)) {
+            if (scroll_speed_slider_rect(window_size, game_menu_.center_settings_panel)
+                    .contains(mouse_x, mouse_y)) {
                 game_menu_.dragging_slider = GameMenuSlider::ScrollSpeed;
                 apply_slider_drag(game_menu_, window_size, mouse_x);
                 return true;
@@ -2126,7 +2284,8 @@ bool GameInput::handle_game_menu_event(
         }
 
         if (game_menu_.screen == GameMenuScreen::SettingsAudio) {
-            const GameMenuSlider slider = hit_test_volume_slider(window_size, mouse_x, mouse_y);
+            const GameMenuSlider slider = hit_test_volume_slider(
+                window_size, mouse_x, mouse_y, game_menu_.center_settings_panel);
             if (slider != GameMenuSlider::None) {
                 game_menu_.dragging_slider = slider;
                 apply_slider_drag(game_menu_, window_size, mouse_x);
@@ -2188,6 +2347,15 @@ void GameInput::update_continuous(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot)
 {
+    if (lockstep_session_ != nullptr) {
+        const bool paused = lockstep_session_->is_match_paused();
+        if (paused && !match_paused_ && !game_menu_.is_open()) {
+            game_menu_.multiplayer = true;
+            game_menu_.open_main();
+        }
+        match_paused_ = paused;
+    }
+
     if (game_menu_.is_open()) {
         selection_box_.active = false;
         left_button_down_ = false;
@@ -2201,6 +2369,18 @@ void GameInput::update_continuous(
             apply_slider_drag(game_menu_, window.getSize(), static_cast<float>(mouse.x));
             sync_audio_volumes_from_menu();
         }
+        update_game_cursor(window, simulation, render_snapshot);
+        return;
+    }
+
+    if (sim::systems::match_is_finished(simulation.registry())) {
+        selection_box_.active = false;
+        left_button_down_ = false;
+        left_press_position_.reset();
+        minimap_navigation_active_ = false;
+        placement_ghost_anchor_.reset();
+        placement_ghost_valid_ = false;
+        hover_ = {};
         update_game_cursor(window, simulation, render_snapshot);
         return;
     }
@@ -2245,7 +2425,11 @@ void GameInput::update_continuous(
             static_cast<float>(left_press_position_->x),
             static_cast<float>(left_press_position_->y),
         };
-        if (hit_test_hud_blocks_world_pick(window.getSize(), press_screen.x, press_screen.y)) {
+        if (hit_test_hud_blocks_world_pick(
+                window.getSize(),
+                press_screen.x,
+                press_screen.y,
+                game_menu_.hud_style)) {
             selection_box_.active = false;
         }
         else {
@@ -2309,24 +2493,12 @@ void GameInput::update_continuous(
                 placement_ghost_anchor_ = anchor;
                 const bool placing_extractor =
                     command_panel_mode_ == CommandPanelMode::PlaceExtractor;
-                if (placing_extractor) {
-                    placement_ghost_valid_ = world_view.begin() != world_view.end()
-                        ? sim::player::can_build_extractor_at(registry, anchor, local_player_slot_)
-                        : (render_snapshot != nullptr
-                            && render::snapshot_can_place_extractor_at(*render_snapshot, anchor));
-                    if (placement_ghost_valid_ && render_snapshot != nullptr) {
-                        for (int y = 0; y < footprint && placement_ghost_valid_; ++y) {
-                            for (int x = 0; x < footprint; ++x) {
-                                if (render::snapshot_cell_blocked_by_unit(
-                                        *render_snapshot,
-                                        {anchor.x + x, anchor.y + y})) {
-                                    placement_ghost_valid_ = false;
-                                    break;
-                                }
-                            }
-                        }
+                    if (placing_extractor) {
+                        placement_ghost_valid_ = world_view.begin() != world_view.end()
+                            ? sim::player::can_build_extractor_at(registry, anchor, local_player_slot_)
+                            : (render_snapshot != nullptr
+                                && render::snapshot_can_place_extractor_at(*render_snapshot, anchor));
                     }
-                }
                 else if (world_view.begin() != world_view.end()) {
                     const auto& map = world_view.get<sim::components::MapGrid>(*world_view.begin());
                     placement_ghost_valid_ = can_place_ghost_footprint(
@@ -2336,22 +2508,17 @@ void GameInput::update_continuous(
                         footprint,
                         selection_.units,
                         local_player_slot_,
-                        command_panel_mode_ != CommandPanelMode::PlaceFarm);
+                        false);
                 }
                 else if (render_snapshot != nullptr) {
                     placement_ghost_valid_ = true;
-                    const bool units_block_placement =
-                        command_panel_mode_ != CommandPanelMode::PlaceFarm;
                     for (int y = 0; y < footprint && placement_ghost_valid_; ++y) {
                         for (int x = 0; x < footprint; ++x) {
                             const core::GridPos cell{anchor.x + x, anchor.y + y};
                             if (render::snapshot_cell_is_unexplored(*render_snapshot, cell)
                                 || render::snapshot_cell_covered_by_mana_lake(
                                     *render_snapshot,
-                                    cell)
-                                || (units_block_placement
-                                    && render::snapshot_cell_blocked_by_unit(
-                                        *render_snapshot, cell))) {
+                                    cell)) {
                                 placement_ghost_valid_ = false;
                                 break;
                             }
@@ -2546,7 +2713,8 @@ void GameInput::finalize_left_release(
         && hit_test_hud_blocks_world_pick(
             window.getSize(),
             static_cast<float>(left_press_position_->x),
-            static_cast<float>(left_press_position_->y))) {
+            static_cast<float>(left_press_position_->y),
+            game_menu_.hud_style)) {
         return;
     }
 
@@ -2570,7 +2738,8 @@ void GameInput::finalize_left_release(
         if (hit_test_hud_blocks_world_pick(
                 window.getSize(),
                 screen_position.x,
-                screen_position.y)) {
+                screen_position.y,
+                game_menu_.hud_style)) {
             return;
         }
 
@@ -2671,7 +2840,8 @@ void GameInput::finalize_left_release(
         if (hit_test_hud_blocks_world_pick(
                 window.getSize(),
                 screen_position.x,
-                screen_position.y)) {
+                screen_position.y,
+                game_menu_.hud_style)) {
             return;
         }
 
@@ -2813,7 +2983,8 @@ void GameInput::finalize_left_release(
     if (hit_test_hud_blocks_world_pick(
             window.getSize(),
             screen_position.x,
-            screen_position.y)) {
+            screen_position.y,
+            game_menu_.hud_style)) {
         return;
     }
 
@@ -2924,6 +3095,279 @@ void GameInput::finalize_left_release(
     selection_.clear();
 }
 
+void GameInput::sync_diplomacy_draft(sim::Simulation& simulation)
+{
+    const auto session_view =
+        simulation.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+    if (session_view.begin() == session_view.end()) {
+        return;
+    }
+
+    const auto& session = session_view.get<sim::components::MatchSession>(*session_view.begin());
+    if (local_player_slot_ < session.player_ally_mask.size()) {
+        const std::uint8_t mask = session.player_ally_mask[local_player_slot_];
+        for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+             ++slot) {
+            diplomacy_.draft_ally[slot] =
+                sim::components::player_slot_bit_is_set(mask, slot) ? 1U : 0U;
+        }
+        diplomacy_.draft_ally_victory = session.player_ally_victory[local_player_slot_] != 0U;
+    }
+    diplomacy_.draft_initialized = true;
+}
+
+void GameInput::sync_diplomacy_chat_focus()
+{
+    if (diplomacy_.open && diplomacy_.tab == DiplomacyTab::Chat) {
+        diplomacy_.chat_input_focused = true;
+        chat_composing_ = true;
+        return;
+    }
+
+    diplomacy_.chat_input_focused = false;
+    chat_composing_ = false;
+}
+
+bool GameInput::handle_diplomacy_click(
+    const sf::Window& window,
+    sim::Simulation& simulation,
+    const render::SimRenderSnapshot* render_snapshot,
+    const float mouse_x,
+    const float mouse_y,
+    const bool subtract)
+{
+    const sf::Vector2u window_size = window.getSize();
+    if (hud_diplomacy_button_rect(window_size, game_menu_.hud_style)
+            .contains(mouse_x, mouse_y)) {
+        diplomacy_.open = !diplomacy_.open;
+        if (diplomacy_.open) {
+            diplomacy_.tab = diplomacy_.last_tab;
+            if (!diplomacy_.draft_initialized) {
+                sync_diplomacy_draft(simulation);
+            }
+        }
+        sync_diplomacy_chat_focus();
+        return true;
+    }
+
+    if (!diplomacy_.open) {
+        return false;
+    }
+
+    if (diplomacy_close_rect(window_size).contains(mouse_x, mouse_y)) {
+        diplomacy_.open = false;
+        sync_diplomacy_chat_focus();
+        return true;
+    }
+
+    for (int tab_index = 0; tab_index < 3; ++tab_index) {
+        if (diplomacy_tab_rect(window_size, tab_index).contains(mouse_x, mouse_y)) {
+            diplomacy_.tab = static_cast<DiplomacyTab>(tab_index);
+            diplomacy_.last_tab = diplomacy_.tab;
+            sync_diplomacy_chat_focus();
+            return true;
+        }
+    }
+
+    const auto session_view =
+        simulation.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+    const sim::components::MatchSession* session = nullptr;
+    if (session_view.begin() != session_view.end()) {
+        session = &session_view.get<sim::components::MatchSession>(*session_view.begin());
+    }
+
+    const auto other_slots = [&]() {
+        std::vector<std::uint8_t> slots{};
+        for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+             ++slot) {
+            if (slot == local_player_slot_) {
+                continue;
+            }
+
+            if (session != nullptr
+                && !sim::components::player_slot_bit_is_set(session->playing_slots_mask, slot)) {
+                continue;
+            }
+
+            slots.push_back(slot);
+        }
+        return slots;
+    }();
+
+    if (diplomacy_.tab == DiplomacyTab::Chat) {
+        for (int subtab = 0; subtab < 2; ++subtab) {
+            if (diplomacy_subtab_rect(window_size, subtab).contains(mouse_x, mouse_y)) {
+                diplomacy_.chat_subtab = static_cast<DiplomacyChatSubtab>(subtab);
+                diplomacy_.hud_send_allies = diplomacy_.chat_subtab == DiplomacyChatSubtab::Allies;
+                return true;
+            }
+        }
+
+        if (diplomacy_chat_send_rect(window_size).contains(mouse_x, mouse_y)) {
+            const std::string message = chat_draft_;
+            chat_draft_.clear();
+            if (!message.empty()) {
+                submit_chat_message(message, simulation, render_snapshot);
+            }
+            sync_diplomacy_chat_focus();
+            return true;
+        }
+
+        if (diplomacy_chat_input_rect(window_size).contains(mouse_x, mouse_y)) {
+            chat_composing_ = true;
+            diplomacy_.chat_input_focused = true;
+            return true;
+        }
+    }
+
+    if (diplomacy_.tab == DiplomacyTab::Trades && session != nullptr) {
+        if (!sim::components::slot_has_trades(*session, local_player_slot_)) {
+            return true;
+        }
+
+        const sim::components::Stockpile stockpile =
+            sim::player::sum_player_stockpile(simulation.registry(), local_player_slot_);
+        int reserved_wood = 0;
+        int reserved_food = 0;
+        int reserved_gold = 0;
+        int reserved_mana = 0;
+        for (const std::uint8_t slot : other_slots) {
+            reserved_wood += diplomacy_.trade_wood[slot];
+            reserved_food += diplomacy_.trade_food[slot];
+            reserved_gold += diplomacy_.trade_gold[slot];
+            reserved_mana += diplomacy_.trade_mana[slot];
+        }
+
+        const bool subtract_amount = subtract;
+        for (int row = 0; row < static_cast<int>(other_slots.size()); ++row) {
+            const std::uint8_t slot = other_slots[static_cast<std::size_t>(row)];
+            const GameMenuRect row_rect = diplomacy_player_row_rect(window_size, row);
+            for (int button = 0; button < 4; ++button) {
+                if (!diplomacy_row_button_rect(row_rect, button, 4).contains(mouse_x, mouse_y)) {
+                    continue;
+                }
+
+                int* field = &diplomacy_.trade_wood[slot];
+                int step = constants::TRADE_WOOD_STEP;
+                int reserved = reserved_wood;
+                int available = stockpile.wood;
+                if (button == 1) {
+                    field = &diplomacy_.trade_food[slot];
+                    step = constants::TRADE_FOOD_STEP;
+                    reserved = reserved_food;
+                    available = stockpile.food;
+                }
+                else if (button == 2) {
+                    field = &diplomacy_.trade_gold[slot];
+                    step = constants::TRADE_GOLD_STEP;
+                    reserved = reserved_gold;
+                    available = stockpile.money;
+                }
+                else if (button == 3) {
+                    field = &diplomacy_.trade_mana[slot];
+                    step = constants::TRADE_MANA_STEP;
+                    reserved = reserved_mana;
+                    available = stockpile.mana;
+                }
+
+                if (subtract_amount) {
+                    *field = std::max(0, *field - step);
+                }
+                else if (available - reserved >= step) {
+                    *field += step;
+                }
+                return true;
+            }
+        }
+
+        if (diplomacy_action_rect(window_size).contains(mouse_x, mouse_y)) {
+            for (const std::uint8_t slot : other_slots) {
+                const int wood = diplomacy_.trade_wood[slot];
+                const int food = diplomacy_.trade_food[slot];
+                const int gold = diplomacy_.trade_gold[slot];
+                const int mana = diplomacy_.trade_mana[slot];
+                if (wood == 0 && food == 0 && gold == 0 && mana == 0) {
+                    continue;
+                }
+
+                sim::player::PlayerCommand command{};
+                if (render_snapshot != nullptr) {
+                    command.execute_tick = render_snapshot->tick_count
+                        + static_cast<std::uint64_t>(net::constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+                }
+                else {
+                    command.execute_tick = simulation.next_command_execute_tick();
+                }
+                command.player_slot = local_player_slot_;
+                command.type = sim::player::PlayerCommandType::SendTrade;
+                command.cell = core::GridPos{static_cast<int>(slot), wood};
+                command.goal_world_x = math::Fixed::from_int(food);
+                command.goal_world_y = math::Fixed::from_int(gold);
+                command.target_entity = entt::entity{static_cast<std::uint32_t>(mana)};
+                submit_player_command(simulation, std::move(command));
+                diplomacy_.trade_wood[slot] = 0;
+                diplomacy_.trade_food[slot] = 0;
+                diplomacy_.trade_gold[slot] = 0;
+                diplomacy_.trade_mana[slot] = 0;
+            }
+            return true;
+        }
+    }
+
+    if (diplomacy_.tab == DiplomacyTab::Teams) {
+        if (session != nullptr && session->block_team_changes) {
+            return true;
+        }
+
+        for (int row = 0; row < static_cast<int>(other_slots.size()); ++row) {
+            const std::uint8_t slot = other_slots[static_cast<std::size_t>(row)];
+            const GameMenuRect row_rect = diplomacy_player_row_rect(window_size, row);
+            if (diplomacy_row_button_rect(row_rect, 0, 2).contains(mouse_x, mouse_y)) {
+                diplomacy_.draft_ally[slot] = 1U;
+                return true;
+            }
+            if (diplomacy_row_button_rect(row_rect, 1, 2).contains(mouse_x, mouse_y)) {
+                diplomacy_.draft_ally[slot] = 0U;
+                return true;
+            }
+        }
+
+        if (diplomacy_ally_victory_rect(window_size).contains(mouse_x, mouse_y)) {
+            diplomacy_.draft_ally_victory = !diplomacy_.draft_ally_victory;
+            return true;
+        }
+
+        if (diplomacy_action_rect(window_size).contains(mouse_x, mouse_y)) {
+            std::uint8_t mask = sim::components::player_slot_bit(local_player_slot_);
+            for (const std::uint8_t slot : other_slots) {
+                if (diplomacy_.draft_ally[slot] != 0U) {
+                    mask = static_cast<std::uint8_t>(
+                        mask | sim::components::player_slot_bit(slot));
+                }
+            }
+
+            sim::player::PlayerCommand command{};
+            if (render_snapshot != nullptr) {
+                command.execute_tick = render_snapshot->tick_count
+                    + static_cast<std::uint64_t>(net::constants::LOCKSTEP_COMMAND_DELAY_TICKS);
+            }
+            else {
+                command.execute_tick = simulation.next_command_execute_tick();
+            }
+            command.player_slot = local_player_slot_;
+            command.type = sim::player::PlayerCommandType::SetDiplomacy;
+            command.cell = core::GridPos{
+                static_cast<int>(mask),
+                diplomacy_.draft_ally_victory ? 1 : 0,
+            };
+            submit_player_command(simulation, std::move(command));
+            return true;
+        }
+    }
+
+    return diplomacy_panel_rect(window_size).contains(mouse_x, mouse_y);
+}
+
 void GameInput::submit_chat_message(
     std::string text,
     sim::Simulation& simulation,
@@ -2959,12 +3403,22 @@ void GameInput::submit_chat_message(
     }
 
     if (lockstep_session_ != nullptr) {
-        lockstep_session_->send_chat_message(text);
+        const bool allies = (diplomacy_.open && diplomacy_.tab == DiplomacyTab::Chat)
+            ? diplomacy_.chat_subtab == DiplomacyChatSubtab::Allies
+            : diplomacy_.hud_send_allies;
+        lockstep_session_->send_chat_message(
+            text, allies ? net::ChatChannel::Allies : net::ChatChannel::All);
         return;
     }
 
     if (chat_state_ != nullptr) {
-        chat_state_->push_message(local_player_slot_, std::move(text));
+        const bool allies = (diplomacy_.open && diplomacy_.tab == DiplomacyTab::Chat)
+            ? diplomacy_.chat_subtab == DiplomacyChatSubtab::Allies
+            : diplomacy_.hud_send_allies;
+        chat_state_->push_message(
+            local_player_slot_,
+            std::move(text),
+            allies ? ChatChannel::Allies : ChatChannel::All);
     }
 }
 
@@ -2973,10 +3427,19 @@ bool GameInput::handle_chat_event(
     sim::Simulation& simulation,
     const render::SimRenderSnapshot* render_snapshot)
 {
+    const bool diplomacy_chat = diplomacy_.open && diplomacy_.tab == DiplomacyTab::Chat;
+    if (diplomacy_chat) {
+        chat_composing_ = true;
+        diplomacy_.chat_input_focused = true;
+    }
+
     if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
+        if (game_menu_.is_open()) {
+            return false;
+        }
+
         if (!chat_composing_ && key_pressed->code == sf::Keyboard::Key::Enter) {
             chat_composing_ = true;
-            chat_draft_.clear();
             return true;
         }
 
@@ -2985,17 +3448,23 @@ bool GameInput::handle_chat_event(
         }
 
         if (key_pressed->code == sf::Keyboard::Key::Escape) {
-            chat_composing_ = false;
             chat_draft_.clear();
+            if (!diplomacy_chat) {
+                chat_composing_ = false;
+                diplomacy_.chat_input_focused = false;
+            }
             return true;
         }
 
         if (key_pressed->code == sf::Keyboard::Key::Enter) {
             const std::string message = chat_draft_;
-            chat_composing_ = false;
             chat_draft_.clear();
             if (!message.empty()) {
                 submit_chat_message(message, simulation, render_snapshot);
+            }
+            if (!diplomacy_chat) {
+                chat_composing_ = false;
+                diplomacy_.chat_input_focused = false;
             }
             return true;
         }
@@ -3010,11 +3479,11 @@ bool GameInput::handle_chat_event(
         return true;
     }
 
-    if (!chat_composing_) {
-        return false;
-    }
-
     if (const auto* text_entered = event.getIf<sf::Event::TextEntered>()) {
+        if (!chat_composing_) {
+            return false;
+        }
+
         const auto unicode = text_entered->unicode;
         if (unicode == 8U || unicode == 13U || unicode == 27U) {
             return true;
@@ -3033,7 +3502,7 @@ bool GameInput::handle_chat_event(
         return true;
     }
 
-    return chat_composing_;
+    return false;
 }
 
 bool GameInput::try_issue_attack_at_screen(
@@ -3043,7 +3512,11 @@ bool GameInput::try_issue_attack_at_screen(
     const render::SimRenderSnapshot* render_snapshot,
     const sf::Vector2f screen_position)
 {
-    if (hit_test_hud_blocks_world_pick(window.getSize(), screen_position.x, screen_position.y)) {
+    if (hit_test_hud_blocks_world_pick(
+            window.getSize(),
+            screen_position.x,
+            screen_position.y,
+            game_menu_.hud_style)) {
         return false;
     }
 
@@ -3138,6 +3611,12 @@ render::HudUnitContext GameInput::make_hud_context(
     context.chat_composing = chat_composing_;
     context.chat_draft = chat_draft_;
     context.game_menu = game_menu_;
+    context.diplomacy = diplomacy_;
+    context.tab_scoreboard = tab_scoreboard_ && !chat_composing_;
+    context.local_player_slot = local_player_slot_;
+    context.local_is_spectator = local_is_spectator_;
+    context.minimap_show_units = minimap_show_units_;
+    context.pointer_attack_mode = attack_targeting_mode_;
     if (chat_state_ != nullptr) {
         context.chat_lines = chat_state_->snapshot();
     }
@@ -3209,8 +3688,11 @@ render::HudUnitContext GameInput::make_hud_context(
                         * 100)
                         / constants::GARDEN_PROD_INTERVAL_TICKS;
                 context.selected_building_is_town_center = pose.is_town_center;
-                context.selected_garrison_count = pose.garrison_count;
-                context.selected_garrison_capacity = pose.garrison_capacity;
+                context.selected_building_under_construction = pose.under_construction;
+                if (!pose.under_construction) {
+                    context.selected_garrison_count = pose.garrison_count;
+                    context.selected_garrison_capacity = pose.garrison_capacity;
+                }
                 context.has_selected_building_owner = true;
                 context.selected_building_player_slot = pose.player_slot;
             }
@@ -3273,7 +3755,10 @@ render::HudUnitContext GameInput::make_hud_context(
                 }
                 context.selected_building_is_town_center =
                     registry.any_of<sim::components::TownCenterTag>(selection_.building);
-                if (registry.any_of<sim::components::GarrisonHold>(selection_.building)) {
+                context.selected_building_under_construction =
+                    registry.any_of<sim::components::UnderConstructionTag>(selection_.building);
+                if (registry.any_of<sim::components::GarrisonHold>(selection_.building)
+                    && !registry.any_of<sim::components::UnderConstructionTag>(selection_.building)) {
                     const auto& hold =
                         registry.get<sim::components::GarrisonHold>(selection_.building);
                     context.selected_garrison_count = static_cast<int>(hold.units.size());
@@ -3302,31 +3787,31 @@ bool GameInput::handle_event(
         return true;
     }
 
+    if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
+        if (key_pressed->code == sf::Keyboard::Key::Tab && !chat_composing_) {
+            tab_scoreboard_ = true;
+            return true;
+        }
+    }
+
+    if (const auto* key_released = event.getIf<sf::Event::KeyReleased>()) {
+        if (key_released->code == sf::Keyboard::Key::Tab) {
+            tab_scoreboard_ = false;
+            return true;
+        }
+    }
+
     if (game_menu_.is_open()) {
         return handle_game_menu_event(event, window, simulation);
     }
 
     if (sim::systems::match_is_finished(simulation.registry())) {
-        if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
-            if (key_pressed->code == sf::Keyboard::Key::Escape) {
-                game_menu_.multiplayer = lockstep_session_ != nullptr;
-                game_menu_.open_main();
-                return true;
-            }
-        }
-
         if (const auto* mouse_pressed = event.getIf<sf::Event::MouseButtonPressed>()) {
             if (mouse_pressed->button == sf::Mouse::Button::Left) {
                 const sf::Vector2f press_screen{
                     static_cast<float>(mouse_pressed->position.x),
                     static_cast<float>(mouse_pressed->position.y),
                 };
-                if (menu_button_rect(window.getSize()).contains(press_screen.x, press_screen.y)) {
-                    game_menu_.multiplayer = lockstep_session_ != nullptr;
-                    game_menu_.open_main();
-                    return true;
-                }
-
                 if (match_result_exit_button_rect(window.getSize())
                         .contains(press_screen.x, press_screen.y)) {
                     exit_to_main_menu_requested_ = true;
@@ -3374,9 +3859,7 @@ bool GameInput::handle_event(
                 command_panel_mode_,
                 *slot,
                 current_build_options(simulation, render_snapshot));
-            if (action != CommandPanelAction::None
-                && action != CommandPanelAction::Kill
-                && action != CommandPanelAction::Destroy) {
+            if (action != CommandPanelAction::None) {
                 command_panel_pressed_slot_ = *slot;
                 command_panel_press_until_ = std::chrono::steady_clock::now()
                     + std::chrono::milliseconds(constants::HUD_COMMAND_PANEL_KEY_PRESS_TTL_MS);
@@ -3421,7 +3904,8 @@ bool GameInput::handle_event(
                 static_cast<float>(left_press_position_->x),
                 static_cast<float>(left_press_position_->y),
             };
-            if (menu_button_rect(window.getSize()).contains(press_screen.x, press_screen.y)) {
+            if (hud_menu_button_rect(window.getSize(), game_menu_.hud_style)
+                    .contains(press_screen.x, press_screen.y)) {
                 game_menu_.multiplayer = lockstep_session_ != nullptr;
                 game_menu_.open_main();
                 left_button_down_ = false;
@@ -3430,11 +3914,60 @@ bool GameInput::handle_event(
                 return true;
             }
 
+            if (handle_diplomacy_click(
+                    window,
+                    simulation,
+                    render_snapshot,
+                    press_screen.x,
+                    press_screen.y)) {
+                left_button_down_ = false;
+                left_press_position_.reset();
+                selection_box_.active = false;
+                return true;
+            }
+
+            if (chat_composing_
+                && chat_channel_toggle_rect(window.getSize())
+                    .contains(press_screen.x, press_screen.y)) {
+                diplomacy_.hud_send_allies = !diplomacy_.hud_send_allies;
+                left_button_down_ = false;
+                left_press_position_.reset();
+                selection_box_.active = false;
+                return true;
+            }
+
             left_button_down_ = true;
-            minimap_navigation_active_ = hit_test_minimap_panel_frame(
-                window.getSize(),
-                press_screen.x,
-                press_screen.y);
+            const constants::HudStyle hud_style = game_menu_.hud_style;
+            if (!game_menu_.is_open()
+                && hit_test_mode_button(
+                    minimap_mode_button_rect(window.getSize(), hud_style),
+                    press_screen.x,
+                    press_screen.y)) {
+                minimap_show_units_ = !minimap_show_units_;
+                selection_box_.active = false;
+                left_button_down_ = false;
+                left_press_position_.reset();
+                return true;
+            }
+
+            if (!game_menu_.is_open()
+                && hit_test_mode_button(
+                    pointer_mode_button_rect(window.getSize(), hud_style),
+                    press_screen.x,
+                    press_screen.y)) {
+                attack_targeting_mode_ = !attack_targeting_mode_;
+                selection_box_.active = false;
+                left_button_down_ = false;
+                left_press_position_.reset();
+                return true;
+            }
+
+            minimap_navigation_active_ = !game_menu_.is_open()
+                && hit_test_minimap_panel_frame(
+                    window.getSize(),
+                    press_screen.x,
+                    press_screen.y,
+                    hud_style);
             if (minimap_navigation_active_) {
                 selection_box_.active = false;
                 (void)handle_minimap_navigation(
@@ -3447,7 +3980,8 @@ bool GameInput::handle_event(
             else if (hit_test_hud_blocks_world_pick(
                          window.getSize(),
                          press_screen.x,
-                         press_screen.y)) {
+                         press_screen.y,
+                         game_menu_.hud_style)) {
                 selection_box_.active = false;
             }
             else {
@@ -3457,6 +3991,21 @@ bool GameInput::handle_event(
             }
         }
         else if (mouse_pressed->button == sf::Mouse::Button::Right) {
+            const sf::Vector2i mouse_position = sf::Mouse::getPosition(window);
+            const sf::Vector2f screen_position{
+                static_cast<float>(mouse_position.x),
+                static_cast<float>(mouse_position.y),
+            };
+            if (handle_diplomacy_click(
+                    window,
+                    simulation,
+                    render_snapshot,
+                    screen_position.x,
+                    screen_position.y,
+                    true)) {
+                return true;
+            }
+
             if (is_placement_command_mode(command_panel_mode_)) {
                 command_panel_mode_ = selection_has_worker(simulation, render_snapshot)
                     ? build_tree_for_placement(command_panel_mode_)
@@ -3481,17 +4030,13 @@ bool GameInput::handle_event(
                 return true;
             }
 
-            const sf::Vector2i mouse_position = sf::Mouse::getPosition(window);
-            const sf::Vector2f screen_position{
-                static_cast<float>(mouse_position.x),
-                static_cast<float>(mouse_position.y),
-            };
             const float pick_radius_px = renderer.selection_pick_radius_px();
 
             if (hit_test_minimap_panel_frame(
                     window.getSize(),
                     screen_position.x,
-                    screen_position.y)) {
+                    screen_position.y,
+                    game_menu_.hud_style)) {
                 int map_width = 0;
                 int map_height = 0;
                 if (!resolve_map_size(simulation, render_snapshot, map_width, map_height)) {
@@ -3503,7 +4048,8 @@ bool GameInput::handle_event(
                     screen_position.x,
                     screen_position.y,
                     map_width,
-                    map_height);
+                    map_height,
+                    game_menu_.hud_style);
                 if (!world.has_value()) {
                     return true;
                 }
@@ -3532,7 +4078,8 @@ bool GameInput::handle_event(
             if (hit_test_hud_blocks_world_pick(
                     window.getSize(),
                     screen_position.x,
-                    screen_position.y)) {
+                    screen_position.y,
+                    game_menu_.hud_style)) {
                 return true;
             }
 

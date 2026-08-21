@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $repoRoot "build/x64-release/Release/aoa.exe"
+$exe = Join-Path $repoRoot "build/x64-release/Release/AgeofAffinities.exe"
 $port = 27010
 
 if (-not (Test-Path $exe)) {

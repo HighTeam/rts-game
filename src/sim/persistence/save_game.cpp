@@ -98,16 +98,27 @@ std::filesystem::path default_autosave_mp_path()
     return default_saves_directory() / AUTOSAVE_MP_FILENAME;
 }
 
-bool save_simulation_to_file(
-    const Simulation& simulation,
-    const std::filesystem::path& path)
+std::vector<std::byte> encode_save_bytes(const Simulation& simulation)
 {
-    const std::vector<std::byte> bytes = encode_sim_snapshot(simulation);
+    return encode_sim_snapshot(simulation, false);
+}
+
+bool write_save_bytes(
+    const std::filesystem::path& path,
+    const std::vector<std::byte>& bytes)
+{
     if (bytes.empty()) {
         return false;
     }
 
     return write_bytes_to_file(path, bytes);
+}
+
+bool save_simulation_to_file(
+    const Simulation& simulation,
+    const std::filesystem::path& path)
+{
+    return write_save_bytes(path, encode_save_bytes(simulation));
 }
 
 bool load_simulation_from_file(Simulation& simulation, const std::filesystem::path& path)

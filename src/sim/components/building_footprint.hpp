@@ -2,6 +2,7 @@
 
 #include "core/constants.hpp"
 #include "core/grid.hpp"
+#include "math/fixed.hpp"
 #include "sim/components/grid_position.hpp"
 
 #include <algorithm>
@@ -59,6 +60,46 @@ struct BuildingFootprint {
         : cell.y > max_y ? cell.y - max_y
                          : 0;
     return std::max(dx, dy);
+}
+
+[[nodiscard]] inline math::Fixed euclidean_distance_sq_to_footprint_center(
+    const math::Fixed world_x,
+    const math::Fixed world_y,
+    const GridPosition& anchor,
+    const BuildingFootprint& footprint)
+{
+    const math::Fixed center_x = math::Fixed::from_int(anchor.cell.x)
+        + math::Fixed::from_int(footprint.width) / math::Fixed::from_int(2);
+    const math::Fixed center_y = math::Fixed::from_int(anchor.cell.y)
+        + math::Fixed::from_int(footprint.height) / math::Fixed::from_int(2);
+    const math::Fixed dx = world_x - center_x;
+    const math::Fixed dy = world_y - center_y;
+    return dx * dx + dy * dy;
+}
+
+[[nodiscard]] inline bool in_circle_attack_range(
+    const math::Fixed world_x,
+    const math::Fixed world_y,
+    const GridPosition& anchor,
+    const BuildingFootprint& footprint,
+    const int attack_range_tiles,
+    const int blind_range_tiles)
+{
+    if (attack_range_tiles <= 0) {
+        return false;
+    }
+
+    const math::Fixed dist_sq =
+        euclidean_distance_sq_to_footprint_center(world_x, world_y, anchor, footprint);
+    if (blind_range_tiles > 0) {
+        const math::Fixed blind = math::Fixed::from_int(blind_range_tiles);
+        if (dist_sq < blind * blind) {
+            return false;
+        }
+    }
+
+    const math::Fixed range = math::Fixed::from_int(attack_range_tiles);
+    return dist_sq <= range * range;
 }
 
 } // namespace aoa::sim::components

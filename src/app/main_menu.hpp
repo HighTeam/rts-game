@@ -92,6 +92,9 @@ enum class MainMenuAction : std::uint8_t {
     OpenAbout,
     AboutOpenWebsite,
     AboutClose,
+    CycleBlockTeamChanges,
+    CycleAllowSpectators,
+    ReconnectMatch,
 };
 
 enum class MenuTextField : std::uint8_t {
@@ -186,6 +189,9 @@ struct MainMenuState {
     BrowseFilter browse_filter{BrowseFilter::All};
     std::uint8_t browse_highlight{0U};
     std::vector<BrowseGameEntry> browse_games{};
+    bool reconnect_available{false};
+    std::string reconnect_address{};
+    std::uint16_t reconnect_port{net::constants::DEFAULT_PORT};
 };
 
 [[nodiscard]] bool player_name_is_acceptable(const std::string& player_name);

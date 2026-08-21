@@ -77,6 +77,18 @@ AppShellSettings load_app_settings()
         json.value("scroll_speed", settings.scroll_speed),
         constants::CAMERA_SCROLL_SPEED_MIN,
         constants::CAMERA_SCROLL_SPEED_MAX);
+    const int range_mode = json.value(
+        "building_range_display",
+        static_cast<int>(settings.building_range_display));
+    if (range_mode >= 0 && range_mode <= 2) {
+        settings.building_range_display =
+            static_cast<constants::BuildingRangeDisplayMode>(range_mode);
+    }
+    const int hud_style = json.value("hud_style", static_cast<int>(settings.hud_style));
+    if (hud_style == static_cast<int>(constants::HudStyle::Aoe)
+        || hud_style == static_cast<int>(constants::HudStyle::Default)) {
+        settings.hud_style = static_cast<constants::HudStyle>(hud_style);
+    }
     return settings;
 }
 
@@ -103,6 +115,8 @@ void save_app_settings(const AppShellSettings& settings)
         {"music_volume", settings.music_volume},
         {"sfx_volume", settings.sfx_volume},
         {"scroll_speed", settings.scroll_speed},
+        {"building_range_display", static_cast<int>(settings.building_range_display)},
+        {"hud_style", static_cast<int>(settings.hud_style)},
     };
 
     std::ofstream out(path, std::ios::trunc);

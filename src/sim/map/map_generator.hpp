@@ -12,6 +12,7 @@ namespace aoa::sim::map {
 
 struct MapGenerationConfig {
     std::uint8_t player_count{2U};
+    std::uint8_t spectator_slots_mask{0U};
     std::uint64_t seed{0U};
     MapPattern pattern{};
     int forest_patch_wood{100};

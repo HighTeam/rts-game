@@ -27,7 +27,9 @@ namespace {
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyMatchStart)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyColor)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyReject)
-        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyTeam);
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyTeam)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::MatchPause)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::PlayerResign);
 }
 
 } // namespace

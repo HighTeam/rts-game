@@ -215,32 +215,40 @@ bool player_can_spawn_units(const entt::registry& registry, const std::uint8_t p
     return count_player_units(registry, player_slot) < cap_max;
 }
 
+[[nodiscard]] components::Stockpile* mutable_player_stockpile(
+    entt::registry& registry,
+    const std::uint8_t player_slot)
+{
+    components::MatchSession* session = systems::match_session(registry);
+    if (session == nullptr || player_slot >= session->player_stockpiles.size()) {
+        return nullptr;
+    }
+
+    return &session->player_stockpiles[player_slot];
+}
+
+[[nodiscard]] const components::Stockpile* player_stockpile(
+    const entt::registry& registry,
+    const std::uint8_t player_slot)
+{
+    const components::MatchSession* session = systems::match_session(registry);
+    if (session == nullptr || player_slot >= session->player_stockpiles.size()) {
+        return nullptr;
+    }
+
+    return &session->player_stockpiles[player_slot];
+}
+
 components::Stockpile sum_player_stockpile(
     const entt::registry& registry,
     const std::uint8_t player_slot)
 {
-    components::Stockpile total{};
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        const auto& stockpile = view.get<components::Stockpile>(entity);
-        total.wood += stockpile.wood;
-        total.food += stockpile.food;
-        total.money += stockpile.money;
-        total.mana += stockpile.mana;
+    const components::Stockpile* stockpile = player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
+        return {};
     }
 
-    return total;
+    return *stockpile;
 }
 
 int player_mana_total(const entt::registry& registry, const std::uint8_t player_slot)
@@ -273,30 +281,13 @@ bool try_deduct_player_wood(
         return false;
     }
 
-    int remaining = amount;
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        auto& stockpile = view.get<components::Stockpile>(entity);
-        const int take = std::min(stockpile.wood, remaining);
-        stockpile.wood -= take;
-        remaining -= take;
-        if (remaining <= 0) {
-            return true;
-        }
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
+        return false;
     }
 
-    return remaining <= 0;
+    stockpile->wood -= amount;
+    return true;
 }
 
 bool can_afford_player_food(
@@ -324,30 +315,13 @@ bool try_deduct_player_food(
         return false;
     }
 
-    int remaining = amount;
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        auto& stockpile = view.get<components::Stockpile>(entity);
-        const int take = std::min(stockpile.food, remaining);
-        stockpile.food -= take;
-        remaining -= take;
-        if (remaining <= 0) {
-            return true;
-        }
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
+        return false;
     }
 
-    return remaining <= 0;
+    stockpile->food -= amount;
+    return true;
 }
 
 bool can_afford_player_money(
@@ -375,30 +349,13 @@ bool try_deduct_player_money(
         return false;
     }
 
-    int remaining = amount;
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        auto& stockpile = view.get<components::Stockpile>(entity);
-        const int take = std::min(stockpile.money, remaining);
-        stockpile.money -= take;
-        remaining -= take;
-        if (remaining <= 0) {
-            return true;
-        }
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
+        return false;
     }
 
-    return remaining <= 0;
+    stockpile->money -= amount;
+    return true;
 }
 
 bool can_afford_player_mana(
@@ -426,30 +383,13 @@ bool try_deduct_player_mana(
         return false;
     }
 
-    int remaining = amount;
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        auto& stockpile = view.get<components::Stockpile>(entity);
-        const int take = std::min(stockpile.mana, remaining);
-        stockpile.mana -= take;
-        remaining -= take;
-        if (remaining <= 0) {
-            return true;
-        }
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
+        return false;
     }
 
-    return remaining <= 0;
+    stockpile->mana -= amount;
+    return true;
 }
 
 void add_player_wood(
@@ -461,22 +401,12 @@ void add_player_wood(
         return;
     }
 
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        view.get<components::Stockpile>(entity).wood += amount;
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
         return;
     }
+
+    stockpile->wood += amount;
 }
 
 void add_player_food(
@@ -488,22 +418,12 @@ void add_player_food(
         return;
     }
 
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        view.get<components::Stockpile>(entity).food += amount;
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
         return;
     }
+
+    stockpile->food += amount;
 }
 
 void add_player_money(
@@ -515,22 +435,12 @@ void add_player_money(
         return;
     }
 
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        view.get<components::Stockpile>(entity).money += amount;
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
         return;
     }
+
+    stockpile->money += amount;
 }
 
 void clamp_player_mana_to_cap(entt::registry& registry, const std::uint8_t player_slot)
@@ -541,23 +451,13 @@ void clamp_player_mana_to_cap(entt::registry& registry, const std::uint8_t playe
         return;
     }
 
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        auto& stockpile = view.get<components::Stockpile>(entity);
-        const int take = std::min(stockpile.mana, excess);
-        stockpile.mana -= take;
-        excess -= take;
-        if (excess <= 0) {
-            return;
-        }
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
+        return;
     }
+
+    const int take = std::min(stockpile->mana, excess);
+    stockpile->mana -= take;
 }
 
 void add_player_mana(
@@ -576,23 +476,13 @@ void add_player_mana(
     }
 
     const int to_add = std::min(amount, remaining_capacity);
-    const auto view = registry.view<
-        components::TownCenterTag,
-        components::PlayerOwnedTag,
-        components::Stockpile>();
-    for (const entt::entity entity : view) {
-        if (components::entity_player_slot(registry, entity) != player_slot) {
-            continue;
-        }
-
-        if (registry.any_of<components::UnderConstructionTag>(entity)) {
-            continue;
-        }
-
-        view.get<components::Stockpile>(entity).mana += to_add;
-        systems::note_mana_collected(registry, player_slot, to_add);
+    components::Stockpile* stockpile = mutable_player_stockpile(registry, player_slot);
+    if (stockpile == nullptr) {
         return;
     }
+
+    stockpile->mana += to_add;
+    systems::note_mana_collected(registry, player_slot, to_add);
 }
 
 } // namespace aoa::sim::player

@@ -1,5 +1,7 @@
 #include "sim/snapshot/entity_snapshot_key.hpp"
 
+#include "core/constants.hpp"
+#include "sim/components/building_footprint.hpp"
 #include "sim/components/combat.hpp"
 #include "sim/components/entity_snapshot_identity.hpp"
 #include "sim/components/grid_position.hpp"
@@ -465,7 +467,69 @@ entt::entity resolve_entity_snapshot_key_from_entt_order(
     return entities[static_cast<std::size_t>(key.ordinal)];
 }
 
+std::optional<EntitySnapshotKey> ensure_entity_snapshot_key(
+    entt::registry& registry,
+    const entt::entity entity)
+{
+    const auto existing = compute_entity_snapshot_key(registry, entity);
+    if (existing.has_value()) {
+        return existing;
+    }
+
+    if (!registry.valid(entity)) {
+        return std::nullopt;
+    }
+
+    const auto category = category_for_entity(registry, entity);
+    if (!category.has_value()) {
+        return std::nullopt;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, entity);
+    const EntitySnapshotKey key{
+        player_slot,
+        *category,
+        next_entity_snapshot_ordinal(registry, player_slot, *category),
+    };
+    set_entity_snapshot_identity(registry, entity, key);
+    return key;
+}
+
 } // namespace
+
+entt::entity find_owned_building_at_cell(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const core::GridPos cell)
+{
+    const auto view = registry.view<
+        components::BuildingTag,
+        components::PlayerOwnedTag,
+        components::GridPosition,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        components::BuildingFootprint footprint{1, 1};
+        if (registry.any_of<components::BuildingFootprint>(entity)) {
+            footprint = registry.get<components::BuildingFootprint>(entity);
+        }
+        footprint = components::effective_building_footprint(
+            footprint, registry.any_of<components::TownCenterTag>(entity));
+        if (components::building_contains_cell(
+                view.get<components::GridPosition>(entity), footprint, cell)) {
+            return entity;
+        }
+    }
+
+    return entt::null;
+}
 
 bool compare_entity_snapshot_keys(const EntitySnapshotKey& left, const EntitySnapshotKey& right)
 {
@@ -496,6 +560,10 @@ std::optional<EntitySnapshotKey> compute_entity_snapshot_key(
     entt::registry& registry,
     const entt::entity entity)
 {
+    if (!registry.valid(entity)) {
+        return std::nullopt;
+    }
+
     if (registry.any_of<components::EntitySnapshotIdentity>(entity)) {
         return registry.get<components::EntitySnapshotIdentity>(entity).key;
     }
@@ -547,7 +615,34 @@ void set_entity_snapshot_identity(
     const entt::entity entity,
     const EntitySnapshotKey key)
 {
-    registry.emplace_or_replace<components::EntitySnapshotIdentity>(entity, components::EntitySnapshotIdentity{key});
+    registry.emplace_or_replace<components::EntitySnapshotIdentity>(
+        entity, components::EntitySnapshotIdentity{key});
+    refresh_unit_sex_from_identity(registry, entity);
+}
+
+void refresh_unit_sex_from_identity(entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.any_of<components::UnitTag>(entity)
+        || !registry.any_of<components::EntitySnapshotIdentity>(entity)) {
+        return;
+    }
+
+    const EntitySnapshotKey& key = registry.get<components::EntitySnapshotIdentity>(entity).key;
+    std::uint32_t rng = constants::UNIT_SEX_SPAWN_SALT
+        ^ (static_cast<std::uint32_t>(key.player_slot) * constants::UNIT_SEX_SPAWN_SLOT_MIX)
+        ^ (static_cast<std::uint32_t>(key.category) * constants::UNIT_SEX_SPAWN_CATEGORY_MIX)
+        ^ (static_cast<std::uint32_t>(key.ordinal) * constants::UNIT_SEX_SPAWN_ORDINAL_MIX);
+    if (rng == 0U) {
+        rng = 1U;
+    }
+
+    rng ^= rng << 13U;
+    rng ^= rng >> 17U;
+    rng ^= rng << 5U;
+    const constants::UnitSex sex = (rng & 1U) == 0U
+        ? constants::UnitSex::Male
+        : constants::UnitSex::Female;
+    registry.emplace_or_replace<components::UnitSex>(entity, components::UnitSex{sex});
 }
 
 void assign_snapshot_identities(entt::registry& registry)
@@ -621,20 +716,31 @@ std::vector<entt::entity> sort_entities_by_snapshot_key(
 
 void annotate_command_entity_keys(entt::registry& registry, player::PlayerCommand& command)
 {
+    const std::vector<EntitySnapshotKey> previous_unit_keys = command.unit_keys;
     command.unit_keys.clear();
     command.unit_keys.reserve(command.unit_ids.size());
 
+    bool units_failed = false;
     for (const entt::entity unit : command.unit_ids) {
-        const auto key = compute_entity_snapshot_key(registry, unit);
+        const auto key = ensure_entity_snapshot_key(registry, unit);
         if (!key.has_value()) {
-            command.unit_keys.clear();
-            return;
+            units_failed = true;
+            break;
         }
 
         command.unit_keys.push_back(*key);
     }
 
-    command.target_entity_key.reset();
+    if (units_failed) {
+        if (previous_unit_keys.size() == command.unit_ids.size()) {
+            command.unit_keys = previous_unit_keys;
+        }
+        else {
+            command.unit_keys.clear();
+        }
+    }
+
+    const std::optional<EntitySnapshotKey> previous_target_key = command.target_entity_key;
     if (command.type == player::PlayerCommandType::Attack
         || command.type == player::PlayerCommandType::SpawnWorker
         || command.type == player::PlayerCommandType::SpawnMilitia
@@ -646,13 +752,33 @@ void annotate_command_entity_keys(entt::registry& registry, player::PlayerComman
         || command.type == player::PlayerCommandType::AdvanceAge
         || command.type == player::PlayerCommandType::RenewFarm
         || command.type == player::PlayerCommandType::ResearchCartography
+        || command.type == player::PlayerCommandType::ResearchTrades
         || command.type == player::PlayerCommandType::ResearchSpy
         || command.type == player::PlayerCommandType::MarketSellWood
         || command.type == player::PlayerCommandType::MarketSellFood
         || command.type == player::PlayerCommandType::MarketBuyWood
         || command.type == player::PlayerCommandType::MarketBuyFood) {
         if (command.target_entity != entt::null) {
-            command.target_entity_key = compute_entity_snapshot_key(registry, command.target_entity);
+            const auto key = ensure_entity_snapshot_key(registry, command.target_entity);
+            if (key.has_value()) {
+                command.target_entity_key = key;
+            }
+            else if (!previous_target_key.has_value()) {
+                command.target_entity_key.reset();
+            }
+            else {
+                command.target_entity_key = previous_target_key;
+            }
+        }
+    }
+
+    if (command.type == player::PlayerCommandType::DestroyBuilding
+        && !command.target_entity_key.has_value()) {
+        const entt::entity building =
+            find_owned_building_at_cell(registry, command.player_slot, command.cell);
+        if (building != entt::null) {
+            command.target_entity = building;
+            command.target_entity_key = ensure_entity_snapshot_key(registry, building);
         }
     }
 }
@@ -672,6 +798,16 @@ void resolve_command_entity_ids(entt::registry& registry, player::PlayerCommand&
 
     if (command.target_entity_key.has_value()) {
         command.target_entity = resolve_entity_snapshot_key(registry, *command.target_entity_key);
+    }
+
+    if (command.type == player::PlayerCommandType::DestroyBuilding
+        && (!registry.valid(command.target_entity)
+            || !registry.any_of<components::BuildingTag>(command.target_entity))) {
+        const entt::entity building =
+            find_owned_building_at_cell(registry, command.player_slot, command.cell);
+        if (building != entt::null) {
+            command.target_entity = building;
+        }
     }
 }
 

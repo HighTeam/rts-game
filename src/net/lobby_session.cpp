@@ -135,6 +135,14 @@ bool LobbySession::local_ready() const
 
 void LobbySession::set_local_ready(const bool ready)
 {
+    if (view_.slots[local_slot_].kind == LobbySlotKind::Spectator) {
+        view_.slots[local_slot_].ready = true;
+        if (is_host()) {
+            send_lobby_state_to_clients();
+        }
+        return;
+    }
+
     view_.slots[local_slot_].ready = ready;
 
     if (is_host()) {
@@ -195,14 +203,11 @@ void LobbySession::cycle_slot_kind(const std::uint8_t slot)
         return;
     }
 
-    LobbySlotInfo& info = view_.slots[slot];
     if (slot == 0U) {
-        info.kind = info.kind == LobbySlotKind::Spectator ? LobbySlotKind::Host
-                                                         : LobbySlotKind::Spectator;
-        refresh_playing_player_count();
-        send_lobby_state_to_clients();
         return;
     }
+
+    LobbySlotInfo& info = view_.slots[slot];
 
     const bool had_human = info.occupied && info.kind == LobbySlotKind::Enabled;
     const std::uint8_t previous_color = info.color;
@@ -736,9 +741,11 @@ void LobbySession::poll()
                 }
             }
 
+            const bool spectator_join = !lobby_slot_accepts_join(view_.slots[*join_slot]);
             view_.slots[*join_slot].occupied = true;
-            view_.slots[*join_slot].kind = LobbySlotKind::Enabled;
-            view_.slots[*join_slot].ready = false;
+            view_.slots[*join_slot].kind =
+                spectator_join ? LobbySlotKind::Spectator : LobbySlotKind::Enabled;
+            view_.slots[*join_slot].ready = spectator_join;
         }
 
         std::uint8_t lost_slot = 0U;

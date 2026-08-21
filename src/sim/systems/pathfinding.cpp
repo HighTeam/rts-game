@@ -8,6 +8,8 @@
 #include "sim/components/movement.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/components/match_session.hpp"
+#include "sim/components/player_slot.hpp"
 #include "sim/spawn/unit_spawn.hpp"
 
 #include <algorithm>
@@ -941,6 +943,40 @@ core::GridPos find_best_melee_stand_tile(
     return best;
 }
 
+bool is_unstarted_construction(const entt::registry& registry, const entt::entity entity)
+{
+    if (!registry.valid(entity)
+        || !registry.any_of<components::UnderConstructionTag>(entity)
+        || !registry.any_of<components::Health>(entity)) {
+        return false;
+    }
+
+    return registry.get<components::Health>(entity).current == math::Fixed::from_int(1);
+}
+
+bool unstarted_construction_visible_to_slot(
+    const entt::registry& registry,
+    const entt::entity entity,
+    const std::uint8_t viewer_slot)
+{
+    if (!is_unstarted_construction(registry, entity)) {
+        return true;
+    }
+
+    const std::uint8_t owner_slot = components::entity_player_slot(registry, entity);
+    if (owner_slot == viewer_slot) {
+        return true;
+    }
+
+    const auto world_view = registry.view<components::WorldTag, components::MatchSession>();
+    if (world_view.begin() == world_view.end()) {
+        return false;
+    }
+
+    const auto& session = world_view.get<components::MatchSession>(*world_view.begin());
+    return components::slots_are_allied(session, owner_slot, viewer_slot);
+}
+
 namespace {
 
 bool is_building_blocking_cell(
@@ -961,6 +997,10 @@ bool is_building_blocking_cell(
         }
 
         if (registry.any_of<components::FarmTag>(entity)) {
+            continue;
+        }
+
+        if (is_unstarted_construction(registry, entity)) {
             continue;
         }
 
@@ -1130,6 +1170,10 @@ PathOccupancy build_path_occupancy(
             continue;
         }
 
+        if (is_unstarted_construction(registry, entity)) {
+            continue;
+        }
+
         if (registry.any_of<components::FarmTag>(entity)) {
             continue;
         }
@@ -1160,29 +1204,6 @@ PathOccupancy build_path_occupancy(
             lake_view.get<components::GridPosition>(lake),
             lake_view.get<components::BuildingFootprint>(lake),
             false);
-    }
-
-    const auto unit_view = registry.view<components::UnitTag, components::Health>();
-    for (const entt::entity entity : unit_view) {
-        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
-            continue;
-        }
-
-        if (unit_view.get<components::Health>(entity).current.raw() <= 0) {
-            continue;
-        }
-
-        if (registry.any_of<components::GarrisonedTag>(entity)) {
-            continue;
-        }
-
-        occupancy.mark(unit_movement_grid_cell(registry, entity));
-        if (registry.any_of<components::MovePath>(entity)) {
-            const auto& path = registry.get<components::MovePath>(entity);
-            if (!path.cells.empty()) {
-                occupancy.mark(path.cells.back());
-            }
-        }
     }
 
     return occupancy;
@@ -1216,6 +1237,131 @@ bool is_step_blocked_by_occupancy(
     return occupancy.contains(cardinal_x) || occupancy.contains(cardinal_y)
         || !is_tile_walkable(map, cardinal_x, allow_forest)
         || !is_tile_walkable(map, cardinal_y, allow_forest);
+}
+
+[[nodiscard]] bool occupancy_line_is_clear(
+    const PathOccupancy& occupancy,
+    const components::MapGrid& map,
+    const core::GridPos from,
+    const core::GridPos to,
+    const bool allow_forest)
+{
+    if (from == to) {
+        return true;
+    }
+
+    const float origin_x = static_cast<float>(from.x) + 0.5F;
+    const float origin_y = static_cast<float>(from.y) + 0.5F;
+    const float dest_x = static_cast<float>(to.x) + 0.5F;
+    const float dest_y = static_cast<float>(to.y) + 0.5F;
+    const float delta_x = dest_x - origin_x;
+    const float delta_y = dest_y - origin_y;
+    const int step_x = delta_x > 0.0F ? 1 : (delta_x < 0.0F ? -1 : 0);
+    const int step_y = delta_y > 0.0F ? 1 : (delta_y < 0.0F ? -1 : 0);
+    const float inf = std::numeric_limits<float>::infinity();
+    const float t_delta_x = step_x != 0 ? std::abs(1.0F / delta_x) : inf;
+    const float t_delta_y = step_y != 0 ? std::abs(1.0F / delta_y) : inf;
+
+    float t_max_x = inf;
+    if (step_x > 0) {
+        t_max_x = (static_cast<float>(from.x + 1) - origin_x) / delta_x;
+    }
+    else if (step_x < 0) {
+        t_max_x = (static_cast<float>(from.x) - origin_x) / delta_x;
+    }
+
+    float t_max_y = inf;
+    if (step_y > 0) {
+        t_max_y = (static_cast<float>(from.y + 1) - origin_y) / delta_y;
+    }
+    else if (step_y < 0) {
+        t_max_y = (static_cast<float>(from.y) - origin_y) / delta_y;
+    }
+
+    const auto cell_blocked = [&](const core::GridPos cell) {
+        return !is_tile_walkable(map, cell, allow_forest) || occupancy.contains(cell);
+    };
+
+    int cell_x = from.x;
+    int cell_y = from.y;
+    const int max_cells = std::abs(to.x - from.x) + std::abs(to.y - from.y) + 4;
+    for (int i = 0; i < max_cells; ++i) {
+        if (t_max_x > 1.0F + constants::PATHFIND_LINE_T_EPSILON
+            && t_max_y > 1.0F + constants::PATHFIND_LINE_T_EPSILON) {
+            break;
+        }
+
+        const float t_diff = t_max_x - t_max_y;
+        if (t_diff < -constants::PATHFIND_LINE_T_EPSILON) {
+            if (t_max_x > 1.0F + constants::PATHFIND_LINE_T_EPSILON) {
+                break;
+            }
+            cell_x += step_x;
+            t_max_x += t_delta_x;
+        }
+        else if (t_diff > constants::PATHFIND_LINE_T_EPSILON) {
+            if (t_max_y > 1.0F + constants::PATHFIND_LINE_T_EPSILON) {
+                break;
+            }
+            cell_y += step_y;
+            t_max_y += t_delta_y;
+        }
+        else {
+            if (t_max_x > 1.0F + constants::PATHFIND_LINE_T_EPSILON) {
+                break;
+            }
+            if (cell_blocked({cell_x + step_x, cell_y})
+                || cell_blocked({cell_x, cell_y + step_y})) {
+                return false;
+            }
+            cell_x += step_x;
+            cell_y += step_y;
+            t_max_x += t_delta_x;
+            t_max_y += t_delta_y;
+        }
+
+        if (cell_blocked({cell_x, cell_y})) {
+            return false;
+        }
+
+        if (cell_x == to.x && cell_y == to.y) {
+            return true;
+        }
+    }
+
+    return cell_x == to.x && cell_y == to.y && !cell_blocked(to);
+}
+
+[[nodiscard]] std::vector<core::GridPos> string_pull_path(
+    const PathOccupancy& occupancy,
+    const components::MapGrid& map,
+    const core::GridPos start,
+    const std::vector<core::GridPos>& path,
+    const bool allow_forest)
+{
+    if (path.size() <= 1U) {
+        return path;
+    }
+
+    std::vector<core::GridPos> pulled{};
+    core::GridPos from = start;
+    std::size_t last_added = std::numeric_limits<std::size_t>::max();
+    for (std::size_t index = 0; index < path.size(); ++index) {
+        const bool is_last = index + 1U == path.size();
+        const bool can_skip = !is_last
+            && occupancy_line_is_clear(occupancy, map, from, path[index + 1U], allow_forest);
+        if (can_skip) {
+            continue;
+        }
+
+        if (last_added != index) {
+            pulled.push_back(path[index]);
+            last_added = index;
+        }
+        from = path[index];
+    }
+
+    return pulled;
 }
 
 thread_local PathOccupancy g_frame_occupancy{};
@@ -1291,34 +1437,7 @@ bool is_movement_blocked(
         return true;
     }
 
-    const auto unit_view = registry.view<components::UnitTag, components::Health>();
-    for (const entt::entity entity : unit_view) {
-        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
-            continue;
-        }
-
-        const auto& health = unit_view.get<components::Health>(entity);
-        if (health.current.raw() <= 0) {
-            continue;
-        }
-
-        if (registry.any_of<components::GarrisonedTag>(entity)) {
-            continue;
-        }
-
-        if (unit_movement_grid_cell(registry, entity) == cell) {
-            return true;
-        }
-
-        if (unit_reserves_cell(registry, entity, cell)) {
-            return true;
-        }
-    }
-
-    const math::Fixed half = math::Fixed::from_int(1) / math::Fixed::from_int(2);
-    const math::Fixed point_x = math::Fixed::from_int(cell.x) + half;
-    const math::Fixed point_y = math::Fixed::from_int(cell.y) + half;
-    return units_block_world_point(registry, point_x, point_y, ignore, also_ignore);
+    return false;
 }
 
 bool is_cell_blocked_for_building(
@@ -1605,43 +1724,159 @@ core::GridPos find_nearest_walkable_goal(
     const core::GridPos preferred,
     const entt::entity ignore)
 {
+    (void)from;
     const auto usable = [&](const core::GridPos cell) {
         if (!is_tile_walkable(map, cell, false)) {
             return false;
         }
 
-        return !is_movement_blocked(registry, cell, ignore);
+        return !is_building_blocking_cell(registry, cell, ignore, entt::null);
     };
 
     if (usable(preferred)) {
         return preferred;
     }
 
-    core::GridPos best{-1, -1};
-    int best_ring = constants::MOVE_UNWALKABLE_GOAL_SEARCH_RADIUS + 1;
-    int best_away = -1;
-    for (int dy = -constants::MOVE_UNWALKABLE_GOAL_SEARCH_RADIUS;
-         dy <= constants::MOVE_UNWALKABLE_GOAL_SEARCH_RADIUS;
-         ++dy) {
-        for (int dx = -constants::MOVE_UNWALKABLE_GOAL_SEARCH_RADIUS;
-             dx <= constants::MOVE_UNWALKABLE_GOAL_SEARCH_RADIUS;
-             ++dx) {
-            const core::GridPos cell{preferred.x + dx, preferred.y + dy};
-            if (!usable(cell)) {
-                continue;
-            }
+    if (map.width <= 0 || map.height <= 0) {
+        return {-1, -1};
+    }
 
-            const int ring = core::chebyshev_distance(cell, preferred);
-            const int away = core::chebyshev_distance(cell, from);
-            if (ring < best_ring || (ring == best_ring && away > best_away)) {
-                best_ring = ring;
-                best_away = away;
-                best = cell;
-            }
+    const int cell_count = map.width * map.height;
+    std::vector<std::uint8_t> visited(static_cast<std::size_t>(cell_count), 0U);
+    std::queue<core::GridPos> pending{};
+    const auto try_enqueue = [&](const core::GridPos cell) {
+        if (!core::is_inside_grid(cell, map.width, map.height)) {
+            return;
+        }
+
+        const int index = core::grid_index(cell, map.width);
+        if (visited[static_cast<std::size_t>(index)] != 0U) {
+            return;
+        }
+
+        visited[static_cast<std::size_t>(index)] = 1U;
+        pending.push(cell);
+    };
+
+    try_enqueue(preferred);
+    int expanded = 0;
+    static constexpr std::array<core::GridPos, 8> k_neighbors{{
+        {1, 0},
+        {-1, 0},
+        {0, 1},
+        {0, -1},
+        {1, 1},
+        {1, -1},
+        {-1, 1},
+        {-1, -1},
+    }};
+    while (!pending.empty() && expanded < constants::PATHFIND_MAX_EXPANDED_NODES) {
+        const core::GridPos current = pending.front();
+        pending.pop();
+        ++expanded;
+        if (usable(current)) {
+            return current;
+        }
+
+        if (core::chebyshev_distance(current, preferred)
+            >= constants::MOVE_UNWALKABLE_GOAL_SEARCH_RADIUS) {
+            continue;
+        }
+
+        for (const core::GridPos offset : k_neighbors) {
+            try_enqueue({current.x + offset.x, current.y + offset.y});
         }
     }
 
-    return best;
+    return {-1, -1};
+}
+
+[[nodiscard]] std::vector<core::GridPos> reconstruct_path_cells(
+    const std::vector<int>& parents,
+    const int map_width,
+    const core::GridPos start,
+    const core::GridPos goal)
+{
+    std::vector<core::GridPos> path{};
+    core::GridPos cursor = goal;
+    while (!(cursor == start)) {
+        path.push_back(cursor);
+        const int parent_index = parents[static_cast<std::size_t>(cursor.y * map_width + cursor.x)];
+        cursor = {parent_index % map_width, parent_index / map_width};
+    }
+
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+[[nodiscard]] std::vector<core::GridPos> find_closest_reachable_path(
+    const PathOccupancy& occupancy,
+    const components::MapGrid& map,
+    const core::GridPos start,
+    const core::GridPos preferred,
+    const bool allow_forest)
+{
+    const int map_width = map.width;
+    const int cell_count = map.width * map.height;
+    if (cell_count <= 0 || start == preferred) {
+        return {};
+    }
+
+    std::vector<int> parents(static_cast<std::size_t>(cell_count), -1);
+    std::vector<std::uint8_t> visited(static_cast<std::size_t>(cell_count), 0U);
+    std::queue<core::GridPos> pending{};
+    const int start_index = start.y * map_width + start.x;
+    visited[static_cast<std::size_t>(start_index)] = 1U;
+    pending.push(start);
+
+    core::GridPos best = start;
+    int best_distance = core::chebyshev_distance(start, preferred);
+    int expanded = 0;
+    while (!pending.empty() && expanded < constants::PATHFIND_MAX_EXPANDED_NODES) {
+        const core::GridPos current = pending.front();
+        pending.pop();
+        ++expanded;
+
+        const int distance = core::chebyshev_distance(current, preferred);
+        if (distance < best_distance
+            || (distance == best_distance
+                && (current.y < best.y || (current.y == best.y && current.x < best.x)))) {
+            best = current;
+            best_distance = distance;
+        }
+
+        if (current == preferred) {
+            break;
+        }
+
+        for (const PathStepOffset& step : path_step_offsets) {
+            const core::GridPos neighbor{current.x + step.offset.x, current.y + step.offset.y};
+            if (is_step_blocked_by_occupancy(occupancy, map, current, neighbor, allow_forest)) {
+                continue;
+            }
+
+            const int neighbor_index = neighbor.y * map_width + neighbor.x;
+            if (visited[static_cast<std::size_t>(neighbor_index)] != 0U) {
+                continue;
+            }
+
+            visited[static_cast<std::size_t>(neighbor_index)] = 1U;
+            parents[static_cast<std::size_t>(neighbor_index)] = current.y * map_width + current.x;
+            pending.push(neighbor);
+        }
+    }
+
+    g_pathfind_profile.expanded_nodes += expanded;
+    if (best == start) {
+        return {};
+    }
+
+    return string_pull_path(
+        occupancy,
+        map,
+        start,
+        reconstruct_path_cells(parents, map_width, start, best),
+        allow_forest);
 }
 
 std::vector<core::GridPos> find_path(
@@ -1654,20 +1889,28 @@ std::vector<core::GridPos> find_path(
     const entt::entity also_ignore)
 {
     ++g_pathfind_profile.calls;
+    const core::GridPos original_goal = goal;
 
     if (start == goal) {
         return {};
     }
 
-    if (!is_tile_walkable(map, goal, allow_forest)) {
-        ++g_pathfind_profile.failed;
-        return {};
-    }
-
-    const PathOccupancy occupancy = build_path_occupancy(registry, map, ignore, also_ignore);
-    if (occupancy.contains(goal)) {
-        ++g_pathfind_profile.failed;
-        return {};
+    if (!is_tile_walkable(map, goal, allow_forest)
+        || is_building_blocking_cell(registry, goal, ignore, also_ignore)) {
+        goal = find_nearest_walkable_goal(map, registry, start, goal, ignore);
+        if (goal.x < 0) {
+            goal = start;
+        }
+        if (start == goal) {
+            const PathOccupancy occupancy =
+                build_path_occupancy(registry, map, ignore, also_ignore);
+            auto closest = find_closest_reachable_path(
+                occupancy, map, start, original_goal, allow_forest);
+            if (closest.empty()) {
+                ++g_pathfind_profile.failed;
+            }
+            return closest;
+        }
     }
 
     const int map_width = map.width;
@@ -1676,6 +1919,8 @@ std::vector<core::GridPos> find_path(
         ++g_pathfind_profile.failed;
         return {};
     }
+
+    const PathOccupancy occupancy = build_path_occupancy(registry, map, ignore, also_ignore);
 
     const auto cell_index = [map_width](const core::GridPos cell) {
         return cell.y * map_width + cell.x;
@@ -1729,17 +1974,13 @@ std::vector<core::GridPos> find_path(
         ++expanded;
 
         if (current == goal) {
-            std::vector<core::GridPos> path{};
-            core::GridPos cursor = goal;
-            while (!(cursor == start)) {
-                path.push_back(cursor);
-                const int parent_index = parents[static_cast<std::size_t>(cell_index(cursor))];
-                cursor = {parent_index % map_width, parent_index / map_width};
-            }
-
-            std::reverse(path.begin(), path.end());
             g_pathfind_profile.expanded_nodes += expanded;
-            return path;
+            return string_pull_path(
+                occupancy,
+                map,
+                start,
+                reconstruct_path_cells(parents, map_width, start, goal),
+                allow_forest);
         }
 
         const int current_g = g_scores[static_cast<std::size_t>(current_index)];
@@ -1763,8 +2004,12 @@ std::vector<core::GridPos> find_path(
     }
 
     g_pathfind_profile.expanded_nodes += expanded;
-    ++g_pathfind_profile.failed;
-    return {};
+    auto closest = find_closest_reachable_path(
+        occupancy, map, start, original_goal, allow_forest);
+    if (closest.empty()) {
+        ++g_pathfind_profile.failed;
+    }
+    return closest;
 }
 
 } // namespace aoa::sim::systems

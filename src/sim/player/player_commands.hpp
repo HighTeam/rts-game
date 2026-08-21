@@ -173,6 +173,8 @@ bool issue_advance_age_order(entt::registry& registry, entt::entity town_center)
 
 bool issue_research_cartography_order(entt::registry& registry, entt::entity market);
 
+bool issue_research_trades_order(entt::registry& registry, entt::entity market);
+
 bool issue_research_spy_order(entt::registry& registry, entt::entity town_center);
 
 bool issue_market_sell_wood_order(entt::registry& registry, entt::entity market);
@@ -182,6 +184,23 @@ bool issue_market_sell_food_order(entt::registry& registry, entt::entity market)
 bool issue_market_buy_wood_order(entt::registry& registry, entt::entity market);
 
 bool issue_market_buy_food_order(entt::registry& registry, entt::entity market);
+
+bool issue_send_trade_order(
+    entt::registry& registry,
+    std::uint8_t player_slot,
+    std::uint8_t target_slot,
+    int wood,
+    int food,
+    int gold,
+    int mana);
+
+bool issue_set_diplomacy_order(
+    entt::registry& registry,
+    std::uint8_t player_slot,
+    std::uint8_t ally_mask,
+    bool ally_victory);
+
+bool issue_resign_order(entt::registry& registry, std::uint8_t player_slot);
 
 void eject_garrisoned_units(entt::registry& registry, entt::entity building);
 

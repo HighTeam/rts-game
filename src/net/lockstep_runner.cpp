@@ -5,6 +5,7 @@
 #include "net/enet_transport.hpp"
 #include "net/lockstep_session.hpp"
 #include "net/net_constants.hpp"
+#include "sim/player/player_economy.hpp"
 #include "sim/player/player_command.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
@@ -517,7 +518,7 @@ void issue_smoke_gather_command(LockstepSession& host, sim::Simulation& simulati
     command.type = sim::player::PlayerCommandType::Gather;
     command.unit_ids = {worker};
     command.cell = {20, 12};
-    host.submit_local_command(std::move(command));
+    (void)host.submit_local_command(std::move(command));
 }
 
 void issue_smoke_spawn_worker_command(LockstepSession& host, sim::Simulation& simulation)
@@ -531,7 +532,7 @@ void issue_smoke_spawn_worker_command(LockstepSession& host, sim::Simulation& si
     sim::player::PlayerCommand command{};
     command.type = sim::player::PlayerCommandType::SpawnWorker;
     command.target_entity = town_center;
-    host.submit_local_command(std::move(command));
+    (void)host.submit_local_command(std::move(command));
 }
 
 } // namespace
@@ -1647,10 +1648,10 @@ int run_lockstep_4_disconnect_smoke()
         return 1;
     }
 
-    sim::Simulation host_simulation{};
-    sim::Simulation client_one_simulation{};
-    sim::Simulation client_two_simulation{};
-    sim::Simulation client_three_simulation{};
+    sim::Simulation host_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_one_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_two_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
+    sim::Simulation client_three_simulation{constants::LOCKSTEP_4_PLAYER_COUNT};
 
     LockstepSession host{
         LockstepRole::Host,
@@ -2097,16 +2098,8 @@ int run_snapshot_double_spawn_smoke()
         client.tick();
 
         if (host.state_hash() != client.state_hash()) {
-            const entt::entity host_town_center =
-                sim::scenario::find_scenario_entity(host.registry(), "town_center");
-            const entt::entity client_town_center =
-                sim::scenario::find_scenario_entity(client.registry(), "town_center");
-            const int host_wood = host_town_center != entt::null
-                ? host.registry().get<sim::components::Stockpile>(host_town_center).wood
-                : -1;
-            const int client_wood = client_town_center != entt::null
-                ? client.registry().get<sim::components::Stockpile>(client_town_center).wood
-                : -1;
+            const int host_wood = sim::player::sum_player_stockpile(host.registry(), 0U).wood;
+            const int client_wood = sim::player::sum_player_stockpile(client.registry(), 0U).wood;
             std::cerr << "snapshot-double-spawn-smoke: hash mismatch after spawn " << spawn_index + 1
                       << " at tick " << host.tick_count() << " host=0x" << std::hex
                       << host.state_hash() << " client=0x" << client.state_hash() << std::dec

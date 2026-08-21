@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/constants.hpp"
 #include "core/grid.hpp"
 #include "data/content_types.hpp"
 #include "math/fixed.hpp"
@@ -135,7 +136,9 @@ namespace aoa::sim::spawn {
     math::Fixed world_y,
     entt::entity target,
     std::uint8_t owner_slot,
-    int pierce_damage);
+    int pierce_damage,
+    bool is_arrow = false,
+    std::uint8_t reveal_to_slot = constants::MATCH_WINNER_NONE);
 
 [[nodiscard]] entt::entity find_mana_lake_at_anchor(entt::registry& registry, core::GridPos anchor);
 

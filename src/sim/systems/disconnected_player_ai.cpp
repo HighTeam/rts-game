@@ -8,6 +8,7 @@
 #include "sim/components/definition_ref.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/player_slot.hpp"
@@ -392,6 +393,12 @@ std::vector<player::PlayerCommand> generate_ai_commands_for_slot(
 
     const entt::entity world = find_world_entity(registry);
     if (world == entt::null) {
+        return commands;
+    }
+
+    if (registry.any_of<components::MatchSession>(world)
+        && components::player_is_eliminated(
+            registry.get<components::MatchSession>(world), player_slot)) {
         return commands;
     }
 

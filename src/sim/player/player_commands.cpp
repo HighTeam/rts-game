@@ -13,6 +13,7 @@
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/match_announcements.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/resources.hpp"
@@ -26,10 +27,12 @@
 #include "sim/systems/gameplay_systems.hpp"
 #include "sim/systems/visibility_system.hpp"
 #include "sim/systems/pathfinding.hpp"
+#include "sim/snapshot/entity_snapshot_key.hpp"
 
 #include "math/fixed.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <optional>
@@ -252,7 +255,7 @@ bool issue_move_order(
             std::min(math::Fixed::from_int(move_goal.y + 1) - inset, goal_world_y));
 
         const components::WorldPosition goal_world{move_goal_x, move_goal_y};
-        if (systems::is_world_position_movement_blocked(registry, map, goal_world, entity, false)) {
+        if (systems::is_world_position_solid_blocked(registry, map, goal_world, entity, false)) {
             use_goal_world = false;
         }
     }
@@ -702,7 +705,7 @@ namespace {
     const components::BuildingFootprint& footprint,
     const std::vector<entt::entity>& ignore_workers,
     const std::uint8_t player_slot,
-    const bool units_block_placement = true)
+    const bool units_block_placement = false)
 {
     (void)ignore_workers;
     for (int y = 0; y < footprint.height; ++y) {
@@ -732,6 +735,12 @@ namespace {
                         building_view.get<components::GridPosition>(building),
                         other_footprint,
                         cell)) {
+                    if (systems::is_unstarted_construction(registry, building)
+                        && !systems::unstarted_construction_visible_to_slot(
+                            registry, building, player_slot)) {
+                        continue;
+                    }
+
                     return false;
                 }
             }
@@ -830,6 +839,12 @@ namespace {
                         building_view.get<components::GridPosition>(building),
                         other_footprint,
                         cell)) {
+                    if (systems::is_unstarted_construction(registry, building)
+                        && !systems::unstarted_construction_visible_to_slot(
+                            registry, building, player_slot)) {
+                        continue;
+                    }
+
                     return false;
                 }
             }
@@ -874,36 +889,49 @@ bool issue_destroy_building_order(entt::registry& registry, const entt::entity b
     const bool unstarted_construction =
         registry.any_of<components::UnderConstructionTag>(building)
         && health.current == math::Fixed::from_int(1);
-    if (unstarted_construction) {
+        if (unstarted_construction) {
         const std::uint8_t player_slot = components::entity_player_slot(registry, building);
         const entt::entity world = find_world_entity(registry);
-        int refund = 0;
+        int refund_wood = 0;
+        int refund_money = 0;
+        int refund_mana = 0;
         if (world != entt::null && registry.any_of<components::DefinitionRef>(building)
             && registry.any_of<components::ContentPack>(world)) {
             const auto& content_pack = registry.get<components::ContentPack>(world);
             const auto& definition_ref = registry.get<components::DefinitionRef>(building);
             const auto* archetype =
                 data::find_structure_archetype(content_pack.content, definition_ref.id);
-            if (archetype != nullptr && archetype->build_wood_cost > 0) {
-                refund = archetype->build_wood_cost;
+            if (archetype != nullptr) {
+                refund_wood = std::max(0, archetype->build_wood_cost);
+                refund_money = std::max(0, archetype->build_money_cost);
+                refund_mana = std::max(0, archetype->build_mana_cost);
             }
-            else if (registry.any_of<components::TownCenterTag>(building)) {
-                refund = constants::TOWN_CENTER_BUILD_WOOD_COST;
+        }
+
+        if (refund_wood <= 0) {
+            if (registry.any_of<components::TownCenterTag>(building)) {
+                refund_wood = constants::TOWN_CENTER_BUILD_WOOD_COST;
             }
             else if (registry.any_of<components::HouseTag>(building)) {
-                refund = constants::HOUSE_BUILD_WOOD_COST;
+                refund_wood = constants::HOUSE_BUILD_WOOD_COST;
             }
             else if (registry.any_of<components::LumberCampTag>(building)) {
-                refund = constants::LUMBER_CAMP_BUILD_WOOD_COST;
+                refund_wood = constants::LUMBER_CAMP_BUILD_WOOD_COST;
             }
         }
 
-        if (refund > 0) {
-            add_player_wood(registry, player_slot, refund);
+        if (refund_money <= 0 && registry.any_of<components::ExtractorTag>(building)) {
+            refund_money = constants::EXTRACTOR_BUILD_MONEY_COST;
         }
 
-        if (registry.any_of<components::ExtractorTag>(building)) {
-            add_player_money(registry, player_slot, constants::EXTRACTOR_BUILD_MONEY_COST);
+        if (refund_wood > 0) {
+            add_player_wood(registry, player_slot, refund_wood);
+        }
+        if (refund_money > 0) {
+            add_player_money(registry, player_slot, refund_money);
+        }
+        if (refund_mana > 0) {
+            add_player_mana(registry, player_slot, refund_mana);
         }
     }
 
@@ -1624,6 +1652,29 @@ bool issue_build_simple_structure(
         return false;
     }
 
+    if (archetype_id == constants::GARDEN_BUILDING_ID) {
+        int garden_count = 0;
+        const auto garden_view = registry.view<
+            components::GardenTag,
+            components::PlayerOwnedTag,
+            components::Health>();
+        for (const entt::entity garden : garden_view) {
+            if (garden_view.get<components::Health>(garden).current.raw() <= 0) {
+                continue;
+            }
+
+            if (components::entity_player_slot(registry, garden) != player_slot) {
+                continue;
+            }
+
+            ++garden_count;
+        }
+
+        if (garden_count >= constants::GARDEN_MAX_PER_PLAYER) {
+            return false;
+        }
+    }
+
     const entt::entity world = find_world_entity(registry);
     if (world == entt::null) {
         return false;
@@ -1656,7 +1707,7 @@ bool issue_build_simple_structure(
             footprint,
             valid_workers,
             player_slot,
-            archetype_id != constants::FARM_BUILDING_ID)) {
+            false)) {
         return false;
     }
 
@@ -2125,6 +2176,187 @@ bool issue_market_buy_food_order(entt::registry& registry, const entt::entity ma
     }
 
     add_player_food(registry, player_slot, constants::MARKET_TRADE_RESOURCE_AMOUNT);
+    return true;
+}
+
+bool issue_research_trades_order(entt::registry& registry, const entt::entity market)
+{
+    if (!market_is_ready(registry, market)) {
+        return false;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::MatchSession>(world)) {
+        return false;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, market);
+    auto& session = registry.get<components::MatchSession>(world);
+    if (components::slot_has_trades(session, player_slot)) {
+        return false;
+    }
+
+    if (components::building_has_active_process(registry, market)) {
+        return false;
+    }
+
+    if (!try_deduct_player_money(registry, player_slot, constants::TRADES_GOLD_COST)) {
+        return false;
+    }
+
+    return try_start_building_process(
+        registry,
+        market,
+        components::BuildingProcessKind::ResearchTrades,
+        constants::TECH_ADVANCE_TICKS);
+}
+
+bool issue_send_trade_order(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const std::uint8_t target_slot,
+    const int wood,
+    const int food,
+    const int gold,
+    const int mana)
+{
+    if (player_slot == target_slot || wood < 0 || food < 0 || gold < 0 || mana < 0) {
+        return false;
+    }
+
+    if (wood == 0 && food == 0 && gold == 0 && mana == 0) {
+        return false;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::MatchSession>(world)) {
+        return false;
+    }
+
+    auto& session = registry.get<components::MatchSession>(world);
+    if (!components::slot_has_trades(session, player_slot)) {
+        return false;
+    }
+
+    if (target_slot >= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)
+        || !components::player_slot_bit_is_set(session.playing_slots_mask, target_slot)) {
+        return false;
+    }
+
+    if ((wood > 0 && !can_afford_player_wood(registry, player_slot, wood))
+        || (food > 0 && !can_afford_player_food(registry, player_slot, food))
+        || (gold > 0 && !can_afford_player_money(registry, player_slot, gold))
+        || (mana > 0 && !can_afford_player_mana(registry, player_slot, mana))) {
+        return false;
+    }
+
+    if (wood > 0 && !try_deduct_player_wood(registry, player_slot, wood)) {
+        return false;
+    }
+
+    if (food > 0 && !try_deduct_player_food(registry, player_slot, food)) {
+        add_player_wood(registry, player_slot, wood);
+        return false;
+    }
+
+    if (gold > 0 && !try_deduct_player_money(registry, player_slot, gold)) {
+        add_player_wood(registry, player_slot, wood);
+        add_player_food(registry, player_slot, food);
+        return false;
+    }
+
+    if (mana > 0 && !try_deduct_player_mana(registry, player_slot, mana)) {
+        add_player_wood(registry, player_slot, wood);
+        add_player_food(registry, player_slot, food);
+        add_player_money(registry, player_slot, gold);
+        return false;
+    }
+
+    add_player_wood(registry, target_slot, wood);
+    add_player_food(registry, target_slot, food);
+    add_player_money(registry, target_slot, gold);
+    add_player_mana(registry, target_slot, mana);
+    if (player_slot < session.player_stats.size()) {
+        ++session.player_stats[player_slot].trades_sent;
+    }
+    if (target_slot < session.player_stats.size()) {
+        ++session.player_stats[target_slot].trades_received;
+    }
+    return true;
+}
+
+bool issue_set_diplomacy_order(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const std::uint8_t ally_mask,
+    const bool ally_victory)
+{
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::MatchSession>(world)) {
+        return false;
+    }
+
+    auto& session = registry.get<components::MatchSession>(world);
+    if (session.block_team_changes || player_slot >= session.player_ally_mask.size()) {
+        return false;
+    }
+
+    const std::uint8_t previous_mask = session.player_ally_mask[player_slot];
+    const std::uint8_t next_mask =
+        static_cast<std::uint8_t>(ally_mask | components::player_slot_bit(player_slot));
+    session.player_ally_mask[player_slot] = next_mask;
+    session.player_ally_victory[player_slot] = ally_victory ? 1U : 0U;
+
+    if (ally_victory) {
+        for (std::uint8_t other = 0U; other < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+             ++other) {
+            if (other == player_slot) {
+                continue;
+            }
+
+            if (components::player_slot_bit_is_set(next_mask, other)) {
+                session.player_side_indices[player_slot] = session.player_side_indices[other];
+                break;
+            }
+        }
+    }
+    else {
+        session.player_side_indices[player_slot] =
+            static_cast<std::uint8_t>(constants::MATCH_FFA_SIDE_BASE + player_slot);
+    }
+
+    for (std::uint8_t other = 0U; other < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+         ++other) {
+        if (other == player_slot) {
+            continue;
+        }
+
+        const bool was_ally = components::player_slot_bit_is_set(previous_mask, other);
+        const bool now_ally = components::player_slot_bit_is_set(next_mask, other);
+        if (was_ally != now_ally) {
+            components::push_relationship_changed_announcement(
+                registry, other, player_slot, now_ally);
+        }
+    }
+
+    return true;
+}
+
+bool issue_resign_order(entt::registry& registry, const std::uint8_t player_slot)
+{
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::MatchSession>(world)) {
+        return false;
+    }
+
+    auto& session = registry.get<components::MatchSession>(world);
+    if (session.match_finished
+        || !components::player_slot_bit_is_set(session.playing_slots_mask, player_slot)) {
+        return false;
+    }
+
+    session.eliminated_slots_mask = static_cast<std::uint8_t>(
+        session.eliminated_slots_mask | components::player_slot_bit(player_slot));
     return true;
 }
 
@@ -2707,71 +2939,136 @@ void issue_move_orders(
     }
 
     const auto& map = registry.get<components::MapGrid>(world);
-    std::vector<core::GridPos> reserved_goals{};
-    reserved_goals.reserve(entities.size());
+    std::vector<entt::entity> movers{};
+    movers.reserve(entities.size());
+    for (const entt::entity entity : entities) {
+        if (is_alive_player_unit(registry, entity)) {
+            movers.push_back(entity);
+        }
+    }
 
-    const auto is_reserved = [&reserved_goals](const core::GridPos cell) {
-        for (const core::GridPos reserved : reserved_goals) {
-            if (reserved == cell) {
+    std::sort(movers.begin(), movers.end(), [&registry](const entt::entity left, const entt::entity right) {
+        return snapshot::compare_entities_for_deterministic_iteration(registry, left, right);
+    });
+
+    std::vector<components::WorldPosition> reserved{};
+    reserved.reserve(movers.size());
+    const math::Fixed min_distance = math::Fixed::from_float(
+        constants::MOVE_UNIT_COLLISION_RADIUS_TILES * 2.0F);
+    const math::Fixed min_distance_sq = min_distance * min_distance;
+
+    const auto occupied = [&](const math::Fixed point_x, const math::Fixed point_y, const entt::entity mover) {
+        if (systems::is_world_position_solid_blocked(
+                registry,
+                map,
+                components::WorldPosition{point_x, point_y},
+                mover,
+                false)) {
+            return true;
+        }
+
+        if (systems::is_unit_radius_blocked_at_world(registry, point_x, point_y, mover)) {
+            return true;
+        }
+
+        for (const auto& taken : reserved) {
+            const math::Fixed dx = taken.x - point_x;
+            const math::Fixed dy = taken.y - point_y;
+            if (dx * dx + dy * dy < min_distance_sq) {
                 return true;
             }
         }
+
         return false;
     };
 
-    for (const entt::entity entity : entities) {
-        if (!is_alive_player_unit(registry, entity)) {
+    constexpr float k_two_pi = 6.2831853F;
+    int mover_index = 0;
+    for (const entt::entity entity : movers) {
+        const core::GridPos start = registry.any_of<components::GridPosition>(entity)
+            ? registry.get<components::GridPosition>(entity).cell
+            : goal;
+        core::GridPos move_goal =
+            systems::find_nearest_walkable_goal(map, registry, start, goal, entity);
+        if (move_goal.x < 0) {
+            ++mover_index;
             continue;
         }
 
-        core::GridPos assigned = goal;
+        math::Fixed dest_x = math::tile_center_coord(move_goal.x);
+        math::Fixed dest_y = math::tile_center_coord(move_goal.y);
+        if (has_goal_world) {
+            dest_x = goal_world_x;
+            dest_y = goal_world_y;
+        }
+
+        math::Fixed chosen_x = dest_x;
+        math::Fixed chosen_y = dest_y;
         bool found = false;
-        for (int ring = 0; ring <= constants::MOVE_FORMATION_GOAL_MAX_RING && !found; ++ring) {
-            for (int dy = -ring; dy <= ring && !found; ++dy) {
-                for (int dx = -ring; dx <= ring && !found; ++dx) {
-                    if (ring > 0 && std::max(std::abs(dx), std::abs(dy)) != ring) {
-                        continue;
-                    }
+        const int attempts = std::max(1, constants::MOVE_GROUP_SETTLE_ATTEMPTS);
+        const auto try_world_point = [&](const math::Fixed point_x, const math::Fixed point_y) {
+            if (occupied(point_x, point_y, entity)) {
+                return false;
+            }
 
-                    const core::GridPos candidate{goal.x + dx, goal.y + dy};
-                    if (!core::is_inside_grid(candidate, map.width, map.height)) {
-                        continue;
-                    }
+            const core::GridPos candidate_cell{point_x.to_int(), point_y.to_int()};
+            if (!systems::is_tile_walkable(map, candidate_cell, false)
+                || systems::is_movement_blocked(registry, candidate_cell, entity)) {
+                return false;
+            }
 
-                    if (!systems::is_tile_walkable(map, candidate, false)) {
-                        continue;
-                    }
+            chosen_x = point_x;
+            chosen_y = point_y;
+            move_goal = candidate_cell;
+            return true;
+        };
 
-                    if (is_reserved(candidate)) {
-                        continue;
-                    }
+        if (!found) {
+            found = try_world_point(dest_x, dest_y);
+        }
 
-                    if (is_occupied(registry, candidate, entity)) {
-                        continue;
-                    }
-
-                    assigned = candidate;
-                    found = true;
+        if (!found) {
+            const core::GridPos start_cell = start;
+            const math::Fixed start_x = math::tile_center_coord(start_cell.x);
+            const math::Fixed start_y = math::tile_center_coord(start_cell.y);
+            const math::Fixed delta_x = dest_x - start_x;
+            const math::Fixed delta_y = dest_y - start_y;
+            const math::Fixed length_sq = delta_x * delta_x + delta_y * delta_y;
+            if (length_sq.raw() > 0) {
+                const float length = std::sqrt(length_sq.to_float());
+                const math::Fixed step = math::Fixed::from_float(constants::MOVE_WORLD_APPROACH_STEP_TILES);
+                const math::Fixed dir_x = delta_x / math::Fixed::from_float(length);
+                const math::Fixed dir_y = delta_y / math::Fixed::from_float(length);
+                for (int pull = 1; pull <= constants::MOVE_WORLD_APPROACH_MAX_STEPS && !found; ++pull) {
+                    found = try_world_point(
+                        dest_x - dir_x * step * math::Fixed::from_int(pull),
+                        dest_y - dir_y * step * math::Fixed::from_int(pull));
                 }
             }
         }
 
+        for (int attempt = 1; attempt < attempts && !found; ++attempt) {
+            const int ring = 1 + ((attempt - 1 + mover_index) % constants::MOVE_GROUP_SETTLE_EXTRA_RINGS);
+            const float angle = k_two_pi
+                * (static_cast<float>(mover_index) + static_cast<float>(attempt) * 0.37F)
+                / static_cast<float>(std::max(1, static_cast<int>(movers.size())));
+            const math::Fixed offset_x =
+                math::Fixed::from_float(constants::MOVE_WORLD_APPROACH_STEP_TILES)
+                * math::Fixed::from_int(ring) * math::Fixed::from_float(std::cos(angle));
+            const math::Fixed offset_y =
+                math::Fixed::from_float(constants::MOVE_WORLD_APPROACH_STEP_TILES)
+                * math::Fixed::from_int(ring) * math::Fixed::from_float(std::sin(angle));
+            found = try_world_point(dest_x + offset_x, dest_y + offset_y);
+        }
+
         if (!found) {
+            ++mover_index;
             continue;
         }
 
-        const bool use_world = has_goal_world && assigned == goal;
-        if (!issue_move_order(
-                registry,
-                entity,
-                assigned,
-                use_world,
-                goal_world_x,
-                goal_world_y)) {
-            continue;
-        }
-
-        reserved_goals.push_back(assigned);
+        reserved.push_back(components::WorldPosition{chosen_x, chosen_y});
+        (void)issue_move_order(registry, entity, move_goal, true, chosen_x, chosen_y);
+        ++mover_index;
     }
 }
 

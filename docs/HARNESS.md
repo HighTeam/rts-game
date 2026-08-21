@@ -12,11 +12,11 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 ```powershell
 # All scenarios under data/scenarios/*.json
-.\build\x64-debug\Debug\aoa.exe --harness
+.\build\x64-debug\Debug\AgeofAffinities.exe --harness
 
 # Ad-hoc: default Earth scenario, no scripted commands
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --print-hash
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
 ```
 
 | Flag | Effect |

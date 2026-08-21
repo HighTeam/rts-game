@@ -23,9 +23,15 @@ ArchetypeDefinition parse_archetype_definition(const nlohmann::json& json)
     archetype.gather_per_tick = json.value("gather_per_tick", 0);
     archetype.carry_capacity = json.value("carry_capacity", 0);
     archetype.melee_attack = json.value("melee_attack", json.value("attack_damage", 0));
-    archetype.melee_armor = json.value("melee_armor", 0);
+    const int default_melee_armor = archetype.kind == ArchetypeKind::Structure
+        ? aoa::constants::STRUCTURE_DEFAULT_MELEE_ARMOR
+        : 0;
+    const int default_pierce_armor = archetype.kind == ArchetypeKind::Structure
+        ? aoa::constants::STRUCTURE_DEFAULT_PIERCE_ARMOR
+        : 0;
+    archetype.melee_armor = json.value("melee_armor", default_melee_armor);
     archetype.pierce_attack = json.value("pierce_attack", 0);
-    archetype.pierce_armor = json.value("pierce_armor", 0);
+    archetype.pierce_armor = json.value("pierce_armor", default_pierce_armor);
     archetype.attack_cooldown_ticks = json.value("attack_cooldown_ticks", 1);
     archetype.vision_range = json.value("vision_range", 0);
     archetype.spawn_worker_food_cost = json.value(

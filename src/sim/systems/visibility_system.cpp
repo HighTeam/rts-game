@@ -34,6 +34,7 @@
 
 #include "math/fixed.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace aoa::sim::systems {
@@ -892,6 +893,40 @@ void run_visibility_system(entt::registry& registry)
 
     apply_cartography_shared_vision(registry, fog);
 
+    if (registry.any_of<components::MatchSession>(world)) {
+        auto& session = registry.get<components::MatchSession>(world);
+        for (const auto& flare : session.attack_reveal_flares) {
+            if (flare.ticks_remaining == 0U) {
+                continue;
+            }
+
+            reveal_vision_rect(
+                fog,
+                map,
+                flare.x,
+                flare.y,
+                flare.width,
+                flare.height,
+                0,
+                flare.viewer_slot,
+                true);
+        }
+
+        for (auto& flare : session.attack_reveal_flares) {
+            if (flare.ticks_remaining > 0U) {
+                --flare.ticks_remaining;
+            }
+        }
+        session.attack_reveal_flares.erase(
+            std::remove_if(
+                session.attack_reveal_flares.begin(),
+                session.attack_reveal_flares.end(),
+                [](const components::AttackRevealFlare& flare) {
+                    return flare.ticks_remaining == 0U;
+                }),
+            session.attack_reveal_flares.end());
+    }
+
 }
 
 
@@ -962,6 +997,26 @@ void rebuild_fog_visibility(entt::registry& registry)
     }
 
     apply_cartography_shared_vision(registry, fog);
+
+    if (registry.any_of<components::MatchSession>(world)) {
+        const auto& session = registry.get<components::MatchSession>(world);
+        for (const auto& flare : session.attack_reveal_flares) {
+            if (flare.ticks_remaining == 0U) {
+                continue;
+            }
+
+            reveal_vision_rect(
+                fog,
+                map,
+                flare.x,
+                flare.y,
+                flare.width,
+                flare.height,
+                0,
+                flare.viewer_slot,
+                true);
+        }
+    }
 
 }
 

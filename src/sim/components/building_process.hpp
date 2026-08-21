@@ -16,6 +16,7 @@ enum class BuildingProcessKind : std::uint8_t {
     AdvanceAge = 4,
     ResearchCartography = 5,
     ResearchSpy = 6,
+    ResearchTrades = 7,
 };
 
 struct BuildingProcess {
@@ -53,7 +54,8 @@ struct BuildingProcess {
 {
     return kind == BuildingProcessKind::AdvanceAge
         || kind == BuildingProcessKind::ResearchCartography
-        || kind == BuildingProcessKind::ResearchSpy;
+        || kind == BuildingProcessKind::ResearchSpy
+        || kind == BuildingProcessKind::ResearchTrades;
 }
 
 inline void clear_building_process(BuildingProcess& process)

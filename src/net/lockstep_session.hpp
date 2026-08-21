@@ -2,6 +2,7 @@
 
 #include "app/chat_state.hpp"
 #include "core/constants.hpp"
+#include "net/chat_wire.hpp"
 #include "net/enet_transport.hpp"
 #include "net/lobby_wire.hpp"
 #include "net/lockstep_network_hud.hpp"
@@ -55,20 +56,26 @@ public:
     void start_background_tick_loop();
     void stop_background_tick_loop();
 
-    void submit_local_command(sim::player::PlayerCommand command);
+    [[nodiscard]] bool submit_local_command(sim::player::PlayerCommand command);
     void set_chat_state(app::ChatState* chat_state);
     void configure_match_identity(
         const std::array<std::string, constants::LOCKSTEP_MAX_PLAYER_SLOTS>& player_names,
         const std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS>& reconnect_tokens);
     void configure_ai_slots(
         const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_ai);
+    void configure_spectator_slots(
+        const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_spectator);
     void configure_lobby_settings(
         const LobbySettings& settings,
         const std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS>& slot_teams,
         const std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS>& slot_colors);
     [[nodiscard]] std::uint8_t expected_human_player_count() const;
     [[nodiscard]] std::string player_display_name(std::uint8_t player_slot) const;
-    void send_chat_message(std::string_view text);
+    void send_chat_message(
+        std::string_view text,
+        ChatChannel channel = ChatChannel::All);
+    void request_match_pause(bool paused);
+    [[nodiscard]] bool is_match_paused() const;
     void poll();
     void run_tick_frame();
     void disconnect_transport();
@@ -79,6 +86,8 @@ public:
     void set_last_auto_input_tick(const std::uint64_t tick_count);
 
     [[nodiscard]] bool try_advance_tick();
+    [[nodiscard]] bool request_voluntary_resign();
+    [[nodiscard]] bool voluntary_leave_requested() const;
 
     [[nodiscard]] std::recursive_mutex& simulation_access_mutex();
 
@@ -109,6 +118,7 @@ public:
 
 private:
     [[nodiscard]] std::uint8_t required_registered_clients_mask() const;
+    [[nodiscard]] bool slot_is_spectator(std::uint8_t player_slot) const;
     void note_registered_client_lost(std::uint8_t player_slot);
     [[nodiscard]] std::uint8_t opponent_player_slot() const;
     [[nodiscard]] std::uint64_t next_execute_tick() const;
@@ -145,6 +155,12 @@ private:
     void handle_host_player_slot_disconnected(std::uint8_t player_slot);
     void handle_slot_ai_takeover(std::uint8_t player_slot);
     void handle_slot_ai_resume(std::uint8_t player_slot);
+    void handle_player_resign(std::uint8_t player_slot);
+    void queue_resign_command_for_slot(std::uint8_t player_slot);
+    void send_player_resign(std::uint8_t player_slot);
+    void apply_resigned_slot_disconnect(std::uint8_t player_slot);
+    [[nodiscard]] bool slot_has_resigned(std::uint8_t player_slot) const;
+    [[nodiscard]] bool slot_is_eliminated(std::uint8_t player_slot) const;
     void broadcast_slot_ai_takeover(std::uint8_t player_slot);
     void broadcast_slot_ai_resume(std::uint8_t player_slot);
     void send_reconnect_snapshot_to_client(std::uint8_t player_slot, bool force_immediate = false);
@@ -164,6 +180,7 @@ private:
     void try_reconnect();
     void resume_player_control(std::uint8_t player_slot);
     void reset_tick_sync_state();
+    void reset_reconnect_handshake_sync_state(std::uint8_t reconnecting_player_slot);
     void begin_opponent_reconnect_grace();
     [[nodiscard]] bool is_opponent_reconnect_grace_active() const;
     void begin_host_reconnect_grace();
@@ -208,9 +225,12 @@ private:
     void process_received_packet(const ReceivedPacket& packet);
     void process_received_packet(const std::vector<std::byte>& packet, std::uint8_t sender_slot);
     void handle_chat_message(const std::vector<std::byte>& payload, std::uint8_t sender_slot);
+    void apply_match_pause(bool paused);
+    void handle_match_pause(const std::vector<std::byte>& payload, std::uint8_t sender_slot);
     void verify_state_hash(std::uint64_t execute_tick, std::uint64_t remote_hash);
     [[nodiscard]] bool try_advance_live_tick();
     [[nodiscard]] bool try_advance_ai_fallback_tick();
+    [[nodiscard]] bool try_advance_unopposed_tick();
     void handle_peer_connected(std::uint8_t connected_enet_slot);
     void bind_player_to_enet_slot(std::uint8_t player_slot, std::uint8_t enet_slot);
     void clear_enet_slot_mapping(std::uint8_t enet_slot);
@@ -253,6 +273,7 @@ private:
     std::recursive_mutex simulation_access_mutex_{};
     std::thread tick_thread_{};
     std::atomic<bool> tick_loop_running_{false};
+    std::atomic<bool> match_paused_{false};
 
     std::string reconnect_host_{};
     std::uint16_t reconnect_port_{0U};
@@ -282,12 +303,14 @@ private:
     std::uint8_t pending_reconnect_player_slot_{constants::LOCKSTEP_INVALID_PLAYER_SLOT};
     bool resync_ready_sent_{false};
     bool snapshot_restored_pending_{false};
+    bool voluntary_leave_{false};
     std::chrono::steady_clock::time_point last_reconnect_request_sent_{};
     std::chrono::steady_clock::time_point last_reconnect_snapshot_sent_{};
     std::chrono::steady_clock::time_point last_resync_ready_sent_{};
     std::chrono::steady_clock::time_point snapshot_restored_at_{};
     std::uint8_t registered_clients_mask_{0U};
     std::uint8_t disconnected_slots_mask_{0U};
+    std::uint8_t resigned_slots_mask_{0U};
     std::uint8_t resync_pending_slots_mask_{0U};
     std::uint8_t ai_controlled_slot_{0U};
     std::uint8_t ai_controlled_slots_mask_{0U};
@@ -296,6 +319,7 @@ private:
     std::array<std::string, constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names_{};
     std::array<std::uint64_t, constants::LOCKSTEP_MAX_PLAYER_SLOTS> reconnect_tokens_{};
     std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_ai_{};
+    std::array<bool, aoa::constants::MAX_PLAYER_SLOTS> slot_is_spectator_{};
     LobbySettings lobby_settings_{};
     std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> lobby_slot_teams_{};
     std::array<std::uint8_t, aoa::constants::MAX_PLAYER_SLOTS> lobby_slot_colors_{

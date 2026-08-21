@@ -12,6 +12,9 @@
 #include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/components/map_grid.hpp"
+#include "sim/player/player_economy.hpp"
+#include "sim/components/entity_snapshot_identity.hpp"
 #include "sim/snapshot/entity_snapshot_key.hpp"
 #include "sim/systems/match_outcome.hpp"
 
@@ -65,6 +68,40 @@ entt::entity spawn_owned_building(
             snapshot::next_entity_snapshot_ordinal(registry, player_slot, category)});
     systems::note_building_created(registry, player_slot);
     return building;
+}
+
+void paint_footprint_ground(
+    entt::registry& registry,
+    const core::GridPos anchor,
+    const int width,
+    const int height,
+    const components::GroundType ground)
+{
+    const auto world_view = registry.view<components::WorldTag, components::MapGrid>();
+    if (world_view.begin() == world_view.end()) {
+        return;
+    }
+
+    auto& map = world_view.get<components::MapGrid>(*world_view.begin());
+    const int paint_width = std::max(1, width);
+    const int paint_height = std::max(1, height);
+    for (int y = 0; y < paint_height; ++y) {
+        for (int x = 0; x < paint_width; ++x) {
+            const core::GridPos cell{anchor.x + x, anchor.y + y};
+            if (!core::is_inside_grid(cell, map.width, map.height)) {
+                continue;
+            }
+
+            const int index = core::grid_index(cell, map.width);
+            if (index < 0 || static_cast<std::size_t>(index) >= map.ground.size()) {
+                continue;
+            }
+
+            map.ground[static_cast<std::size_t>(index)] = ground;
+        }
+    }
+
+    map.layer_hash_valid = false;
 }
 
 } // namespace
@@ -249,14 +286,17 @@ entt::entity spawn_player_town_center(
         registry.emplace<components::Health>(
             town_center,
             components::Health{math::Fixed::from_int(1), town_center_archetype.max_hp});
-        registry.emplace<components::Stockpile>(town_center, components::Stockpile{});
     }
     else {
         registry.emplace<components::Health>(
             town_center,
             components::Health{town_center_archetype.max_hp, town_center_archetype.max_hp});
-        registry.emplace<components::Stockpile>(town_center, starting_stockpile);
     }
+    registry.emplace<components::Stockpile>(town_center, components::Stockpile{});
+    player::add_player_wood(registry, player_slot, starting_stockpile.wood);
+    player::add_player_food(registry, player_slot, starting_stockpile.food);
+    player::add_player_money(registry, player_slot, starting_stockpile.money);
+    player::add_player_mana(registry, player_slot, starting_stockpile.mana);
     snapshot::set_entity_snapshot_identity(
         registry,
         town_center,
@@ -611,6 +651,12 @@ entt::entity spawn_player_tower(
         snapshot::EntitySnapshotCategory::Tower);
     registry.emplace<components::TowerTag>(tower);
     registry.emplace<components::AttackCooldown>(tower);
+    paint_footprint_ground(
+        registry,
+        spawn_cell,
+        std::max(1, tower_archetype.footprint_width),
+        std::max(1, tower_archetype.footprint_height),
+        components::GroundType::Dirt);
     return tower;
 }
 
@@ -728,12 +774,14 @@ entt::entity spawn_rock_projectile(
     const math::Fixed world_y,
     const entt::entity target,
     const std::uint8_t owner_slot,
-    const int pierce_damage)
+    const int pierce_damage,
+    const bool is_arrow,
+    const std::uint8_t reveal_to_slot)
 {
     const entt::entity projectile = registry.create();
     registry.emplace<components::Projectile>(
         projectile,
-        components::Projectile{target, owner_slot, pierce_damage});
+        components::Projectile{target, owner_slot, pierce_damage, is_arrow, reveal_to_slot});
     registry.emplace<components::PlayerSlot>(projectile, components::PlayerSlot{owner_slot});
     registry.emplace<components::WorldPosition>(projectile, components::WorldPosition{world_x, world_y});
     registry.emplace<components::PreviousWorldPosition>(

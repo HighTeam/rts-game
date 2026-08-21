@@ -22,10 +22,12 @@
 #include "sim/components/resources.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
+#include "sim/components/entity_snapshot_identity.hpp"
 #include "sim/player/player_commands.hpp"
 #include "sim/player/player_economy.hpp"
 #include "sim/spawn/unit_spawn.hpp"
 #include "sim/systems/visibility_system.hpp"
+#include "sim/systems/pathfinding.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -43,6 +45,9 @@ RenderEntityPose capture_entity_pose(
     RenderEntityPose pose{};
     pose.entity = entity;
     pose.shrouded = shrouded;
+    if (registry.any_of<sim::components::EntitySnapshotIdentity>(entity)) {
+        pose.snapshot_key = registry.get<sim::components::EntitySnapshotIdentity>(entity).key;
+    }
 
     if (registry.any_of<sim::components::GridPosition>(entity)) {
         const auto& cell = registry.get<sim::components::GridPosition>(entity).cell;
@@ -119,7 +124,15 @@ RenderEntityPose capture_entity_pose(
     }
     pose.is_militia = registry.any_of<sim::components::MilitiaUnitTag>(entity);
     pose.is_mage = registry.any_of<sim::components::MageUnitTag>(entity);
+    if (registry.any_of<sim::components::UnitSex>(entity)) {
+        pose.unit_sex = registry.get<sim::components::UnitSex>(entity).value;
+    }
     pose.is_projectile = registry.any_of<sim::components::Projectile>(entity);
+    if (pose.is_projectile) {
+        const auto& projectile = registry.get<sim::components::Projectile>(entity);
+        pose.is_arrow = projectile.is_arrow;
+        pose.projectile_reveal_slot = projectile.reveal_to_slot;
+    }
     pose.is_town_center = registry.any_of<sim::components::TownCenterTag>(entity);
     pose.is_house = registry.any_of<sim::components::HouseTag>(entity);
     pose.is_lumber_camp = registry.any_of<sim::components::LumberCampTag>(entity);
@@ -205,6 +218,7 @@ RenderEntityPose capture_entity_pose(
                 pose.melee_armor = definition->melee_armor;
                 pose.pierce_attack = definition->pierce_attack;
                 pose.pierce_armor = definition->pierce_armor;
+                pose.attack_range = definition->attack_range;
             }
         }
     }
@@ -295,6 +309,7 @@ SimRenderSnapshot capture_sim_render_snapshot(
         const auto& session = registry.get<sim::components::MatchSession>(world);
         snapshot.player_color_indices = session.player_color_indices;
         snapshot.player_ages = session.player_ages;
+        snapshot.player_civilizations = session.player_civilizations;
         snapshot.vision_source_slots_mask =
             sim::components::cartography_vision_slots_mask(session, local_player_slot);
     }
@@ -330,6 +345,11 @@ SimRenderSnapshot capture_sim_render_snapshot(
     }
 
     const auto should_draw_entity = [&](const entt::entity entity) {
+        if (!sim::systems::unstarted_construction_visible_to_slot(
+                registry, entity, local_player_slot)) {
+            return false;
+        }
+
         if (fog == nullptr) {
             return true;
         }

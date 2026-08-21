@@ -40,6 +40,16 @@ struct SceneHighlight {
     float scale{constants::RENDER_HOVER_OUTLINE_SCALE};
 };
 
+struct OccluderSprite {
+    int grid_x{0};
+    int grid_y{0};
+    SceneTextureKind texture_kind{SceneTextureKind::OakForestLarge};
+    float width_scale{1.0F};
+    float offset_x_tiles{0.0F};
+    float offset_y_tiles{0.0F};
+    float sort_y{0.0F};
+};
+
 class GameRenderer {
 public:
     GameRenderer();
@@ -301,27 +311,35 @@ private:
         float tint_b = 1.0F) const;
     void queue_unit_draw(const PendingUnitDraw& draw) const;
     void flush_pending_depth_sorted_draws(unsigned int& active_textured_batch) const;
-    [[nodiscard]] std::vector<core::GridPos> collect_unit_front_occluder_tiles(
+    [[nodiscard]] std::vector<OccluderSprite> collect_unit_front_occluder_sprites(
         float world_x,
         float world_z,
         const sim::components::MapGrid& map,
         const std::vector<sim::components::BuildingFootprint>& building_footprints,
-        const std::vector<core::GridPos>& building_anchors) const;
+        const std::vector<core::GridPos>& building_anchors,
+        const std::vector<OccluderSprite>& building_sprites,
+        const std::vector<std::uint8_t>* fog_visible,
+        const std::vector<std::uint8_t>* fog_explored) const;
     void apply_iso_tile_scissor(
         int grid_x,
         int grid_y,
         float vertical_extent_scale,
         SceneTextureKind aspect_kind = SceneTextureKind::OakForestLarge) const;
     void clear_screen_scissor() const;
+    void draw_iso_range_circle(
+        float center_world_x,
+        float center_world_z,
+        float radius_tiles,
+        float r,
+        float g,
+        float b) const;
     void draw_unit_occlusion_silhouette(
         float world_x,
         float world_z,
         float r,
         float g,
         float b,
-        const std::vector<core::GridPos>& occluder_tiles,
-        const std::vector<core::GridPos>& building_anchors,
-        const std::vector<sim::components::BuildingFootprint>& building_footprints) const;
+        const std::vector<OccluderSprite>& occluder_sprites) const;
     [[nodiscard]] SceneTextureKind ground_texture_for_ground(
         sim::components::GroundType ground) const;
     [[nodiscard]] SceneTextureKind forest_tree_texture_for_cell(
@@ -444,7 +462,7 @@ private:
         int grid_y,
         float extrude_height,
         float line_lift = constants::RENDER_GRID_LINE_LIFT) const;
-    void draw_iso_tile_grid_lines(int grid_x, int grid_y) const;
+    void draw_iso_tile_grid_lines(int map_width, int map_height) const;
     void draw_entity_prism(
         float world_x,
         float world_z,
@@ -507,10 +525,42 @@ private:
     [[nodiscard]] float unit_depth_sort_key(float world_x, float world_z) const;
     [[nodiscard]] float cap_unit_sort_below_buildings(
         float sort_key,
-        int unit_tile_x,
-        int unit_tile_y,
+        float world_x,
+        float world_z,
         const std::vector<core::GridPos>& building_anchors,
-        const std::vector<sim::components::BuildingFootprint>& building_footprints) const;
+        const std::vector<sim::components::BuildingFootprint>& building_footprints,
+        const std::vector<OccluderSprite>& building_sprites) const;
+    void iso_object_sprite_screen_rect(
+        int grid_x,
+        int grid_y,
+        SceneTextureKind texture_kind,
+        float width_scale,
+        float offset_x_tiles,
+        float offset_y_tiles,
+        float& min_x,
+        float& min_y,
+        float& max_x,
+        float& max_y) const;
+    [[nodiscard]] bool unit_screen_overlaps_iso_sprite(
+        float world_x,
+        float world_z,
+        int grid_x,
+        int grid_y,
+        SceneTextureKind texture_kind,
+        float width_scale,
+        float offset_x_tiles,
+        float offset_y_tiles) const;
+    [[nodiscard]] bool unit_screen_is_in_front_of_building(
+        float world_x,
+        float world_z,
+        const core::GridPos& anchor,
+        const sim::components::BuildingFootprint& footprint) const;
+    [[nodiscard]] bool unit_draws_in_front_of_building(
+        float world_x,
+        float world_z,
+        const core::GridPos& anchor,
+        const sim::components::BuildingFootprint& footprint,
+        const OccluderSprite& sprite) const;
     void apply_team_color(float base_r, float base_g, float base_b, float& r, float& g, float& b) const;
     [[nodiscard]] std::pair<float, float> unit_render_world_xz(
         const entt::registry& registry,
@@ -554,6 +604,8 @@ private:
     bool show_selection_debug_{false};
     bool show_hitboxes_{false};
     std::uint8_t local_player_slot_{0U};
+    constants::BuildingRangeDisplayMode building_range_display_{
+        constants::BuildingRangeDisplayMode::Never};
     BuildingSightMemory building_sight_memory_{};
     mutable int biome_blend_map_width_{0};
     mutable int biome_blend_map_height_{0};

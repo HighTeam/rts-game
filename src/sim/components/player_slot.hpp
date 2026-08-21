@@ -41,10 +41,10 @@ struct PlayerSlot {
     const std::uint8_t owner_slot = entity_player_slot(registry, entity);
     const auto session_view = registry.view<WorldTag, MatchSession>();
     if (session_view.begin() != session_view.end()) {
-        return !slots_are_allied(
+        return !slot_treats_as_ally(
             session_view.get<MatchSession>(*session_view.begin()),
-            owner_slot,
-            local_player_slot);
+            local_player_slot,
+            owner_slot);
     }
 
     return owner_slot != local_player_slot;
@@ -79,7 +79,7 @@ struct PlayerSlot {
     const std::uint8_t target_slot = entity_player_slot(registry, target);
     const auto session_view = registry.view<WorldTag, MatchSession>();
     if (session_view.begin() != session_view.end()) {
-        return !slots_are_allied(
+        return !slot_treats_as_ally(
             session_view.get<MatchSession>(*session_view.begin()),
             attacker_slot,
             target_slot);

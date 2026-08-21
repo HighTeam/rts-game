@@ -105,7 +105,9 @@ target_link_libraries(aoa PRIVATE
 
 if(WIN32)
     target_link_libraries(aoa PRIVATE opengl32 ws2_32 winmm comdlg32 iphlpapi)
-    set_target_properties(aoa PROPERTIES WIN32_EXECUTABLE TRUE)
+    set_target_properties(aoa PROPERTIES
+        OUTPUT_NAME AgeofAffinities
+        WIN32_EXECUTABLE TRUE)
     if(MSVC)
         target_link_options(aoa PRIVATE /ENTRY:mainCRTStartup)
     endif()
@@ -182,4 +184,17 @@ if(MSVC)
 else()
     target_compile_options(aoa PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(aoa_pattern_maker PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(WIN32)
+    add_custom_target(aoa_setup
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/scripts/package-setup.ps1"
+            -SourceDir "$<TARGET_FILE_DIR:aoa>"
+            -RepoRoot "${CMAKE_SOURCE_DIR}"
+        DEPENDS aoa aoa_pattern_maker
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Building unsigned aoa-setup.exe with NSIS"
+        VERBATIM
+    )
 endif()

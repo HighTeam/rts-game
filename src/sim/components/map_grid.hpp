@@ -18,6 +18,7 @@ enum class GroundType : std::uint8_t {
     Grass = 0,
     Snow = 1,
     Sand = 2,
+    Dirt = 3,
 };
 
 struct MapGrid {

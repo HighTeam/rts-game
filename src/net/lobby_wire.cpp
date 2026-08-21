@@ -101,6 +101,8 @@ void append_settings(std::vector<std::byte>& out, const LobbySettings& settings)
     append_pod(out, settings.map_width);
     append_pod(out, settings.map_height);
     append_pod(out, static_cast<std::uint8_t>(settings.map_size_locked ? 1U : 0U));
+    append_pod(out, static_cast<std::uint8_t>(settings.block_team_changes ? 1U : 0U));
+    append_pod(out, static_cast<std::uint8_t>(settings.allow_spectators ? 1U : 0U));
 }
 
 [[nodiscard]] bool read_settings(std::span<const std::byte>& bytes, LobbySettings& settings)
@@ -129,6 +131,26 @@ void append_settings(std::vector<std::byte>& out, const LobbySettings& settings)
     settings.fog_of_war_enabled = fog_raw != 0U;
     settings.cheats_enabled = cheats_raw != 0U;
     settings.map_size_locked = size_locked_raw != 0U;
+    settings.block_team_changes = false;
+    settings.allow_spectators = false;
+    if (!bytes.empty()) {
+        std::uint8_t block_raw = 0U;
+        if (!read_pod(bytes, block_raw)) {
+            return false;
+        }
+
+        settings.block_team_changes = block_raw != 0U;
+    }
+
+    if (!bytes.empty()) {
+        std::uint8_t spectators_raw = 0U;
+        if (!read_pod(bytes, spectators_raw)) {
+            return false;
+        }
+
+        settings.allow_spectators = spectators_raw != 0U;
+    }
+
     return true;
 }
 
@@ -136,7 +158,7 @@ void append_settings(std::vector<std::byte>& out, const LobbySettings& settings)
 
 bool lobby_slot_is_playing(const LobbySlotKind kind)
 {
-    return kind != LobbySlotKind::Disabled;
+    return kind != LobbySlotKind::Disabled && kind != LobbySlotKind::Spectator;
 }
 
 bool lobby_slot_accepts_join(const LobbySlotInfo& slot)
@@ -189,6 +211,21 @@ std::optional<std::uint8_t> first_joinable_lobby_slot(const LobbyStateMessage& s
 {
     for (std::uint8_t slot = 1U; slot < state.slots.size(); ++slot) {
         if (lobby_slot_accepts_join(state.slots[slot])) {
+            return slot;
+        }
+    }
+
+    if (!state.settings.allow_spectators) {
+        return std::nullopt;
+    }
+
+    for (std::uint8_t slot = 1U; slot < state.slots.size(); ++slot) {
+        if (state.slots[slot].occupied) {
+            continue;
+        }
+
+        if (state.slots[slot].kind == LobbySlotKind::Disabled
+            || state.slots[slot].kind == LobbySlotKind::Spectator) {
             return slot;
         }
     }

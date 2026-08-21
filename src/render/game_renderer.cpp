@@ -5,14 +5,18 @@
 #include "core/constants.hpp"
 #include "core/grid.hpp"
 #include "core/runtime_paths.hpp"
+#include "data/content_types.hpp"
 #include "render/sim_render_snapshot.hpp"
 #include "render/camera_settings.hpp"
+#include "sim/components/content_pack.hpp"
+#include "sim/components/definition_ref.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/fog_of_war.hpp"
 #include "sim/components/map_grid.hpp"
 #include "sim/components/building_footprint.hpp"
 #include "sim/systems/visibility_system.hpp"
+#include "sim/systems/pathfinding.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
@@ -908,6 +912,66 @@ struct BuildingSpriteVisual {
     };
 }
 
+[[nodiscard]] BuildingSpriteVisual building_visual_from_registry(
+    const entt::registry& registry,
+    const entt::entity entity)
+{
+    const std::uint8_t house_variant = registry.any_of<sim::components::BuildingVisualVariant>(entity)
+        ? registry.get<sim::components::BuildingVisualVariant>(entity).index
+        : 0U;
+    return building_sprite_visual(
+        registry.any_of<sim::components::HouseTag>(entity),
+        registry.any_of<sim::components::LumberCampTag>(entity),
+        registry.any_of<sim::components::MillTag>(entity),
+        registry.any_of<sim::components::MiningCampTag>(entity),
+        registry.any_of<sim::components::BarracksTag>(entity),
+        registry.any_of<sim::components::MageAcademyTag>(entity),
+        registry.any_of<sim::components::TowerTag>(entity),
+        registry.any_of<sim::components::MarketTag>(entity),
+        registry.any_of<sim::components::ExtractorTag>(entity),
+        house_variant,
+        registry.any_of<sim::components::GardenTag>(entity),
+        registry.any_of<sim::components::ReservoirTag>(entity),
+        registry.any_of<sim::components::FarmTag>(entity),
+        false);
+}
+
+[[nodiscard]] BuildingSpriteVisual building_visual_from_pose(const RenderEntityPose& pose)
+{
+    return building_sprite_visual(
+        pose.is_house,
+        pose.is_lumber_camp,
+        pose.is_mill,
+        pose.is_mining_camp,
+        pose.is_barracks,
+        pose.is_mage_academy,
+        pose.is_tower,
+        pose.is_market,
+        pose.is_extractor,
+        pose.house_variant,
+        pose.is_garden,
+        pose.is_reservoir,
+        pose.is_farm,
+        pose.is_farm && (pose.under_construction || pose.farm_food_remaining <= 0));
+}
+
+[[nodiscard]] OccluderSprite make_building_occluder_sprite(
+    const core::GridPos& anchor,
+    const sim::components::BuildingFootprint& footprint,
+    const BuildingSpriteVisual& visual)
+{
+    OccluderSprite sprite{};
+    sprite.grid_x = anchor.x + footprint.width / 2;
+    sprite.grid_y = anchor.y + footprint.height / 2;
+    sprite.texture_kind = visual.color;
+    sprite.width_scale = textured_building_width_scale(footprint);
+    const auto offset = textured_building_sprite_offset(footprint);
+    sprite.offset_x_tiles = offset.first;
+    sprite.offset_y_tiles = offset.second;
+    sprite.sort_y = constants::RENDER_BUILDING_SPRITE_SORT_Y;
+    return sprite;
+}
+
 [[nodiscard]] std::pair<float, float> mana_lake_sprite_offset(
     const sim::components::BuildingFootprint& footprint)
 {
@@ -1329,13 +1393,14 @@ bool GameRenderer::ensure_present_target() const
 
     glGenRenderbuffers(1, &present_depth_);
     glBindRenderbuffer(GL_RENDERBUFFER, present_depth_);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
     glBindRenderbuffer(GL_RENDERBUFFER, 0U);
 
     glGenFramebuffers(1, &present_fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, present_color_, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, present_depth_);
+    glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, present_depth_);
     const bool complete =
         glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0U);
@@ -1357,6 +1422,7 @@ void GameRenderer::present_target_to_window() const
     }
 
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, present_fbo_);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0U);
     glBlitFramebuffer(
@@ -1799,6 +1865,93 @@ void GameRenderer::draw_screen_rect_outline_immediate(
     glBindVertexArray(0U);
 }
 
+void GameRenderer::draw_iso_range_circle(
+    const float center_world_x,
+    const float center_world_z,
+    const float radius_tiles,
+    const float r,
+    const float g,
+    const float b) const
+{
+    if (radius_tiles <= 0.0F) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const float lift = constants::RENDER_GROUND_HIGHLIGHT_LIFT;
+    const int segments = constants::RENDER_RANGE_CIRCLE_SEGMENTS;
+    constexpr float k_two_pi = 6.2831853F;
+    const float step = k_two_pi / static_cast<float>(segments);
+    const float half_width = constants::RENDER_RANGE_CIRCLE_WIDTH_PX * 0.5F;
+    const float depth = -0.99F;
+
+    std::vector<sf::Vector2f> ring{};
+    ring.reserve(static_cast<std::size_t>(segments + 1));
+    for (int index = 0; index <= segments; ++index) {
+        const float angle = step * static_cast<float>(index);
+        ring.push_back(world_to_screen(
+            center_world_x + std::cos(angle) * radius_tiles,
+            lift,
+            center_world_z + std::sin(angle) * radius_tiles));
+    }
+
+    std::vector<SceneVertex> vertices{};
+    vertices.reserve(static_cast<std::size_t>(segments) * 6U);
+    for (int index = 0; index < segments; ++index) {
+        const sf::Vector2f& from = ring[static_cast<std::size_t>(index)];
+        const sf::Vector2f& to = ring[static_cast<std::size_t>(index + 1)];
+        const float dx = to.x - from.x;
+        const float dy = to.y - from.y;
+        const float length = std::sqrt(dx * dx + dy * dy);
+        if (length <= 0.0001F) {
+            continue;
+        }
+
+        const float nx = (-dy / length) * half_width;
+        const float ny = (dx / length) * half_width;
+        const SceneVertex outer_from{to_ndc_x(from.x + nx), to_ndc_y(from.y + ny), depth, r, g, b};
+        const SceneVertex inner_from{to_ndc_x(from.x - nx), to_ndc_y(from.y - ny), depth, r, g, b};
+        const SceneVertex outer_to{to_ndc_x(to.x + nx), to_ndc_y(to.y + ny), depth, r, g, b};
+        const SceneVertex inner_to{to_ndc_x(to.x - nx), to_ndc_y(to.y - ny), depth, r, g, b};
+        vertices.push_back(outer_from);
+        vertices.push_back(inner_from);
+        vertices.push_back(outer_to);
+        vertices.push_back(outer_to);
+        vertices.push_back(inner_from);
+        vertices.push_back(inner_to);
+    }
+
+    if (vertices.empty()) {
+        return;
+    }
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(vertices.size() * sizeof(SceneVertex)),
+        vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+    glBindVertexArray(0U);
+    glDisable(GL_BLEND);
+}
+
 void GameRenderer::draw_screen_line_immediate(
     const float screen_x0,
     const float screen_y0,
@@ -2019,10 +2172,6 @@ bool GameRenderer::unit_is_occluded_by_tile(
     float tile_max_y = 0.0F;
     occluder_tile_screen_rect(grid_x, grid_y, is_building, tile_min_x, tile_min_y, tile_max_x, tile_max_y);
 
-    if (unit_base.x < tile_min_x || unit_base.x > tile_max_x) {
-        return false;
-    }
-
     const float unit_mid_y = (unit_base.y + unit_top.y) * 0.5F;
     if (unit_mid_y >= tile_max_y) {
         return false;
@@ -2194,6 +2343,11 @@ SceneTextureKind GameRenderer::ground_texture_for_ground(
     if (ground == sim::components::GroundType::Sand
         && scene_textures_.texture_id(SceneTextureKind::Sand) != 0U) {
         return SceneTextureKind::Sand;
+    }
+
+    if (ground == sim::components::GroundType::Dirt
+        && scene_textures_.texture_id(SceneTextureKind::Dirt) != 0U) {
+        return SceneTextureKind::Dirt;
     }
 
     return SceneTextureKind::Grass;
@@ -2383,6 +2537,7 @@ void GameRenderer::draw_batched_ground_tiles(
         SceneTextureKind::Grass,
         SceneTextureKind::Sand,
         SceneTextureKind::Snow,
+        SceneTextureKind::Dirt,
     };
 
     for (const SceneTextureKind pass_kind : pass_kinds) {
@@ -3109,37 +3264,40 @@ void GameRenderer::flush_pending_depth_sorted_draws(unsigned int& active_texture
     pending_unit_draws_.clear();
 }
 
-std::vector<core::GridPos> GameRenderer::collect_unit_front_occluder_tiles(
+std::vector<OccluderSprite> GameRenderer::collect_unit_front_occluder_sprites(
     const float world_x,
     const float world_z,
     const sim::components::MapGrid& map,
     const std::vector<sim::components::BuildingFootprint>& building_footprints,
-    const std::vector<core::GridPos>& building_anchors) const
+    const std::vector<core::GridPos>& building_anchors,
+    const std::vector<OccluderSprite>& building_sprites,
+    const std::vector<std::uint8_t>* fog_visible,
+    const std::vector<std::uint8_t>* fog_explored) const
 {
-    std::vector<core::GridPos> occluder_tiles{};
+    std::vector<OccluderSprite> occluder_sprites{};
     const int unit_tile_x = static_cast<int>(std::floor(world_x));
     const int unit_tile_y = static_cast<int>(std::floor(world_z));
     const int unit_sort = unit_tile_x + unit_tile_y;
     const core::GridPos unit_cell{unit_tile_x, unit_tile_y};
 
-    const auto add_tile = [&](const core::GridPos cell, const bool is_building) {
-        if (cell.x + cell.y <= unit_sort) {
+    const auto add_sprite = [&](const OccluderSprite& sprite) {
+        if (scene_textures_.texture_id(sprite.texture_kind) == 0U) {
             return;
         }
 
-        if (core::chebyshev_distance(cell, unit_cell) > constants::RENDER_OCCLUSION_PROBE_RADIUS) {
+        if (!unit_screen_overlaps_iso_sprite(
+                world_x,
+                world_z,
+                sprite.grid_x,
+                sprite.grid_y,
+                sprite.texture_kind,
+                sprite.width_scale,
+                sprite.offset_x_tiles,
+                sprite.offset_y_tiles)) {
             return;
         }
 
-        if (!unit_is_occluded_by_tile(world_x, world_z, cell.x, cell.y, is_building)) {
-            return;
-        }
-
-        if (std::find(occluder_tiles.begin(), occluder_tiles.end(), cell) != occluder_tiles.end()) {
-            return;
-        }
-
-        occluder_tiles.push_back(cell);
+        occluder_sprites.push_back(sprite);
     };
 
     for (int offset_y = -constants::RENDER_OCCLUSION_PROBE_RADIUS;
@@ -3153,40 +3311,96 @@ std::vector<core::GridPos> GameRenderer::collect_unit_front_occluder_tiles(
                 continue;
             }
 
+            if (!iso_tile_intersects_window(
+                    cell.x, cell.y, constants::RENDER_OBJECT_SCREEN_CULL_PAD_TILES)) {
+                continue;
+            }
+
+            if (fog_visible != nullptr && fog_explored != nullptr
+                && is_fog_tile_unexplored(
+                    *fog_visible,
+                    *fog_explored,
+                    map.width,
+                    map.height,
+                    local_player_slot_,
+                    cell.x,
+                    cell.y)) {
+                continue;
+            }
+
+            if (cell.x + cell.y <= unit_sort) {
+                continue;
+            }
+
+            if (core::chebyshev_distance(cell, unit_cell) > constants::RENDER_OCCLUSION_PROBE_RADIUS) {
+                continue;
+            }
+
+            if (cell_covered_by_building_footprint(
+                    cell.x, cell.y, building_anchors, building_footprints)) {
+                continue;
+            }
+
             const int index = core::grid_index(cell, map.width);
-            if (map.tiles[static_cast<std::size_t>(index)] != sim::components::TileType::Forest) {
+            const sim::components::TileType tile = map.tiles[static_cast<std::size_t>(index)];
+            const bool is_forest = tile == sim::components::TileType::Forest
+                && static_cast<std::size_t>(index) < map.forest_wood.size()
+                && map.forest_wood[static_cast<std::size_t>(index)] > 0;
+            const bool is_berries =
+                (tile == sim::components::TileType::Berries
+                    || tile == sim::components::TileType::Blueberries)
+                && static_cast<std::size_t>(index) < map.bush_food.size()
+                && map.bush_food[static_cast<std::size_t>(index)] > 0;
+            if (!is_forest && !is_berries) {
                 continue;
             }
 
-            if (map.forest_wood[static_cast<std::size_t>(index)] <= 0) {
-                continue;
+            OccluderSprite sprite{};
+            sprite.grid_x = cell.x;
+            sprite.grid_y = cell.y;
+            sprite.sort_y = constants::RENDER_TREE_SPRITE_SORT_Y;
+            if (is_forest) {
+                sprite.texture_kind = forest_tree_texture_for_cell(
+                    cell.x,
+                    cell.y,
+                    sim::components::ground_at(map, static_cast<std::size_t>(index)));
+                sprite.width_scale = tree_sprite_width_scale(sprite.texture_kind);
+                const auto offset = tree_sprite_offset_for_kind(sprite.texture_kind);
+                sprite.offset_x_tiles = offset.first;
+                sprite.offset_y_tiles = offset.second;
             }
-
-            add_tile(cell, false);
+            else {
+                sprite.texture_kind = tile == sim::components::TileType::Blueberries
+                    ? SceneTextureKind::Blueberries
+                    : SceneTextureKind::Berries;
+                sprite.width_scale = constants::RENDER_TREE_SPRITE_WIDTH_SCALE;
+                sprite.offset_x_tiles = constants::RENDER_BERRY_SPRITE_OFFSET_X;
+                sprite.offset_y_tiles = constants::RENDER_BERRY_SPRITE_OFFSET_Y;
+            }
+            add_sprite(sprite);
         }
     }
 
-    for (std::size_t index = 0U; index < building_anchors.size(); ++index) {
-        const sim::components::GridPosition anchor{building_anchors[index]};
+    const std::size_t building_count = std::min(building_anchors.size(), building_footprints.size());
+    const std::size_t sprite_count = std::min(building_count, building_sprites.size());
+    for (std::size_t index = 0U; index < sprite_count; ++index) {
+        const core::GridPos& anchor_cell = building_anchors[index];
         const sim::components::BuildingFootprint& footprint = building_footprints[index];
-        const int front_sort = (anchor.cell.x + footprint.width - 1) + (anchor.cell.y + footprint.height - 1);
-        if (front_sort <= unit_sort) {
-            continue;
-        }
-
+        const OccluderSprite& sprite = building_sprites[index];
+        const sim::components::GridPosition anchor{anchor_cell};
         if (sim::components::chebyshev_distance_to_footprint(unit_cell, anchor, footprint)
             > constants::RENDER_OCCLUSION_PROBE_RADIUS) {
             continue;
         }
 
-        for (int cell_y = anchor.cell.y; cell_y < anchor.cell.y + footprint.height; ++cell_y) {
-            for (int cell_x = anchor.cell.x; cell_x < anchor.cell.x + footprint.width; ++cell_x) {
-                add_tile(core::GridPos{cell_x, cell_y}, true);
-            }
+        if (unit_draws_in_front_of_building(world_x, world_z, anchor_cell, footprint, sprite)) {
+            continue;
         }
+
+        add_sprite(sprite);
     }
 
-    return occluder_tiles;
+    return occluder_sprites;
 }
 
 void GameRenderer::apply_iso_tile_scissor(
@@ -3202,7 +3416,6 @@ void GameRenderer::apply_iso_tile_scissor(
     const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
     const float tile_width = camera_.tile_width()
         * (aspect_kind == SceneTextureKind::TownCenter
-            || aspect_kind == SceneTextureKind::TownCenter
             ? static_cast<float>(constants::TOWN_CENTER_FOOTPRINT_TILES)
             : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
     const float sprite_height = tile_width * scene_textures_.aspect_ratio(aspect_kind)
@@ -3236,6 +3449,7 @@ void GameRenderer::apply_iso_tile_scissor(
 void GameRenderer::clear_screen_scissor() const
 {
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
 }
 
 void GameRenderer::draw_unit_occlusion_silhouette(
@@ -3244,31 +3458,57 @@ void GameRenderer::draw_unit_occlusion_silhouette(
     const float r,
     const float g,
     const float b,
-    const std::vector<core::GridPos>& occluder_tiles,
-    const std::vector<core::GridPos>& building_anchors,
-    const std::vector<sim::components::BuildingFootprint>& building_footprints) const
+    const std::vector<OccluderSprite>& occluder_sprites) const
 {
-    if (occluder_tiles.empty()) {
+    if (occluder_sprites.empty()) {
         return;
     }
 
-    for (const core::GridPos& cell : occluder_tiles) {
-        const bool is_building_cell = cell_covered_by_building_footprint(
-            cell.x,
-            cell.y,
-            building_anchors,
-            building_footprints);
-        apply_iso_tile_scissor(
-            cell.x,
-            cell.y,
-            is_building_cell
-                ? constants::RENDER_BUILDING_OCCLUSION_SCISSOR_SCALE
-                : constants::RENDER_TREE_OCCLUSION_SCISSOR_SCALE,
-            is_building_cell ? SceneTextureKind::TownCenter : SceneTextureKind::OakForestLarge);
-        draw_unit_projected_silhouette_outline_immediate(world_x, world_z, r, g, b);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glEnable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+
+    unsigned int active_texture = 0U;
+    for (const OccluderSprite& sprite : occluder_sprites) {
+        const unsigned int texture_id = scene_textures_.texture_id(sprite.texture_kind);
+        if (texture_id == 0U) {
+            continue;
+        }
+
+        if (active_texture != 0U && active_texture != texture_id) {
+            flush_textured_scene_batch(active_texture);
+        }
+
+        active_texture = texture_id;
+        draw_iso_object_sprite(
+            sprite.grid_x,
+            sprite.grid_y,
+            sprite.texture_kind,
+            sprite.width_scale,
+            sprite.sort_y,
+            1.0F,
+            sprite.offset_x_tiles,
+            sprite.offset_y_tiles);
+    }
+    if (active_texture != 0U) {
+        flush_textured_scene_batch(active_texture);
     }
 
-    clear_screen_scissor();
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 1, 0xFF);
+    glStencilMask(0x00);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    draw_unit_projected_silhouette_outline_immediate(world_x, world_z, r, g, b);
+
+    glDisable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+    glDepthMask(GL_TRUE);
 }
 
 void GameRenderer::draw_scene_triangles(
@@ -3438,17 +3678,73 @@ void GameRenderer::draw_tile_grid_lines(
         1.0F);
 }
 
-void GameRenderer::draw_iso_tile_grid_lines(const int grid_x, const int grid_y) const
+void GameRenderer::draw_iso_tile_grid_lines(const int map_width, const int map_height) const
 {
-    const IsoTileScreenCorners corners = camera_.grid_iso_corners(grid_x, grid_y);
+    if (map_width <= 0 || map_height <= 0) {
+        return;
+    }
+
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const VisibleGridRange range = camera_.visible_grid_range(
+        map_width,
+        map_height,
+        constants::RENDER_GROUND_SCREEN_CULL_PAD_TILES);
     const float r = constants::RENDER_GRID_LINE_R;
     const float g = constants::RENDER_GRID_LINE_G;
     const float b = constants::RENDER_GRID_LINE_B;
+    const float depth = -0.99F;
 
-    draw_screen_line_immediate(corners.top.x, corners.top.y, corners.right.x, corners.right.y, r, g, b);
-    draw_screen_line_immediate(corners.right.x, corners.right.y, corners.bottom.x, corners.bottom.y, r, g, b);
-    draw_screen_line_immediate(corners.bottom.x, corners.bottom.y, corners.left.x, corners.left.y, r, g, b);
-    draw_screen_line_immediate(corners.left.x, corners.left.y, corners.top.x, corners.top.y, r, g, b);
+    thread_local std::vector<SceneVertex> vertices{};
+    vertices.clear();
+    const int tiles_x = std::max(0, range.max_x - range.min_x + 1);
+    const int tiles_y = std::max(0, range.max_y - range.min_y + 1);
+    vertices.reserve(static_cast<std::size_t>((tiles_x + 1) * tiles_y + tiles_x * (tiles_y + 1)) * 2U);
+
+    const auto push_edge = [&](const sf::Vector2f& from, const sf::Vector2f& to) {
+        vertices.push_back(SceneVertex{to_ndc_x(from.x), to_ndc_y(from.y), depth, r, g, b});
+        vertices.push_back(SceneVertex{to_ndc_x(to.x), to_ndc_y(to.y), depth, r, g, b});
+    };
+
+    for (int y = range.min_y; y <= range.max_y; ++y) {
+        for (int x = range.min_x; x <= range.max_x; ++x) {
+            const IsoTileScreenCorners corners = camera_.grid_iso_corners(x, y);
+            push_edge(corners.top, corners.right);
+            push_edge(corners.left, corners.top);
+            if (x == range.max_x) {
+                push_edge(corners.right, corners.bottom);
+            }
+            if (y == range.max_y) {
+                push_edge(corners.bottom, corners.left);
+            }
+        }
+    }
+
+    if (vertices.empty()) {
+        return;
+    }
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(vertices.size() * sizeof(SceneVertex)),
+        vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(vertices.size()));
+    glBindVertexArray(0U);
 }
 
 void GameRenderer::draw_entity_prism(
@@ -3996,15 +4292,15 @@ void GameRenderer::draw_selection_outline(const float world_x, const float world
 
 void GameRenderer::draw_unit_selection_outline(const float world_x, const float world_z) const
 {
-    draw_unit_ground_highlight(
-        SceneHighlight{
-            world_x,
-            world_z,
-            constants::RENDER_SELECTION_HIGHLIGHT_R,
-            constants::RENDER_SELECTION_HIGHLIGHT_G,
-            constants::RENDER_SELECTION_HIGHLIGHT_B,
-            constants::RENDER_SELECTION_OUTLINE_SCALE,
-        });
+    const auto& rgb =
+        sim::components::player_slot_rgb(g_draw_player_color_indices, local_player_slot_);
+    draw_iso_range_circle(
+        world_x,
+        world_z,
+        constants::RENDER_UNIT_RADIUS,
+        rgb[0],
+        rgb[1],
+        rgb[2]);
 }
 
 void GameRenderer::draw_footprint_highlight(
@@ -4057,30 +4353,155 @@ float GameRenderer::unit_depth_sort_key(const float world_x, const float world_z
         + constants::RENDER_UNIT_SORT_BIAS;
 }
 
+void GameRenderer::iso_object_sprite_screen_rect(
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float width_scale,
+    const float offset_x_tiles,
+    const float offset_y_tiles,
+    float& min_x,
+    float& min_y,
+    float& max_x,
+    float& max_y) const
+{
+    const float world_x = static_cast<float>(grid_x) + 0.5F + offset_x_tiles;
+    const float world_z = static_cast<float>(grid_y) + 0.5F + offset_y_tiles;
+    const sf::Vector2f anchor = camera_.world_to_screen(world_x, 0.0F, world_z);
+    const float tile_width = camera_.tile_width() * width_scale;
+    const float sprite_height = tile_width * scene_textures_.aspect_ratio(texture_kind);
+    min_x = anchor.x - tile_width * 0.5F;
+    max_x = min_x + tile_width;
+    min_y = anchor.y - sprite_height;
+    max_y = anchor.y;
+}
+
+bool GameRenderer::unit_screen_overlaps_iso_sprite(
+    const float world_x,
+    const float world_z,
+    const int grid_x,
+    const int grid_y,
+    const SceneTextureKind texture_kind,
+    const float width_scale,
+    const float offset_x_tiles,
+    const float offset_y_tiles) const
+{
+    float unit_min_x = 0.0F;
+    float unit_min_y = 0.0F;
+    float unit_max_x = 0.0F;
+    float unit_max_y = 0.0F;
+    project_unit_screen_bounds(world_x, world_z, unit_min_x, unit_min_y, unit_max_x, unit_max_y);
+
+    float sprite_min_x = 0.0F;
+    float sprite_min_y = 0.0F;
+    float sprite_max_x = 0.0F;
+    float sprite_max_y = 0.0F;
+    iso_object_sprite_screen_rect(
+        grid_x,
+        grid_y,
+        texture_kind,
+        width_scale,
+        offset_x_tiles,
+        offset_y_tiles,
+        sprite_min_x,
+        sprite_min_y,
+        sprite_max_x,
+        sprite_max_y);
+
+    return unit_max_x >= sprite_min_x
+        && unit_min_x <= sprite_max_x
+        && unit_max_y >= sprite_min_y
+        && unit_min_y <= sprite_max_y;
+}
+
+bool GameRenderer::unit_screen_is_in_front_of_building(
+    const float world_x,
+    const float world_z,
+    const core::GridPos& anchor,
+    const sim::components::BuildingFootprint& footprint) const
+{
+    const int width = std::max(1, footprint.width);
+    const int height = std::max(1, footprint.height);
+    const IsoTileScreenCorners left_tile =
+        camera_.grid_iso_corners(anchor.x, anchor.y + height - 1);
+    const IsoTileScreenCorners right_tile =
+        camera_.grid_iso_corners(anchor.x + width - 1, anchor.y);
+    const sf::Vector2f left = left_tile.left;
+    const sf::Vector2f right = right_tile.right;
+    const sf::Vector2f unit_feet = world_to_screen(world_x, 0.0F, world_z);
+    const float dx = right.x - left.x;
+    const float line_y = std::abs(dx) > constants::RENDER_ISO_FRONT_EDGE_DX_EPSILON
+        ? left.y + ((unit_feet.x - left.x) / dx) * (right.y - left.y)
+        : (left.y + right.y) * 0.5F;
+    const float slack = camera_.tile_height() * constants::RENDER_UNIT_BUILDING_FRONT_LINE_SLACK_TILES;
+    return unit_feet.y + slack >= line_y;
+}
+
+bool GameRenderer::unit_draws_in_front_of_building(
+    const float world_x,
+    const float world_z,
+    const core::GridPos& anchor,
+    const sim::components::BuildingFootprint& footprint,
+    const OccluderSprite& sprite) const
+{
+    if (!unit_screen_is_in_front_of_building(world_x, world_z, anchor, footprint)) {
+        return false;
+    }
+
+    return unit_screen_overlaps_iso_sprite(
+        world_x,
+        world_z,
+        sprite.grid_x,
+        sprite.grid_y,
+        sprite.texture_kind,
+        sprite.width_scale,
+        sprite.offset_x_tiles,
+        sprite.offset_y_tiles);
+}
+
 float GameRenderer::cap_unit_sort_below_buildings(
     const float sort_key,
-    const int unit_tile_x,
-    const int unit_tile_y,
+    const float world_x,
+    const float world_z,
     const std::vector<core::GridPos>& building_anchors,
-    const std::vector<sim::components::BuildingFootprint>& building_footprints) const
+    const std::vector<sim::components::BuildingFootprint>& building_footprints,
+    const std::vector<OccluderSprite>& building_sprites) const
 {
     float capped_sort = sort_key;
-    const core::GridPos unit_cell{unit_tile_x, unit_tile_y};
+    const std::size_t building_count = std::min(building_anchors.size(), building_footprints.size());
+    const std::size_t sprite_count = std::min(building_count, building_sprites.size());
 
-    for (std::size_t index = 0U; index < building_anchors.size(); ++index) {
-        const sim::components::GridPosition anchor{building_anchors[index]};
+    for (std::size_t index = 0U; index < sprite_count; ++index) {
+        const core::GridPos& anchor_cell = building_anchors[index];
         const sim::components::BuildingFootprint& footprint = building_footprints[index];
-        if (!sim::components::building_contains_cell(anchor, footprint, unit_cell)) {
+        const OccluderSprite& sprite = building_sprites[index];
+        const bool sprite_overlap = unit_screen_overlaps_iso_sprite(
+            world_x,
+            world_z,
+            sprite.grid_x,
+            sprite.grid_y,
+            sprite.texture_kind,
+            sprite.width_scale,
+            sprite.offset_x_tiles,
+            sprite.offset_y_tiles);
+        if (!sprite_overlap) {
             continue;
         }
 
         const float building_sort = building_footprint_sort_key(
-            anchor.cell.x,
-            anchor.cell.y,
+            anchor_cell.x,
+            anchor_cell.y,
             footprint.width,
             footprint.height,
             false);
-        capped_sort = std::min(capped_sort, building_sort - 0.01F);
+        if (unit_screen_is_in_front_of_building(world_x, world_z, anchor_cell, footprint)) {
+            capped_sort = std::max(
+                capped_sort, building_sort + constants::RENDER_UNIT_IN_FRONT_OF_BUILDING_SORT);
+            continue;
+        }
+
+        capped_sort = std::min(
+            capped_sort, building_sort - constants::RENDER_UNIT_BEHIND_BUILDING_SORT);
     }
 
     return capped_sort;
@@ -4175,6 +4596,11 @@ void GameRenderer::draw_interaction_highlights(
             sim::components::Health>();
         for (const entt::entity entity : construction_view) {
             if (construction_view.get<sim::components::Health>(entity).current.raw() <= 0) {
+                continue;
+            }
+
+            if (!sim::systems::unstarted_construction_visible_to_slot(
+                    *registry, entity, local_player_slot_)) {
                 continue;
             }
 
@@ -4421,6 +4847,101 @@ void GameRenderer::draw_interaction_highlights(
         }
     }
 
+    if (building_range_display_ != constants::BuildingRangeDisplayMode::Never) {
+        const auto should_draw_range = [&](const bool is_own, const bool is_selected) {
+            if (building_range_display_ == constants::BuildingRangeDisplayMode::Selected) {
+                return is_selected;
+            }
+
+            return is_own || is_selected;
+        };
+
+        if (registry != nullptr) {
+            const auto world_view =
+                registry->view<sim::components::WorldTag, sim::components::ContentPack>();
+            const data::ContentDatabase* content = nullptr;
+            if (world_view.begin() != world_view.end()) {
+                content = &world_view.get<sim::components::ContentPack>(*world_view.begin()).content;
+            }
+
+            const auto building_view = registry->view<
+                sim::components::BuildingTag,
+                sim::components::GridPosition,
+                sim::components::Health>();
+            for (const entt::entity entity : building_view) {
+                if (building_view.get<sim::components::Health>(entity).current.raw() <= 0) {
+                    continue;
+                }
+
+                if (registry->any_of<sim::components::UnderConstructionTag>(entity)) {
+                    continue;
+                }
+
+                int attack_range = 0;
+                if (content != nullptr && registry->any_of<sim::components::DefinitionRef>(entity)) {
+                    const auto* definition = data::find_structure_archetype(
+                        *content, registry->get<sim::components::DefinitionRef>(entity).id);
+                    if (definition != nullptr) {
+                        attack_range = definition->attack_range;
+                    }
+                }
+                if (attack_range <= 0) {
+                    continue;
+                }
+
+                const bool is_own = registry->any_of<sim::components::PlayerOwnedTag>(entity)
+                    && sim::components::entity_player_slot(*registry, entity) == local_player_slot_;
+                const bool is_selected = entity == selected_building
+                    || std::find(selected_entities.begin(), selected_entities.end(), entity)
+                        != selected_entities.end();
+                if (!should_draw_range(is_own, is_selected)) {
+                    continue;
+                }
+
+                const auto& anchor = building_view.get<sim::components::GridPosition>(entity);
+                const sim::components::BuildingFootprint footprint =
+                    resolve_registry_building_footprint(*registry, entity);
+                const auto& rgb = sim::components::player_slot_rgb(
+                    g_draw_player_color_indices,
+                    sim::components::entity_player_slot(*registry, entity));
+                draw_iso_range_circle(
+                    static_cast<float>(anchor.cell.x) + static_cast<float>(footprint.width) * 0.5F,
+                    static_cast<float>(anchor.cell.y) + static_cast<float>(footprint.height) * 0.5F,
+                    static_cast<float>(attack_range),
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
+        }
+        else if (snapshot != nullptr) {
+            for (const RenderEntityPose& pose : snapshot->buildings) {
+                if (pose.health_current <= 0 || pose.under_construction || pose.attack_range <= 0) {
+                    continue;
+                }
+
+                const bool is_own = pose.player_slot == local_player_slot_;
+                const bool is_selected = pose.entity == selected_building
+                    || std::find(selected_entities.begin(), selected_entities.end(), pose.entity)
+                        != selected_entities.end();
+                if (!should_draw_range(is_own, is_selected)) {
+                    continue;
+                }
+
+                const auto& rgb =
+                    sim::components::player_slot_rgb(g_draw_player_color_indices, pose.player_slot);
+                draw_iso_range_circle(
+                    static_cast<float>(pose.grid_x)
+                        + static_cast<float>(std::max(1, pose.footprint_width)) * 0.5F,
+                    static_cast<float>(pose.grid_y)
+                        + static_cast<float>(std::max(1, pose.footprint_height)) * 0.5F,
+                    static_cast<float>(pose.attack_range),
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]);
+            }
+        }
+    }
+
     if (!scene_batch_.empty()) {
         flush_scene_batch();
     }
@@ -4450,12 +4971,15 @@ void GameRenderer::draw(
         return;
     }
 
+    building_range_display_ = hud_context_input.game_menu.building_range_display;
+
     const bool offscreen = ensure_present_target();
     if (offscreen) {
         glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
     }
 
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     if (window_size_.x > 0U && window_size_.y > 0U) {
         glViewport(0, 0, static_cast<GLsizei>(window_size_.x), static_cast<GLsizei>(window_size_.y));
     }
@@ -4510,6 +5034,7 @@ void GameRenderer::draw(
 
     std::vector<core::GridPos> building_anchors{};
     std::vector<sim::components::BuildingFootprint> building_footprints{};
+    std::vector<OccluderSprite> building_sprites{};
     const auto is_shrouded_building = [&](const entt::entity entity, const bool visible) {
         if (visible || fog == nullptr) {
             return false;
@@ -4526,6 +5051,7 @@ void GameRenderer::draw(
     const auto collect_building_footprints = [&]() {
         building_anchors.clear();
         building_footprints.clear();
+        building_sprites.clear();
 
         const auto footprint_view = registry.view<
             sim::components::BuildingTag,
@@ -4541,10 +5067,19 @@ void GameRenderer::draw(
                 continue;
             }
 
+            if (!sim::systems::unstarted_construction_visible_to_slot(
+                    registry, entity, local_player_slot_)) {
+                continue;
+            }
+
             const bool visible = fog == nullptr
                 || sim::systems::is_entity_visible_to_slot(registry, *fog, entity, local_player_slot_);
             const bool shrouded = is_shrouded_building(entity, visible);
             if (!visible && !shrouded) {
+                continue;
+            }
+
+            if (registry.any_of<sim::components::UnderConstructionTag>(entity)) {
                 continue;
             }
 
@@ -4554,6 +5089,11 @@ void GameRenderer::draw(
                 entity);
             building_anchors.push_back(anchor.cell);
             building_footprints.push_back(footprint);
+            building_sprites.push_back(
+                make_building_occluder_sprite(
+                    anchor.cell,
+                    footprint,
+                    building_visual_from_registry(registry, entity)));
         }
     };
 
@@ -5020,14 +5560,13 @@ void GameRenderer::draw(
             float b = style.b;
             apply_team_color(style.r, style.g, style.b, r, g, b);
 
-            const int unit_tile_x = static_cast<int>(std::floor(world_x));
-            const int unit_tile_y = static_cast<int>(std::floor(world_z));
             const float sort_key = cap_unit_sort_below_buildings(
                 unit_depth_sort_key(world_x, world_z),
-                unit_tile_x,
-                unit_tile_y,
+                world_x,
+                world_z,
                 building_anchors,
-                building_footprints);
+                building_footprints,
+                building_sprites);
 
             PendingUnitDraw unit_draw{
                 sort_key,
@@ -5049,6 +5588,16 @@ void GameRenderer::draw(
             if (is_projectile) {
                 unit_draw.radius = constants::ROCK_PROJECTILE_RADIUS;
                 unit_draw.height = constants::ROCK_PROJECTILE_RADIUS * 2.0F;
+                if (registry.any_of<sim::components::Projectile>(entity)) {
+                    const auto& projectile = registry.get<sim::components::Projectile>(entity);
+                    if (projectile.is_arrow) {
+                        unit_draw.radius = constants::ARROW_PROJECTILE_RADIUS;
+                        unit_draw.height = constants::ARROW_PROJECTILE_RADIUS * 2.0F;
+                        unit_draw.r = constants::RENDER_ARROW_PROJECTILE_R;
+                        unit_draw.g = constants::RENDER_ARROW_PROJECTILE_G;
+                        unit_draw.b = constants::RENDER_ARROW_PROJECTILE_B;
+                    }
+                }
             }
             queue_unit_draw(unit_draw);
         };
@@ -5101,7 +5650,10 @@ void GameRenderer::draw(
                     static_cast<int>(std::floor(world_z)),
                 };
                 if (!sim::systems::is_cell_visible_to_slot(*fog, visibility_cell, local_player_slot_)) {
-                    continue;
+                    const auto& projectile = projectile_view.get<sim::components::Projectile>(entity);
+                    if (projectile.reveal_to_slot != local_player_slot_) {
+                        continue;
+                    }
                 }
             }
 
@@ -5134,32 +5686,30 @@ void GameRenderer::draw(
                 }
             }
 
-            const UnitPlaceholderStyle style = unit_placeholder_style(
-                registry.any_of<sim::components::MageUnitTag>(entity),
-                registry.any_of<sim::components::WorkerUnitTag>(entity),
-                false,
+            const auto& rgb = sim::components::player_slot_rgb(
+                g_draw_player_color_indices,
                 sim::components::entity_player_slot(registry, entity));
-            float silhouette_r = style.r;
-            float silhouette_g = style.g;
-            float silhouette_b = style.b;
-            apply_team_color(style.r, style.g, style.b, silhouette_r, silhouette_g, silhouette_b);
+            const float silhouette_r = rgb[0];
+            const float silhouette_g = rgb[1];
+            const float silhouette_b = rgb[2];
 
-            const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
                 world_x,
                 world_z,
                 map,
                 building_footprints,
-                building_anchors);
-            if (!occluder_tiles.empty()) {
+                building_anchors,
+                building_sprites,
+                fog != nullptr ? &fog->visible : nullptr,
+                fog != nullptr ? &fog->explored : nullptr);
+            if (!occluder_sprites.empty()) {
                 draw_unit_occlusion_silhouette(
                     world_x,
                     world_z,
                     silhouette_r,
                     silhouette_g,
                     silhouette_b,
-                    occluder_tiles,
-                    building_anchors,
-                    building_footprints);
+                    occluder_sprites);
             }
         }
         if (!scene_batch_.empty()) {
@@ -5303,22 +5853,23 @@ void GameRenderer::draw(
                     1.0F);
             }
 
-            const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
                 world_x,
                 world_z,
                 map,
                 building_footprints,
-                building_anchors);
-            if (!occluder_tiles.empty()) {
+                building_anchors,
+                building_sprites,
+                fog != nullptr ? &fog->visible : nullptr,
+                fog != nullptr ? &fog->explored : nullptr);
+            if (!occluder_sprites.empty()) {
                 draw_unit_occlusion_silhouette(
                     world_x,
                     world_z,
                     r,
                     g,
                     b,
-                    occluder_tiles,
-                    building_anchors,
-                    building_footprints);
+                    occluder_sprites);
             }
         }
 
@@ -5330,11 +5881,7 @@ void GameRenderer::draw(
     if (use_textured_tiles && show_grid_lines_) {
         finish_textured_batches();
         glDisable(GL_DEPTH_TEST);
-        for (int y = 0; y < map.height; ++y) {
-            for (int x = 0; x < map.width; ++x) {
-                draw_iso_tile_grid_lines(x, y);
-            }
-        }
+        draw_iso_tile_grid_lines(map.width, map.height);
         glEnable(GL_DEPTH_TEST);
     }
 
@@ -5421,6 +5968,7 @@ void GameRenderer::draw(
             std::max(std::max(corner0.second, corner1.second), std::max(corner2.second, corner3.second));
     }
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     if (selection_box.active) {
@@ -5474,12 +6022,15 @@ void GameRenderer::draw_snapshot(
         return;
     }
 
+    building_range_display_ = hud_context_input.game_menu.building_range_display;
+
     const bool offscreen = ensure_present_target();
     if (offscreen) {
         glBindFramebuffer(GL_FRAMEBUFFER, present_fbo_);
     }
 
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     if (window_size_.x > 0U && window_size_.y > 0U) {
         glViewport(0, 0, static_cast<GLsizei>(window_size_.x), static_cast<GLsizei>(window_size_.y));
     }
@@ -5515,18 +6066,25 @@ void GameRenderer::draw_snapshot(
 
     std::vector<core::GridPos> snapshot_building_anchors{};
     std::vector<sim::components::BuildingFootprint> snapshot_building_footprints{};
+    std::vector<OccluderSprite> snapshot_building_sprites{};
     const auto collect_snapshot_building_footprints = [&]() {
         snapshot_building_anchors.clear();
         snapshot_building_footprints.clear();
+        snapshot_building_sprites.clear();
 
         for (const RenderEntityPose& pose : snapshot.buildings) {
-            if (pose.health_current <= 0 || pose.is_farm) {
+            if (pose.health_current <= 0 || pose.is_farm || pose.under_construction) {
                 continue;
             }
 
             snapshot_building_anchors.push_back(core::GridPos{pose.grid_x, pose.grid_y});
             snapshot_building_footprints.push_back(
                 sim::components::BuildingFootprint{pose.footprint_width, pose.footprint_height});
+            snapshot_building_sprites.push_back(
+                make_building_occluder_sprite(
+                    core::GridPos{pose.grid_x, pose.grid_y},
+                    sim::components::BuildingFootprint{pose.footprint_width, pose.footprint_height},
+                    building_visual_from_pose(pose)));
         }
     };
 
@@ -5970,6 +6528,7 @@ void GameRenderer::draw_snapshot(
         snapshot_occlusion_map.width = snapshot.map_width;
         snapshot_occlusion_map.height = snapshot.map_height;
         snapshot_occlusion_map.tiles = snapshot.tiles;
+        snapshot_occlusion_map.ground = snapshot.ground;
         snapshot_occlusion_map.forest_wood = snapshot.forest_wood;
         snapshot_occlusion_map.bush_food = snapshot.bush_food;
         snapshot_occlusion_map.mine_money = snapshot.mine_money;
@@ -5983,7 +6542,9 @@ void GameRenderer::draw_snapshot(
             if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
                 const core::GridPos visibility_cell =
                     snapshot_world_visibility_cell(world_x, world_z);
-                if (!snapshot_cell_is_visible(snapshot, visibility_cell)) {
+                if (!snapshot_cell_is_visible(snapshot, visibility_cell)
+                    && !(pose.is_projectile
+                        && pose.projectile_reveal_slot == local_player_slot_)) {
                     continue;
                 }
             }
@@ -5994,14 +6555,13 @@ void GameRenderer::draw_snapshot(
             float g = style.g;
             float b = style.b;
             apply_team_color(style.r, style.g, style.b, r, g, b);
-            const int unit_tile_x = static_cast<int>(std::floor(world_x));
-            const int unit_tile_y = static_cast<int>(std::floor(world_z));
             const float sort_key = cap_unit_sort_below_buildings(
                 unit_depth_sort_key(world_x, world_z),
-                unit_tile_x,
-                unit_tile_y,
+                world_x,
+                world_z,
                 snapshot_building_anchors,
-                snapshot_building_footprints);
+                snapshot_building_footprints,
+                snapshot_building_sprites);
             PendingUnitDraw unit_draw{
                 sort_key,
                 world_x,
@@ -6022,6 +6582,13 @@ void GameRenderer::draw_snapshot(
             if (pose.is_projectile) {
                 unit_draw.radius = constants::ROCK_PROJECTILE_RADIUS;
                 unit_draw.height = constants::ROCK_PROJECTILE_RADIUS * 2.0F;
+                if (pose.is_arrow) {
+                    unit_draw.radius = constants::ARROW_PROJECTILE_RADIUS;
+                    unit_draw.height = constants::ARROW_PROJECTILE_RADIUS * 2.0F;
+                    unit_draw.r = constants::RENDER_ARROW_PROJECTILE_R;
+                    unit_draw.g = constants::RENDER_ARROW_PROJECTILE_G;
+                    unit_draw.b = constants::RENDER_ARROW_PROJECTILE_B;
+                }
             }
             queue_unit_draw(unit_draw);
         }
@@ -6039,34 +6606,40 @@ void GameRenderer::draw_snapshot(
             if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
                 const core::GridPos visibility_cell =
                     snapshot_world_visibility_cell(world_x, world_z);
-                if (!snapshot_cell_is_visible(snapshot, visibility_cell)) {
+                if (!snapshot_cell_is_visible(snapshot, visibility_cell)
+                    && !(pose.is_projectile
+                        && pose.projectile_reveal_slot == local_player_slot_)) {
                     continue;
                 }
             }
 
-            const UnitPlaceholderStyle style = unit_placeholder_style(
-                pose.is_mage, pose.is_worker, pose.is_projectile, pose.player_slot);
-            float silhouette_r = style.r;
-            float silhouette_g = style.g;
-            float silhouette_b = style.b;
-            apply_team_color(style.r, style.g, style.b, silhouette_r, silhouette_g, silhouette_b);
+            const auto& rgb = sim::components::player_slot_rgb(
+                g_draw_player_color_indices, pose.player_slot);
+            const float silhouette_r = rgb[0];
+            const float silhouette_g = rgb[1];
+            const float silhouette_b = rgb[2];
 
-            const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
                 world_x,
                 world_z,
                 snapshot_occlusion_map,
                 snapshot_building_footprints,
-                snapshot_building_anchors);
-            if (!occluder_tiles.empty()) {
+                snapshot_building_anchors,
+                snapshot_building_sprites,
+                (fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    ? &snapshot.fog_visible
+                    : nullptr,
+                (fog_of_war_enabled_ && !snapshot.fog_explored.empty())
+                    ? &snapshot.fog_explored
+                    : nullptr);
+            if (!occluder_sprites.empty()) {
                 draw_unit_occlusion_silhouette(
                     world_x,
                     world_z,
                     silhouette_r,
                     silhouette_g,
                     silhouette_b,
-                    occluder_tiles,
-                    snapshot_building_anchors,
-                    snapshot_building_footprints);
+                    occluder_sprites);
             }
         }
         if (!scene_batch_.empty()) {
@@ -6124,6 +6697,7 @@ void GameRenderer::draw_snapshot(
         snapshot_occlusion_map.width = snapshot.map_width;
         snapshot_occlusion_map.height = snapshot.map_height;
         snapshot_occlusion_map.tiles = snapshot.tiles;
+        snapshot_occlusion_map.ground = snapshot.ground;
         snapshot_occlusion_map.forest_wood = snapshot.forest_wood;
         snapshot_occlusion_map.bush_food = snapshot.bush_food;
         snapshot_occlusion_map.mine_money = snapshot.mine_money;
@@ -6137,7 +6711,9 @@ void GameRenderer::draw_snapshot(
             if ((fog_of_war_enabled_ && !snapshot.fog_visible.empty())) {
                 const core::GridPos visibility_cell =
                     snapshot_world_visibility_cell(world_x, world_z);
-                if (!snapshot_cell_is_visible(snapshot, visibility_cell)) {
+                if (!snapshot_cell_is_visible(snapshot, visibility_cell)
+                    && !(pose.is_projectile
+                        && pose.projectile_reveal_slot == local_player_slot_)) {
                     continue;
                 }
             }
@@ -6172,22 +6748,27 @@ void GameRenderer::draw_snapshot(
                     1.0F);
             }
 
-            const std::vector<core::GridPos> occluder_tiles = collect_unit_front_occluder_tiles(
+            const std::vector<OccluderSprite> occluder_sprites = collect_unit_front_occluder_sprites(
                 world_x,
                 world_z,
                 snapshot_occlusion_map,
                 snapshot_building_footprints,
-                snapshot_building_anchors);
-            if (!occluder_tiles.empty()) {
+                snapshot_building_anchors,
+                snapshot_building_sprites,
+                (fog_of_war_enabled_ && !snapshot.fog_visible.empty())
+                    ? &snapshot.fog_visible
+                    : nullptr,
+                (fog_of_war_enabled_ && !snapshot.fog_explored.empty())
+                    ? &snapshot.fog_explored
+                    : nullptr);
+            if (!occluder_sprites.empty()) {
                 draw_unit_occlusion_silhouette(
                     world_x,
                     world_z,
                     r,
                     g,
                     b,
-                    occluder_tiles,
-                    snapshot_building_anchors,
-                    snapshot_building_footprints);
+                    occluder_sprites);
             }
         }
 
@@ -6199,11 +6780,7 @@ void GameRenderer::draw_snapshot(
     if (use_textured_tiles && show_grid_lines_) {
         finish_textured_batches();
         glDisable(GL_DEPTH_TEST);
-        for (int y = 0; y < snapshot.map_height; ++y) {
-            for (int x = 0; x < snapshot.map_width; ++x) {
-                draw_iso_tile_grid_lines(x, y);
-            }
-        }
+        draw_iso_tile_grid_lines(snapshot.map_width, snapshot.map_height);
         glEnable(GL_DEPTH_TEST);
     }
 
@@ -6293,6 +6870,7 @@ void GameRenderer::draw_snapshot(
             std::max(std::max(corner0.second, corner1.second), std::max(corner2.second, corner3.second));
     }
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     if (selection_box.active) {
@@ -6329,6 +6907,7 @@ void GameRenderer::clear_frame() const
     }
 
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     clear_opaque_framebuffer(
         constants::RENDER_CLEAR_R,
         constants::RENDER_CLEAR_G,

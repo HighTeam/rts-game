@@ -44,7 +44,7 @@ Launching the binary without CLI flags opens the main menu (slideshow background
 `assets/music/main_menu_theme.wav`):
 
 ```powershell
-.\build\x64-release\Release\aoa.exe
+.\build\x64-release\Release\AgeofAffinities.exe
 ```
 
 | Menu entry | Behaviour |
@@ -65,11 +65,11 @@ The `--lockstep-host` / `--lockstep-join` flags below bypass the menu and behave
 Same binary, no window — for desync/regression runs:
 
 ```powershell
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\aoa.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
-.\build\x64-debug\Debug\aoa.exe --harness
-.\build\x64-debug\Debug\aoa.exe --net-smoke
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --print-hash
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\AgeofAffinities.exe --harness
+.\build\x64-debug\Debug\AgeofAffinities.exe --net-smoke
 ```
 
 | Mode | Use |
@@ -98,9 +98,28 @@ Full scenario format, roles, hash update steps, and pitfalls: [HARNESS.md](HARNE
 | Folder | Role |
 |--------|------|
 | `raw-assets/` | Gitignored source art (local only) |
-| `assets/` | Shipped runtime copies (POST_BUILD copy next to `aoa.exe`) |
+| `assets/` | Shipped runtime copies (POST_BUILD copy next to `AgeofAffinities.exe`) |
 
 See [assets/README.md](../assets/README.md) and [DECISIONS.md](DECISIONS.md).
+
+## Windows installer (`aoa-setup.exe`)
+
+Unsigned NSIS setup (signing is deferred). Install [NSIS](https://nsis.sourceforge.io/) once:
+
+```powershell
+winget install NSIS.NSIS
+```
+
+Then:
+
+```powershell
+cmake --build build\x64-release --config Release --target aoa
+cmake --build build\x64-release --config Release --target aoa_setup
+```
+
+Or: `.\scripts\package-setup.ps1`
+
+Output: `build\x64-release\Release\aoa-setup.exe`. It installs `AgeofAffinities.exe`, SFML/runtime DLLs, `assets.dat`, `scenarios\`, and `patterns\`. Pattern Maker is an optional component. `aoa_pack_assets.exe` is not shipped.
 
 ## Open in Visual Studio
 
@@ -116,12 +135,12 @@ Lockstep uses a **2-tick input delay** (`LOCKSTEP_COMMAND_DELAY_TICKS`): command
 
 ```powershell
 # Terminal 1 — graphical (default)
-.\build\x64-debug\Debug\aoa.exe --lockstep-host --port 27000
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-host --port 27000
 
 # Terminal 2
-.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000
 
 # Headless scripted run (100 ticks default)
-.\build\x64-debug\Debug\aoa.exe --lockstep-host --headless --ticks 100
-.\build\x64-debug\Debug\aoa.exe --lockstep-join 127.0.0.1:27000 --headless --ticks 100
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-host --headless --ticks 100
+.\build\x64-debug\Debug\AgeofAffinities.exe --lockstep-join 127.0.0.1:27000 --headless --ticks 100
 ```

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/hud_grid.hpp"
 #include "core/constants.hpp"
 #include "core/grid.hpp"
 
@@ -7,6 +8,8 @@
 #include <SFML/Window/Keyboard.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -86,6 +89,7 @@ enum class CommandPanelAction : std::uint8_t {
     MarketBuyWood = 31,
     MarketBuyFood = 32,
     ResearchSpy = 33,
+    ResearchTrades = 34,
 };
 
 struct CommandPanelFrame {
@@ -164,6 +168,8 @@ struct CommandPanelBuildOptions {
     bool building_busy{false};
     bool has_cartography{false};
     bool can_afford_cartography{false};
+    bool has_trades{false};
+    bool can_afford_trades{false};
     bool has_spy{false};
     bool can_afford_spy{false};
     bool unlocked_elemental_buildings{false};
@@ -176,6 +182,7 @@ struct CommandPanelBuildOptions {
     bool can_buy_wood{false};
     bool can_buy_food{false};
     int cartography_money_cost{constants::CARTOGRAPHY_GOLD_COST};
+    int trades_money_cost{constants::TRADES_GOLD_COST};
     int market_trade_amount{constants::MARKET_TRADE_RESOURCE_AMOUNT};
     int market_sell_gold{constants::MARKET_SELL_GOLD_AMOUNT};
     int market_buy_gold{constants::MARKET_BUY_GOLD_AMOUNT};
@@ -190,40 +197,186 @@ struct CommandPanelBuildOptions {
     return CommandPanelFrame{.x = 0.0F, .y = 0.0F, .width = width, .height = height};
 }
 
-[[nodiscard]] inline CommandPanelFrame command_panel_frame_rect(const sf::Vector2u window_size)
+[[nodiscard]] inline CommandPanelFrame to_panel_frame(const GameMenuRect& rect)
 {
-    const CommandPanelFrame size = bottom_panel_size(window_size);
+    return CommandPanelFrame{rect.x, rect.y, rect.width, rect.height};
+}
+
+[[nodiscard]] inline bool hud_is_classic_aoe(const constants::HudStyle hud_style)
+{
+    return hud_style == constants::HudStyle::Aoe;
+}
+
+[[nodiscard]] inline bool point_in_convex_polygon(
+    const std::vector<sf::Vector2f>& points,
+    const float px,
+    const float py)
+{
+    if (points.size() < 3U) {
+        return false;
+    }
+
+    bool sign_set = false;
+    bool positive = false;
+    for (std::size_t index = 0U; index < points.size(); ++index) {
+        const sf::Vector2f& a = points[index];
+        const sf::Vector2f& b = points[(index + 1U) % points.size()];
+        const float cross = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x);
+        if (cross == 0.0F) {
+            continue;
+        }
+
+        const bool this_positive = cross > 0.0F;
+        if (!sign_set) {
+            sign_set = true;
+            positive = this_positive;
+            continue;
+        }
+
+        if (this_positive != positive) {
+            return false;
+        }
+    }
+
+    return sign_set;
+}
+
+[[nodiscard]] inline bool point_in_diamond(
+    const CommandPanelFrame& frame,
+    const float px,
+    const float py)
+{
+    const float half_w = frame.width * 0.5F;
+    const float half_h = frame.height * 0.5F;
+    if (half_w <= 0.0F || half_h <= 0.0F) {
+        return false;
+    }
+
+    const float cx = frame.x + half_w;
+    const float cy = frame.y + half_h;
+    return (std::fabs(px - cx) / half_w) + (std::fabs(py - cy) / half_h) <= 1.0F;
+}
+
+[[nodiscard]] inline CommandPanelFrame command_panel_frame_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
+{
+    if (hud_is_classic_aoe(hud_style)) {
+        const CommandPanelFrame size = bottom_panel_size(window_size);
+        return CommandPanelFrame{
+            .x = 0.0F,
+            .y = static_cast<float>(window_size.y) - size.height,
+            .width = size.width,
+            .height = size.height,
+        };
+    }
+
+    const HudGrid grid = HudGrid::from(window_size);
+    const float left = constants::HUD_DEFAULT_DECOR_WIDTH_U;
+    const float top = static_cast<float>(constants::HUD_GRID_ROWS)
+        - constants::HUD_DEFAULT_SIDE_BOX_HEIGHT_U;
     return CommandPanelFrame{
-        .x = 0.0F,
-        .y = static_cast<float>(window_size.y) - size.height,
-        .width = size.width,
-        .height = size.height,
+        .x = grid.x(left),
+        .y = grid.y(top),
+        .width = grid.w(constants::HUD_DEFAULT_SIDE_BOX_WIDTH_U),
+        .height = grid.h(constants::HUD_DEFAULT_SIDE_BOX_HEIGHT_U),
     };
 }
 
-[[nodiscard]] inline CommandPanelFrame minimap_panel_frame_rect(const sf::Vector2u window_size)
+[[nodiscard]] inline CommandPanelFrame minimap_panel_frame_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame size = bottom_panel_size(window_size);
+    if (hud_is_classic_aoe(hud_style)) {
+        const CommandPanelFrame size = bottom_panel_size(window_size);
+        return CommandPanelFrame{
+            .x = static_cast<float>(window_size.x) - size.width,
+            .y = static_cast<float>(window_size.y) - size.height,
+            .width = size.width,
+            .height = size.height,
+        };
+    }
+
+    return to_panel_frame(default_minimap_rect(window_size));
+}
+
+[[nodiscard]] inline CommandPanelFrame status_panel_frame_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
+{
+    const CommandPanelFrame options = command_panel_frame_rect(window_size, hud_style);
+    const CommandPanelFrame minimap = minimap_panel_frame_rect(window_size, hud_style);
+    if (hud_is_classic_aoe(hud_style)) {
+        return CommandPanelFrame{
+            .x = options.x + options.width,
+            .y = options.y,
+            .width = minimap.x > options.x + options.width
+                ? minimap.x - (options.x + options.width)
+                : 0.0F,
+            .height = options.height,
+        };
+    }
+
+    const HudGrid grid = HudGrid::from(window_size);
+    const float right = static_cast<float>(constants::HUD_GRID_COLUMNS)
+        - constants::HUD_DEFAULT_DECOR_WIDTH_U;
+    const float left = right - constants::HUD_DEFAULT_SIDE_BOX_WIDTH_U;
+    const float top = static_cast<float>(constants::HUD_GRID_ROWS)
+        - constants::HUD_DEFAULT_SIDE_BOX_HEIGHT_U;
     return CommandPanelFrame{
-        .x = static_cast<float>(window_size.x) - size.width,
-        .y = static_cast<float>(window_size.y) - size.height,
-        .width = size.width,
-        .height = size.height,
+        .x = grid.x(left),
+        .y = grid.y(top),
+        .width = grid.w(constants::HUD_DEFAULT_SIDE_BOX_WIDTH_U),
+        .height = grid.h(constants::HUD_DEFAULT_SIDE_BOX_HEIGHT_U),
     };
 }
 
-[[nodiscard]] inline CommandPanelFrame status_panel_frame_rect(const sf::Vector2u window_size)
+[[nodiscard]] inline CommandPanelFrame minimap_mode_button_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame options = command_panel_frame_rect(window_size);
-    const CommandPanelFrame minimap = minimap_panel_frame_rect(window_size);
-    return CommandPanelFrame{
-        .x = options.x + options.width,
-        .y = options.y,
-        .width = minimap.x > options.x + options.width
-            ? minimap.x - (options.x + options.width)
-            : 0.0F,
-        .height = options.height,
-    };
+    if (hud_is_classic_aoe(hud_style)) {
+        return CommandPanelFrame{};
+    }
+
+    return to_panel_frame(default_circle_button_rect(
+        window_size,
+        static_cast<float>(constants::HUD_GRID_COLUMNS) * 0.5F
+            - constants::HUD_DEFAULT_CIRCLE_BUTTON_OFFSET_X_U,
+        constants::HUD_DEFAULT_CIRCLE_BUTTON_Y_U));
+}
+
+[[nodiscard]] inline CommandPanelFrame pointer_mode_button_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
+{
+    if (hud_is_classic_aoe(hud_style)) {
+        return CommandPanelFrame{};
+    }
+
+    return to_panel_frame(default_circle_button_rect(
+        window_size,
+        static_cast<float>(constants::HUD_GRID_COLUMNS) * 0.5F
+            + constants::HUD_DEFAULT_CIRCLE_BUTTON_OFFSET_X_U,
+        constants::HUD_DEFAULT_CIRCLE_BUTTON_Y_U));
+}
+
+[[nodiscard]] inline bool hit_test_mode_button(
+    const CommandPanelFrame& frame,
+    const float mouse_x,
+    const float mouse_y)
+{
+    if (frame.width <= 0.0F || frame.height <= 0.0F) {
+        return false;
+    }
+
+    const float cx = frame.x + frame.width * 0.5F;
+    const float cy = frame.y + frame.height * 0.5F;
+    const float rx = frame.width * 0.5F;
+    const float ry = frame.height * 0.5F;
+    const float dx = (mouse_x - cx) / rx;
+    const float dy = (mouse_y - cy) / ry;
+    return dx * dx + dy * dy <= 1.0F;
 }
 
 [[nodiscard]] inline std::string_view label_for_action(const CommandPanelAction action)
@@ -285,6 +438,8 @@ struct CommandPanelBuildOptions {
         return "St";
     case CommandPanelAction::ResearchCartography:
         return "Ca";
+    case CommandPanelAction::ResearchTrades:
+        return "Tr";
     case CommandPanelAction::ResearchSpy:
         return "Sp";
     case CommandPanelAction::MarketSellWood:
@@ -423,6 +578,7 @@ struct CommandPanelBuildOptions {
     case CommandPanelMode::MarketActions:
         return {
             {0, CommandPanelAction::ResearchCartography},
+            {1, CommandPanelAction::ResearchTrades},
             {5, CommandPanelAction::MarketSellWood},
             {6, CommandPanelAction::MarketSellFood},
             {10, CommandPanelAction::MarketBuyWood},
@@ -467,7 +623,8 @@ struct CommandPanelBuildOptions {
 [[nodiscard]] inline std::vector<CommandPanelButton> build_command_panel_buttons(
     const CommandPanelMode mode,
     const sf::Vector2u window_size,
-    const CommandPanelBuildOptions& build_options = {})
+    const CommandPanelBuildOptions& build_options = {},
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
     std::vector<CommandPanelButton> buttons{};
     const auto slot_actions = command_panel_slot_actions(mode);
@@ -475,17 +632,39 @@ struct CommandPanelBuildOptions {
         return buttons;
     }
 
-    const CommandPanelFrame frame = command_panel_frame_rect(window_size);
+    const CommandPanelFrame frame = command_panel_frame_rect(window_size, hud_style);
     const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
     const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
     const int columns = constants::HUD_BOTTOM_PANEL_COLUMNS;
     const int rows = constants::HUD_BOTTOM_PANEL_ROWS;
-    const float content_width = frame.width - padding * 2.0F;
-    const float content_height = frame.height - padding * 2.0F;
-    const float button_width =
-        (content_width - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
-    const float button_height =
-        (content_height - gap * static_cast<float>(rows - 1)) / static_cast<float>(rows);
+    const HudGrid grid = HudGrid::from(window_size);
+    float origin_x = frame.x + padding;
+    float origin_y = frame.y + padding;
+    float button_width = 0.0F;
+    float button_height = 0.0F;
+    if (hud_is_classic_aoe(hud_style)) {
+        const CommandPanelFrame classic_frame = bottom_panel_size(window_size);
+        const float content_width = classic_frame.width - padding * 2.0F;
+        const float content_height = classic_frame.height - padding * 2.0F;
+        button_width = (content_width - gap * static_cast<float>(columns - 1))
+            / static_cast<float>(columns);
+        button_height = (content_height - gap * static_cast<float>(rows - 1))
+            / static_cast<float>(rows);
+    }
+    else {
+        origin_x = frame.x + grid.w(constants::HUD_DEFAULT_OPTIONS_INSET_LEFT_U);
+        origin_y = frame.y + grid.h(constants::HUD_DEFAULT_OPTIONS_INSET_TOP_U);
+        const float content_width = frame.width
+            - grid.w(constants::HUD_DEFAULT_OPTIONS_INSET_LEFT_U)
+            - grid.w(constants::HUD_DEFAULT_OPTIONS_INSET_RIGHT_U);
+        const float content_height = frame.height
+            - grid.h(constants::HUD_DEFAULT_OPTIONS_INSET_TOP_U)
+            - grid.h(constants::HUD_DEFAULT_OPTIONS_INSET_BOTTOM_U);
+        button_width = (content_width - gap * static_cast<float>(columns - 1))
+            / static_cast<float>(columns);
+        button_height = (content_height - gap * static_cast<float>(rows - 1))
+            / static_cast<float>(rows);
+    }
     const int max_slots = columns * rows;
 
     for (const auto& [slot, action] : slot_actions) {
@@ -501,6 +680,10 @@ struct CommandPanelBuildOptions {
             continue;
         }
 
+        if (action == CommandPanelAction::ResearchTrades && build_options.has_trades) {
+            continue;
+        }
+
         if (action == CommandPanelAction::ResearchSpy && build_options.has_spy) {
             continue;
         }
@@ -510,8 +693,8 @@ struct CommandPanelBuildOptions {
         CommandPanelButton button{
             .action = action,
             .label = label_for_action(action),
-            .x = frame.x + padding + static_cast<float>(column) * (button_width + gap),
-            .y = frame.y + padding + static_cast<float>(row) * (button_height + gap),
+            .x = origin_x + static_cast<float>(column) * (button_width + gap),
+            .y = origin_y + static_cast<float>(row) * (button_height + gap),
             .width = button_width,
             .height = button_height,
             .slot = slot,
@@ -607,6 +790,10 @@ struct CommandPanelBuildOptions {
         if (button.action == CommandPanelAction::ResearchCartography) {
             button.cost_money = build_options.cartography_money_cost;
             button.disabled = build_options.building_busy || !build_options.can_afford_cartography;
+        }
+        if (button.action == CommandPanelAction::ResearchTrades) {
+            button.cost_money = build_options.trades_money_cost;
+            button.disabled = build_options.building_busy || !build_options.can_afford_trades;
         }
         if (button.action == CommandPanelAction::ResearchSpy) {
             button.cost_money = build_options.spy_money_cost;
@@ -717,6 +904,11 @@ struct CommandPanelBuildOptions {
                 || !build_options.can_afford_cartography)) {
             return CommandPanelAction::None;
         }
+        if (action == CommandPanelAction::ResearchTrades
+            && (build_options.has_trades || build_options.building_busy
+                || !build_options.can_afford_trades)) {
+            return CommandPanelAction::None;
+        }
         if (action == CommandPanelAction::ResearchSpy
             && (!build_options.unlocked_spy || build_options.has_spy
                 || build_options.building_busy || !build_options.can_afford_spy)) {
@@ -745,10 +937,11 @@ struct CommandPanelBuildOptions {
     const sf::Vector2u window_size,
     const float mouse_x,
     const float mouse_y,
-    const CommandPanelBuildOptions& build_options = {})
+    const CommandPanelBuildOptions& build_options = {},
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
     for (const CommandPanelButton& button :
-         build_command_panel_buttons(mode, window_size, build_options)) {
+         build_command_panel_buttons(mode, window_size, build_options, hud_style)) {
         if (mouse_x >= button.x && mouse_x <= button.x + button.width && mouse_y >= button.y
             && mouse_y <= button.y + button.height) {
             if (button.disabled) {
@@ -764,25 +957,47 @@ struct CommandPanelBuildOptions {
 [[nodiscard]] inline bool hit_test_command_panel_frame(
     const sf::Vector2u window_size,
     const float mouse_x,
-    const float mouse_y)
+    const float mouse_y,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame frame = command_panel_frame_rect(window_size);
-    return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
-        && mouse_y <= frame.y + frame.height;
+    const CommandPanelFrame frame = command_panel_frame_rect(window_size, hud_style);
+    if (hud_is_classic_aoe(hud_style)) {
+        return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
+            && mouse_y <= frame.y + frame.height;
+    }
+
+    if (point_in_diamond(minimap_panel_frame_rect(window_size, hud_style), mouse_x, mouse_y)) {
+        return false;
+    }
+
+    return point_in_convex_polygon(default_option_panel_points(window_size), mouse_x, mouse_y);
 }
 
 [[nodiscard]] inline bool hit_test_status_panel_frame(
     const sf::Vector2u window_size,
     const float mouse_x,
-    const float mouse_y)
+    const float mouse_y,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame frame = status_panel_frame_rect(window_size);
-    return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
-        && mouse_y <= frame.y + frame.height;
+    const CommandPanelFrame frame = status_panel_frame_rect(window_size, hud_style);
+    if (hud_is_classic_aoe(hud_style)) {
+        return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
+            && mouse_y <= frame.y + frame.height;
+    }
+
+    if (point_in_diamond(minimap_panel_frame_rect(window_size, hud_style), mouse_x, mouse_y)) {
+        return false;
+    }
+
+    return point_in_convex_polygon(default_info_panel_points(window_size), mouse_x, mouse_y);
 }
 
-[[nodiscard]] inline CommandPanelFrame resource_bar_frame_rect(const sf::Vector2u)
+[[nodiscard]] inline CommandPanelFrame resource_bar_frame_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
+    (void)window_size;
+    (void)hud_style;
     const float icon_size = static_cast<float>(constants::HUD_ICON_DRAW_SIZE_PX);
     const float gap = static_cast<float>(constants::HUD_ICON_TEXT_GAP_PX);
     const float char_step = static_cast<float>(
@@ -802,16 +1017,29 @@ struct CommandPanelBuildOptions {
 [[nodiscard]] inline bool hit_test_resource_bar_frame(
     const sf::Vector2u window_size,
     const float mouse_x,
-    const float mouse_y)
+    const float mouse_y,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame frame = resource_bar_frame_rect(window_size);
+    if (!hud_is_classic_aoe(hud_style)) {
+        return point_in_convex_polygon(default_left_top_bar_points(window_size), mouse_x, mouse_y)
+            || point_in_convex_polygon(default_right_top_bar_points(window_size), mouse_x, mouse_y)
+            || point_in_convex_polygon(default_civ_logo_points(window_size), mouse_x, mouse_y);
+    }
+
+    const CommandPanelFrame frame = resource_bar_frame_rect(window_size, hud_style);
     return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
         && mouse_y <= frame.y + frame.height;
 }
 
-[[nodiscard]] inline CommandPanelFrame minimap_content_rect(const sf::Vector2u window_size)
+[[nodiscard]] inline CommandPanelFrame minimap_content_rect(
+    const sf::Vector2u window_size,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame frame = minimap_panel_frame_rect(window_size);
+    if (!hud_is_classic_aoe(hud_style)) {
+        return to_panel_frame(default_minimap_inner_rect(window_size));
+    }
+
+    const CommandPanelFrame frame = minimap_panel_frame_rect(window_size, hud_style);
     const float pad = static_cast<float>(constants::MINIMAP_CONTENT_PADDING_PX);
     const float width = std::max(0.0F, frame.width - pad * 2.0F);
     const float height = std::max(0.0F, frame.height - pad * 2.0F);
@@ -826,11 +1054,16 @@ struct CommandPanelBuildOptions {
 [[nodiscard]] inline bool hit_test_minimap_panel_frame(
     const sf::Vector2u window_size,
     const float mouse_x,
-    const float mouse_y)
+    const float mouse_y,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
-    const CommandPanelFrame frame = minimap_panel_frame_rect(window_size);
-    return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
-        && mouse_y <= frame.y + frame.height;
+    const CommandPanelFrame frame = minimap_panel_frame_rect(window_size, hud_style);
+    if (hud_is_classic_aoe(hud_style)) {
+        return mouse_x >= frame.x && mouse_x <= frame.x + frame.width && mouse_y >= frame.y
+            && mouse_y <= frame.y + frame.height;
+    }
+
+    return point_in_diamond(frame, mouse_x, mouse_y);
 }
 
 [[nodiscard]] inline std::optional<std::pair<float, float>> minimap_screen_to_world(
@@ -838,18 +1071,19 @@ struct CommandPanelBuildOptions {
     const float mouse_x,
     const float mouse_y,
     const int map_width,
-    const int map_height)
+    const int map_height,
+    const constants::HudStyle hud_style = constants::HudStyle::Default)
 {
     if (map_width <= 0 || map_height <= 0) {
         return std::nullopt;
     }
 
-    if (!hit_test_minimap_panel_frame(window_size, mouse_x, mouse_y)) {
+    if (!hit_test_minimap_panel_frame(window_size, mouse_x, mouse_y, hud_style)) {
         return std::nullopt;
     }
 
     // Keep mapping identical to HudOverlay draw (includes texture max-edge clamp).
-    const CommandPanelFrame content = minimap_content_rect(window_size);
+    const CommandPanelFrame content = minimap_content_rect(window_size, hud_style);
     const float iso_span = static_cast<float>(map_width + map_height);
     if (content.width <= 0.0F || content.height <= 0.0F || iso_span <= 0.0F) {
         return std::nullopt;

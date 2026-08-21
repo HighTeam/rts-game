@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/constants.hpp"
+#include "sim/components/resources.hpp"
 
 #include <algorithm>
 #include <array>
@@ -31,12 +32,23 @@ struct PlayerMatchStats {
     int food_collected{0};
     int money_collected{0};
     int mana_collected{0};
+    int trades_sent{0};
+    int trades_received{0};
 };
 
 struct AiControlTransition {
     std::uint64_t tick{0U};
     std::uint8_t player_slot{0U};
     bool enabled{false};
+};
+
+struct AttackRevealFlare {
+    std::int16_t x{0};
+    std::int16_t y{0};
+    std::uint8_t width{1};
+    std::uint8_t height{1};
+    std::uint8_t viewer_slot{0};
+    std::uint16_t ticks_remaining{0};
 };
 
 struct MatchSession {
@@ -67,6 +79,7 @@ struct MatchSession {
         7U};
     // FFA default: each playing slot is its own side. Shared values are a team.
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_ages{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_civilizations{};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_side_indices{
         0U,
         1U,
@@ -78,7 +91,13 @@ struct MatchSession {
         7U};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_cartography{};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_spy{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_trades{};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_built_mill{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_ally_mask{};
+    std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_ally_victory{};
+    bool block_team_changes{false};
+    std::array<Stockpile, constants::MAX_PLAYER_SLOTS> player_stockpiles{};
+    std::vector<AttackRevealFlare> attack_reveal_flares{};
 };
 
 [[nodiscard]] inline std::uint8_t player_color_index(
@@ -90,6 +109,22 @@ struct MatchSession {
     }
 
     return session.player_color_indices[player_slot];
+}
+
+[[nodiscard]] inline constants::Civilization player_civilization(
+    const MatchSession& session,
+    const std::uint8_t player_slot)
+{
+    if (player_slot >= session.player_civilizations.size()) {
+        return constants::Civilization::Earth;
+    }
+
+    const std::uint8_t raw = session.player_civilizations[player_slot];
+    if (raw >= static_cast<std::uint8_t>(constants::CIVILIZATION_COUNT)) {
+        return constants::Civilization::Earth;
+    }
+
+    return static_cast<constants::Civilization>(raw);
 }
 
 [[nodiscard]] inline const std::array<float, 3>& player_slot_rgb(
@@ -262,6 +297,38 @@ inline void apply_lobby_teams_to_session(
         session.player_side_indices[slot] =
             static_cast<std::uint8_t>(constants::MATCH_FFA_SIDE_BASE + slot);
     }
+
+    for (std::uint8_t slot = 0U; slot < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+         ++slot) {
+        std::uint8_t mask = static_cast<std::uint8_t>(1U << slot);
+        for (std::uint8_t other = 0U; other < static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS);
+             ++other) {
+            if (other == slot) {
+                continue;
+            }
+
+            if (session.player_side_indices[slot] == session.player_side_indices[other]) {
+                mask = static_cast<std::uint8_t>(mask | static_cast<std::uint8_t>(1U << other));
+            }
+        }
+        session.player_ally_mask[slot] = mask;
+    }
+}
+
+[[nodiscard]] inline bool slot_treats_as_ally(
+    const MatchSession& session,
+    const std::uint8_t from_slot,
+    const std::uint8_t to_slot)
+{
+    if (from_slot == to_slot) {
+        return true;
+    }
+
+    if (from_slot >= session.player_ally_mask.size() || to_slot >= session.player_ally_mask.size()) {
+        return false;
+    }
+
+    return (session.player_ally_mask[from_slot] & static_cast<std::uint8_t>(1U << to_slot)) != 0U;
 }
 
 [[nodiscard]] inline bool slots_are_allied(
@@ -269,7 +336,8 @@ inline void apply_lobby_teams_to_session(
     const std::uint8_t left_slot,
     const std::uint8_t right_slot)
 {
-    return player_side_index(session, left_slot) == player_side_index(session, right_slot);
+    return slot_treats_as_ally(session, left_slot, right_slot)
+        && slot_treats_as_ally(session, right_slot, left_slot);
 }
 
 [[nodiscard]] inline bool slot_has_cartography(
@@ -281,6 +349,17 @@ inline void apply_lobby_teams_to_session(
     }
 
     return session.player_cartography[player_slot] != 0U;
+}
+
+[[nodiscard]] inline bool slot_has_trades(
+    const MatchSession& session,
+    const std::uint8_t player_slot)
+{
+    if (player_slot >= session.player_trades.size()) {
+        return false;
+    }
+
+    return session.player_trades[player_slot] != 0U;
 }
 
 [[nodiscard]] inline bool slot_has_spy(
@@ -328,6 +407,13 @@ inline void apply_lobby_teams_to_session(
     const std::uint8_t player_slot)
 {
     return (mask & player_slot_bit(player_slot)) != 0U;
+}
+
+[[nodiscard]] inline bool player_is_eliminated(
+    const MatchSession& session,
+    const std::uint8_t player_slot)
+{
+    return player_slot_bit_is_set(session.eliminated_slots_mask, player_slot);
 }
 
 [[nodiscard]] inline std::uint8_t cartography_vision_slots_mask(

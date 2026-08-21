@@ -42,9 +42,9 @@ jobs:
         run: |
           $preset = "${{ matrix.preset }}"
           if ($preset -eq "ci-x64-debug") {
-            $exe = "./build/ci-x64-debug/aoa.exe"
+            $exe = "./build/ci-x64-debug/AgeofAffinities.exe"
           } else {
-            $exe = "./build/ci-x64-release/aoa.exe"
+            $exe = "./build/ci-x64-release/AgeofAffinities.exe"
           }
           & $exe --headless --ticks 5
           & $exe --net-smoke
@@ -58,10 +58,12 @@ jobs:
           Start-Sleep -Milliseconds 500
           & $exe --lockstep-4-disconnect-smoke
           Start-Sleep -Milliseconds 500
+          & $exe --lockstep-4-reconnect-smoke
+          Start-Sleep -Milliseconds 500
           & $exe --lockstep-peer-silence-smoke
           & $exe --snapshot-smoke
 
       - name: Regression harness
         if: matrix.preset == 'ci-x64-debug'
         shell: pwsh
-        run: ./build/ci-x64-debug/aoa.exe --harness
+        run: ./build/ci-x64-debug/AgeofAffinities.exe --harness

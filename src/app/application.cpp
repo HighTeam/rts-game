@@ -6,6 +6,7 @@
 #include "app/game_cursor.hpp"
 #include "app/tps_tracker.hpp"
 #include "app/game_input.hpp"
+#include "app/main_menu.hpp"
 #include "app/window_display.hpp"
 #include "audio/game_audio.hpp"
 #include "core/runtime_paths.hpp"
@@ -36,6 +37,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <thread>
@@ -91,7 +93,24 @@ void drain_match_announcements_to_chat(
                 ChatTextSpan{name, true, event.player_slot},
                 ChatTextSpan{std::string(constants::CHAT_AGE_ADVANCED_MID), false, 0U},
                 ChatTextSpan{std::string(age_name), false, 0U},
-            });
+            }, ChatChannel::All, false);
+            continue;
+        }
+
+        if (event.kind == sim::components::MatchAnnouncementKind::RelationshipChanged) {
+            if (event.player_slot != local_player_slot) {
+                continue;
+            }
+
+            const std::string actor = match_chat_player_name(names, event.other_slot);
+            const std::string relation = event.age != 0U
+                ? std::string(constants::DIPLOMACY_ALLY_LABEL)
+                : std::string(constants::DIPLOMACY_ENEMY_LABEL);
+            chat_state.push_system_spans({
+                ChatTextSpan{actor, true, event.other_slot},
+                ChatTextSpan{std::string(constants::CHAT_RELATIONSHIP_MID), false, 0U},
+                ChatTextSpan{relation, false, 0U},
+            }, ChatChannel::Personal, true);
             continue;
         }
 
@@ -105,7 +124,7 @@ void drain_match_announcements_to_chat(
             ChatTextSpan{std::string(constants::CHAT_ATTACKED_YOU), true, local_player_slot},
             ChatTextSpan{std::string(constants::CHAT_ATTACKED_MID), false, 0U},
             ChatTextSpan{attacker, true, event.other_slot},
-        });
+        }, ChatChannel::Personal, true);
     }
 }
 
@@ -431,6 +450,8 @@ AppFlow run_graphical(
     game_input.set_menu_mouse_capture(display_settings.mouse_capture);
     apply_mouse_capture(window, display_settings);
     game_input.set_scroll_speed(shell_settings.scroll_speed);
+    game_input.set_building_range_display(shell_settings.building_range_display);
+    game_input.set_hud_style(shell_settings.hud_style);
     renderer.set_show_perf_hud(shell_settings.show_perf_hud);
     game_cursor.force_reapply(window);
 
@@ -479,7 +500,7 @@ AppFlow run_graphical(
     core::FixedTimestepLoop loop{};
     loop.run_realtime(
         [&simulation, &tps_tracker, &game_input, &ai_command_sequence, &last_autosave_time]() {
-            if (game_input.is_game_menu_open()) {
+            if (game_input.is_simulation_paused()) {
                 return;
             }
 
@@ -657,6 +678,8 @@ AppFlow run_graphical(
     shell_settings.music_volume = game_audio.music_volume();
     shell_settings.sfx_volume = game_audio.sfx_volume();
     shell_settings.scroll_speed = game_input.scroll_speed();
+    shell_settings.building_range_display = game_input.building_range_display();
+    shell_settings.hud_style = game_input.hud_style();
     save_app_settings(shell_settings);
     return flow;
 }
@@ -811,7 +834,8 @@ AppFlow run_lockstep_match(
     WindowDisplaySettings& display_settings,
     sim::Simulation& simulation,
     const LockstepMatchSetup& setup,
-    AppShellSettings& shell_settings)
+    AppShellSettings& shell_settings,
+    MainMenuState* menu_state)
 {
     const net::LockstepRole role =
         setup.is_host ? net::LockstepRole::Host : net::LockstepRole::Client;
@@ -835,11 +859,20 @@ AppFlow run_lockstep_match(
                 setup.player_count,
                 setup.map_seed);
             match_session.victory_condition = setup.victory_condition;
-            if (setup.player_count > 0U
-                && setup.player_count <= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
-                match_session.playing_slots_mask =
-                    static_cast<std::uint8_t>((1U << setup.player_count) - 1U);
+            match_session.block_team_changes = setup.lobby_settings.block_team_changes;
+            std::uint8_t playing_mask = 0U;
+            const std::uint8_t slot_limit = std::min(
+                setup.player_count,
+                static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS));
+            for (std::uint8_t slot = 0U; slot < slot_limit; ++slot) {
+                if (!setup.slot_is_spectator[slot]) {
+                    playing_mask = static_cast<std::uint8_t>(playing_mask | (1U << slot));
+                }
             }
+            if (playing_mask == 0U && slot_limit > 0U) {
+                playing_mask = static_cast<std::uint8_t>((1U << slot_limit) - 1U);
+            }
+            match_session.playing_slots_mask = playing_mask;
         }
     }
 
@@ -857,6 +890,7 @@ AppFlow run_lockstep_match(
     net::LockstepSession session{role, player_slot, simulation, session_player_count};
     session.configure_match_identity(setup.player_names, setup.reconnect_tokens);
     session.configure_ai_slots(setup.slot_is_ai);
+    session.configure_spectator_slots(setup.slot_is_spectator);
     {
         net::LobbySettings lobby_settings = setup.lobby_settings;
         lobby_settings.player_count = setup.player_count;
@@ -914,7 +948,8 @@ AppFlow run_lockstep_match(
     renderer.reset_graphics_context(window.getSize());
     renderer.set_local_player_slot(player_slot);
     renderer.set_fog_of_war_enabled(
-        setup.fog_mode != sim::components::FogOfWarMode::Disabled);
+        !setup.local_is_spectator
+        && setup.fog_mode != sim::components::FogOfWarMode::Disabled);
 
     GameInput game_input{};
     ChatState chat_state{};
@@ -932,6 +967,7 @@ AppFlow run_lockstep_match(
     game_audio.set_sfx_volume(shell_settings.sfx_volume);
     game_input.set_lockstep_session(&session);
     game_input.set_local_player_slot(player_slot);
+    game_input.set_local_is_spectator(setup.local_is_spectator);
     game_input.set_match_roster(true, setup.player_names);
     game_input.set_chat_state(&chat_state);
     game_input.set_game_cursor(&game_cursor);
@@ -967,6 +1003,8 @@ AppFlow run_lockstep_match(
     game_input.set_menu_mouse_capture(display_settings.mouse_capture);
     apply_mouse_capture(window, display_settings);
     game_input.set_scroll_speed(shell_settings.scroll_speed);
+    game_input.set_building_range_display(shell_settings.building_range_display);
+    game_input.set_hud_style(shell_settings.hud_style);
     renderer.set_show_perf_hud(shell_settings.show_perf_hud);
     game_cursor.force_reapply(window);
 
@@ -1089,10 +1127,13 @@ AppFlow run_lockstep_match(
             const auto elapsed_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - last_autosave_time);
             if (elapsed_ms.count() >= constants::AUTOSAVE_INTERVAL_MS) {
-                std::lock_guard lock(session.simulation_access_mutex());
-                if (sim::persistence::save_simulation_to_file(
-                        simulation,
-                        sim::persistence::default_autosave_mp_path())) {
+                std::vector<std::byte> save_bytes{};
+                {
+                    std::lock_guard lock(session.simulation_access_mutex());
+                    save_bytes = sim::persistence::encode_save_bytes(simulation);
+                }
+                if (sim::persistence::write_save_bytes(
+                        sim::persistence::default_autosave_mp_path(), save_bytes)) {
                     last_autosave_time = now;
                 }
             }
@@ -1146,6 +1187,22 @@ AppFlow run_lockstep_match(
         window.display();
     }
 
+    if (menu_state != nullptr && !setup.is_host) {
+        bool match_finished = false;
+        {
+            std::lock_guard lock(session.simulation_access_mutex());
+            match_finished = sim::systems::match_is_finished(simulation.registry());
+        }
+        if (!match_finished && !session.is_host_gone() && !session.voluntary_leave_requested()) {
+            menu_state->reconnect_available = true;
+            menu_state->reconnect_address = setup.host_address;
+            menu_state->reconnect_port = setup.port;
+        }
+        else {
+            menu_state->reconnect_available = false;
+        }
+    }
+
     session.stop_background_tick_loop();
     session.disconnect_transport();
 
@@ -1170,6 +1227,8 @@ AppFlow run_lockstep_match(
     shell_settings.music_volume = game_audio.music_volume();
     shell_settings.sfx_volume = game_audio.sfx_volume();
     shell_settings.scroll_speed = game_input.scroll_speed();
+    shell_settings.building_range_display = game_input.building_range_display();
+    shell_settings.hud_style = game_input.hud_style();
     save_app_settings(shell_settings);
     return flow;
 }
@@ -1213,7 +1272,8 @@ int run_graphical_lockstep(sim::Simulation& simulation, const LaunchOptions& opt
     }
 
     sf::ContextSettings context_settings{
-        .depthBits = 24U,
+        .depthBits = constants::OPENGL_DEPTH_BITS,
+        .stencilBits = constants::OPENGL_STENCIL_BITS,
         .majorVersion = static_cast<unsigned int>(constants::OPENGL_MAJOR_VERSION),
         .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
     };

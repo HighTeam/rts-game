@@ -57,7 +57,7 @@ void debug_log_session_state(
     LockstepDebugLog::log(detail.str());
 }
 
-bool validate_snapshot_roundtrip(sim::Simulation& source, const std::vector<std::byte>& snapshot_bytes)
+[[maybe_unused]] bool validate_snapshot_roundtrip(sim::Simulation& source, const std::vector<std::byte>& snapshot_bytes)
 {
     if (snapshot_bytes.empty()) {
         return false;
@@ -180,8 +180,18 @@ void LockstepSession::restore_match_identity_after_snapshot()
     match_session.player_color_indices = lobby_slot_colors_;
     if (session_player_count_ > 0U
         && session_player_count_ <= static_cast<std::uint8_t>(aoa::constants::MAX_PLAYER_SLOTS)) {
-        match_session.playing_slots_mask =
-            static_cast<std::uint8_t>((1U << session_player_count_) - 1U);
+        std::uint8_t playing_mask = 0U;
+        for (std::uint8_t slot = 0U; slot < session_player_count_; ++slot) {
+            if (slot_is_spectator(slot)) {
+                continue;
+            }
+
+            playing_mask = static_cast<std::uint8_t>(playing_mask | (1U << slot));
+        }
+        if (playing_mask == 0U) {
+            playing_mask = static_cast<std::uint8_t>((1U << session_player_count_) - 1U);
+        }
+        match_session.playing_slots_mask = playing_mask;
     }
 
     if (!lobby_settings_configured_) {
@@ -280,7 +290,7 @@ void LockstepSession::background_tick_loop()
             const bool live_lockstep_ready =
                 session_ready_ && !desynced_ && !host_lost_ && !reconnecting_ && !host_gone_
                 && can_run_live_lockstep();
-            if (!live_lockstep_ready) {
+            if (match_paused_.load() || !live_lockstep_ready) {
                 debug_tick_accumulator_ = 0.0;
             }
             else {
@@ -394,6 +404,15 @@ void LockstepSession::note_player_slot_transport_down(const std::uint8_t player_
     }
 
     if (player_slot >= session_player_count_ || player_slot == player_slot_) {
+        return;
+    }
+
+    if (slot_is_spectator(player_slot)) {
+        return;
+    }
+
+    if (slot_has_resigned(player_slot) || slot_is_eliminated(player_slot)) {
+        apply_resigned_slot_disconnect(player_slot);
         return;
     }
 
@@ -641,6 +660,10 @@ LockstepNetworkHudStats LockstepSession::network_hud_stats() const
 
     if (stats.local_ping_ms <= 0) {
         stats.local_ping_ms = smoothed_rtt_ms_.load();
+    }
+
+    if (player_slot_ < stats.peer_latency_ms.size()) {
+        stats.peer_latency_ms[player_slot_] = stats.local_ping_ms;
     }
 
     return stats;
@@ -962,6 +985,10 @@ void LockstepSession::take_over_unconnected_human_slots()
             continue;
         }
 
+        if (slot_is_spectator(slot)) {
+            continue;
+        }
+
         handle_host_player_slot_disconnected(slot);
     }
 }
@@ -973,13 +1000,24 @@ bool LockstepSession::is_awaiting_reconnect_handshake() const
 
 bool LockstepSession::start_host(const std::uint16_t port)
 {
-    const std::uint8_t human_clients = static_cast<std::uint8_t>(
-        expected_human_player_count() > 1U ? expected_human_player_count() - 1U : 1U);
+    std::uint8_t client_slots = 0U;
+    for (std::uint8_t slot = 1U; slot < session_player_count_; ++slot) {
+        if (slot < slot_is_ai_.size() && slot_is_ai_[slot]) {
+            continue;
+        }
+
+        ++client_slots;
+    }
+
+    if (client_slots == 0U) {
+        client_slots = 1U;
+    }
+
     if (required_registered_clients_mask() == 0U) {
         session_ready_ = true;
     }
 
-    return transport_.start_host(port, human_clients);
+    return transport_.start_host(port, client_slots);
 }
 
 bool LockstepSession::connect(const char* host_name, const std::uint16_t port)
@@ -1008,20 +1046,20 @@ void LockstepSession::ensure_initial_render_snapshot()
     }
 }
 
-void LockstepSession::submit_local_command(sim::player::PlayerCommand command)
+bool LockstepSession::submit_local_command(sim::player::PlayerCommand command)
 {
     std::lock_guard lock(simulation_access_mutex_);
 
     if (desynced_ || host_lost_ || reconnecting_ || host_gone_) {
-        return;
+        return false;
     }
 
     if (commands_blocked_during_resync()) {
-        return;
+        return false;
     }
 
     if (ai_fallback_ && role_ != LockstepRole::Host) {
-        return;
+        return false;
     }
 
     command.player_slot = player_slot_;
@@ -1039,7 +1077,7 @@ void LockstepSession::submit_local_command(sim::player::PlayerCommand command)
 
     sim::snapshot::annotate_command_entity_keys(simulation_.registry(), command);
     if (command.unit_keys.size() != command.unit_ids.size()) {
-        return;
+        return false;
     }
 
     if ((command.type == sim::player::PlayerCommandType::Attack
@@ -1053,10 +1091,11 @@ void LockstepSession::submit_local_command(sim::player::PlayerCommand command)
             || command.type == sim::player::PlayerCommandType::ResumeBuild
             || command.type == sim::player::PlayerCommandType::RenewFarm)
         && command.target_entity != entt::null && !command.target_entity_key.has_value()) {
-        return;
+        return false;
     }
 
     local_outbox_[command.execute_tick].push_back(std::move(command));
+    return true;
 }
 
 void LockstepSession::set_chat_state(app::ChatState* chat_state)
@@ -1076,6 +1115,17 @@ void LockstepSession::configure_ai_slots(
     const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_ai)
 {
     slot_is_ai_ = slot_is_ai;
+}
+
+void LockstepSession::configure_spectator_slots(
+    const std::array<bool, aoa::constants::MAX_PLAYER_SLOTS>& slot_is_spectator)
+{
+    slot_is_spectator_ = slot_is_spectator;
+}
+
+bool LockstepSession::slot_is_spectator(const std::uint8_t player_slot) const
+{
+    return player_slot < slot_is_spectator_.size() && slot_is_spectator_[player_slot];
 }
 
 void LockstepSession::configure_lobby_settings(
@@ -1104,6 +1154,10 @@ std::uint8_t LockstepSession::expected_human_player_count() const
     std::uint8_t count = 0U;
     for (std::uint8_t slot = 0U; slot < session_player_count_; ++slot) {
         if (slot < slot_is_ai_.size() && slot_is_ai_[slot]) {
+            continue;
+        }
+
+        if (slot_is_spectator(slot)) {
             continue;
         }
 
@@ -1151,6 +1205,10 @@ bool LockstepSession::claim_token_accepted(
 bool LockstepSession::is_slot_reclaimable_mid_match(const std::uint8_t player_slot) const
 {
     if (player_slot == 0U || player_slot >= session_player_count_) {
+        return false;
+    }
+
+    if (slot_has_resigned(player_slot) || slot_is_eliminated(player_slot)) {
         return false;
     }
 
@@ -1257,7 +1315,7 @@ bool LockstepSession::try_accept_mid_match_lobby_rejoin(
         return false;
     }
 
-    if (!sync_status_chat_announced_) {
+    if (!sync_status_chat_announced_ && !slot_is_spectator(claimed_slot)) {
         push_system_chat(player_display_name(claimed_slot) + " is connecting.");
     }
 
@@ -1269,7 +1327,7 @@ bool LockstepSession::try_accept_mid_match_lobby_rejoin(
     return true;
 }
 
-void LockstepSession::send_chat_message(const std::string_view text)
+void LockstepSession::send_chat_message(const std::string_view text, const ChatChannel channel)
 {
     if (text.empty()) {
         return;
@@ -1277,13 +1335,17 @@ void LockstepSession::send_chat_message(const std::string_view text)
 
     ChatMessagePayload payload{};
     payload.player_slot = player_slot_;
+    payload.channel = static_cast<std::uint8_t>(channel);
     payload.text = std::string(text);
     if (payload.text.size() > static_cast<std::size_t>(aoa::constants::CHAT_MAX_MESSAGE_LENGTH)) {
         payload.text.resize(static_cast<std::size_t>(aoa::constants::CHAT_MAX_MESSAGE_LENGTH));
     }
 
     if (chat_state_ != nullptr) {
-        chat_state_->push_message(payload.player_slot, payload.text);
+        chat_state_->push_message(
+            payload.player_slot,
+            payload.text,
+            channel == ChatChannel::Allies ? app::ChatChannel::Allies : app::ChatChannel::All);
     }
 
     if (!is_connected()) {
@@ -1303,6 +1365,59 @@ void LockstepSession::send_chat_message(const std::string_view text)
     }
 
     (void)transport_.send_unreliable(wire_message, constants::CHANNEL_UNRELIABLE);
+}
+
+void LockstepSession::apply_match_pause(const bool paused)
+{
+    match_paused_.store(paused);
+}
+
+void LockstepSession::request_match_pause(const bool paused)
+{
+    apply_match_pause(paused);
+    if (!is_connected()) {
+        return;
+    }
+
+    const std::vector<std::byte> payload{
+        static_cast<std::byte>(
+            paused ? constants::MATCH_PAUSE_FLAG_PAUSED : constants::MATCH_PAUSE_FLAG_RUNNING),
+    };
+    const std::vector<std::byte> wire_message =
+        encode_net_message(NetMessageKind::MatchPause, payload);
+    if (role_ == LockstepRole::Host) {
+        (void)transport_.broadcast_reliable_except(
+            wire_message, constants::CHANNEL_RELIABLE, std::nullopt);
+        return;
+    }
+
+    (void)transport_.send_reliable(wire_message, constants::CHANNEL_RELIABLE);
+}
+
+bool LockstepSession::is_match_paused() const
+{
+    return match_paused_.load();
+}
+
+void LockstepSession::handle_match_pause(
+    const std::vector<std::byte>& payload,
+    const std::uint8_t sender_slot)
+{
+    if (payload.empty()) {
+        return;
+    }
+
+    const bool paused =
+        static_cast<std::uint8_t>(payload.front()) != constants::MATCH_PAUSE_FLAG_RUNNING;
+    apply_match_pause(paused);
+    if (role_ != LockstepRole::Host) {
+        return;
+    }
+
+    const std::vector<std::byte> wire_message =
+        encode_net_message(NetMessageKind::MatchPause, payload);
+    (void)transport_.broadcast_reliable_except(
+        wire_message, constants::CHANNEL_RELIABLE, sender_slot);
 }
 
 void LockstepSession::handle_chat_message(
@@ -1330,8 +1445,26 @@ void LockstepSession::handle_chat_message(
         return;
     }
 
+    if (message.channel == static_cast<std::uint8_t>(ChatChannel::Allies)) {
+        const auto session_view =
+            simulation_.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+        if (session_view.begin() == session_view.end()) {
+            return;
+        }
+
+        const auto& session = session_view.get<sim::components::MatchSession>(*session_view.begin());
+        if (!sim::components::slot_treats_as_ally(session, message.player_slot, player_slot_)) {
+            return;
+        }
+    }
+
     if (chat_state_ != nullptr) {
-        chat_state_->push_message(message.player_slot, message.text);
+        chat_state_->push_message(
+            message.player_slot,
+            message.text,
+            message.channel == static_cast<std::uint8_t>(ChatChannel::Allies)
+                ? app::ChatChannel::Allies
+                : app::ChatChannel::All);
     }
 }
 
@@ -1431,7 +1564,6 @@ void LockstepSession::process_polled_messages_locked()
             if (awaiting_reconnect_handshake_) {
                 awaiting_reconnect_handshake_ = false;
                 mid_match_reconnect_authorized_ = false;
-                sync_status_chat_announced_ = false;
                 client_resync_ready_ = false;
                 opponent_needs_snapshot_ = true;
                 if (!ai_fallback_) {
@@ -1498,6 +1630,10 @@ void LockstepSession::process_polled_messages_locked()
 
 bool LockstepSession::try_advance_tick()
 {
+    if (match_paused_.load()) {
+        return false;
+    }
+
     if (awaiting_reconnect_handshake_blocks_tick_advance(
             role_, awaiting_reconnect_handshake_, session_player_count_)) {
         return false;
@@ -1630,6 +1766,10 @@ std::uint8_t LockstepSession::required_registered_clients_mask() const
             continue;
         }
 
+        if (slot_is_spectator(slot)) {
+            continue;
+        }
+
         mask = static_cast<std::uint8_t>(mask | (1U << slot));
     }
 
@@ -1697,6 +1837,10 @@ std::uint8_t LockstepSession::required_remote_slots_mask() const
         }
 
         if ((ai_controlled_slots_mask_ & static_cast<std::uint8_t>(1U << slot)) != 0U) {
+            continue;
+        }
+
+        if (slot_is_spectator(slot)) {
             continue;
         }
 
@@ -1910,7 +2054,6 @@ void LockstepSession::maybe_timeout_resync_handshake()
 
         awaiting_reconnect_handshake_ = false;
         mid_match_reconnect_authorized_ = false;
-        sync_status_chat_announced_ = false;
         client_resync_ready_ = false;
         opponent_needs_snapshot_ = false;
         if (!ai_fallback_) {
@@ -2136,22 +2279,10 @@ void LockstepSession::send_reconnect_snapshot(const std::uint8_t target_enet_slo
 
     flush_pending_local_commands_to_input_log();
 
-    const std::vector<std::byte> snapshot_bytes = sim::encode_sim_snapshot(simulation_);
+    const std::vector<std::byte> snapshot_bytes = sim::encode_sim_snapshot(simulation_, false);
     if (snapshot_bytes.empty()) {
         std::cerr << "lockstep: snapshot encode failed at tick " << simulation_.tick_count()
                   << " — client reconnect blocked until retry succeeds\n";
-        return;
-    }
-
-    if (!validate_snapshot_roundtrip(simulation_, snapshot_bytes)) {
-        std::cerr << "lockstep: snapshot roundtrip validation failed at tick "
-                  << simulation_.tick_count() << " — not sending to client\n";
-        return;
-    }
-
-    if (!apply_reconnect_snapshot_locally(snapshot_bytes)) {
-        std::cerr << "lockstep: host failed to apply reconnect snapshot locally at tick "
-                  << simulation_.tick_count() << " — not sending to client\n";
         return;
     }
 
@@ -2184,7 +2315,6 @@ void LockstepSession::send_reconnect_snapshot(const std::uint8_t target_enet_slo
     opponent_reconnect_pending_ = false;
     opponent_needs_snapshot_ = false;
     client_resync_ready_ = false;
-    const bool first_handshake_snapshot = !awaiting_reconnect_handshake_;
     awaiting_reconnect_handshake_ = true;
     resync_handshake_started_ = std::chrono::steady_clock::now();
     resync_strict_batch_gate_ = true;
@@ -2193,7 +2323,7 @@ void LockstepSession::send_reconnect_snapshot(const std::uint8_t target_enet_slo
     pending_reconnect_enet_slot_ = target_enet_slot;
     last_reconnect_snapshot_sent_ = std::chrono::steady_clock::now();
 
-    if (first_handshake_snapshot || !sync_status_chat_announced_) {
+    if (!sync_status_chat_announced_) {
         push_system_chat(
             "Synchronizing data with " + player_display_name(opponent_player_slot()) + ".");
         sync_status_chat_announced_ = true;
@@ -2251,6 +2381,16 @@ void LockstepSession::handle_host_player_slot_disconnected(const std::uint8_t pl
         return;
     }
 
+    if (slot_is_spectator(player_slot)) {
+        note_registered_client_lost(player_slot);
+        return;
+    }
+
+    if (slot_has_resigned(player_slot) || slot_is_eliminated(player_slot)) {
+        apply_resigned_slot_disconnect(player_slot);
+        return;
+    }
+
     // Always clear a half-finished resync so a second disconnect cannot leave the
     // host stuck waiting for ResyncReady that will never arrive.
     const bool was_resync_pending =
@@ -2276,6 +2416,7 @@ void LockstepSession::handle_host_player_slot_disconnected(const std::uint8_t pl
 
     push_system_chat(player_display_name(player_slot) + " has disconnected.");
     push_system_chat("AI takes over disconnected player " + player_display_name(player_slot) + ".");
+    sync_status_chat_announced_ = false;
 
     std::cout << "lockstep: player " << static_cast<int>(player_slot + 1U) << " left at tick "
               << simulation_.tick_count() << " — AI playing, waiting for reconnect...\n";
@@ -2321,7 +2462,8 @@ void LockstepSession::force_resend_local_batch(const std::uint64_t execute_tick)
 
 void LockstepSession::handle_slot_ai_resume(const std::uint8_t player_slot)
 {
-    if (player_slot >= session_player_count_) {
+    if (player_slot >= session_player_count_ || slot_has_resigned(player_slot)
+        || slot_is_eliminated(player_slot)) {
         return;
     }
 
@@ -2351,6 +2493,156 @@ void LockstepSession::handle_slot_ai_resume(const std::uint8_t player_slot)
             + std::to_string(simulation_.tick_count()));
 }
 
+bool LockstepSession::slot_has_resigned(const std::uint8_t player_slot) const
+{
+    if (player_slot >= session_player_count_) {
+        return false;
+    }
+
+    return (resigned_slots_mask_ & static_cast<std::uint8_t>(1U << player_slot)) != 0U;
+}
+
+bool LockstepSession::slot_is_eliminated(const std::uint8_t player_slot) const
+{
+    if (slot_has_resigned(player_slot)) {
+        return true;
+    }
+
+    const auto world_view =
+        simulation_.registry().view<sim::components::WorldTag, sim::components::MatchSession>();
+    if (world_view.begin() == world_view.end()) {
+        return false;
+    }
+
+    return sim::components::player_is_eliminated(
+        world_view.get<sim::components::MatchSession>(*world_view.begin()), player_slot);
+}
+
+bool LockstepSession::voluntary_leave_requested() const
+{
+    return voluntary_leave_;
+}
+
+void LockstepSession::send_player_resign(const std::uint8_t player_slot)
+{
+    ReconnectRequestMessage message{};
+    message.player_slot = player_slot;
+    const std::vector<std::byte> payload = encode_reconnect_request(message);
+    const std::vector<std::byte> wire_message =
+        encode_net_message(NetMessageKind::PlayerResign, payload);
+
+    if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
+        (void)transport_.broadcast_reliable_except(
+            wire_message,
+            constants::CHANNEL_RELIABLE,
+            player_slot == player_slot_ ? std::nullopt : std::optional<std::uint8_t>{player_slot});
+        return;
+    }
+
+    (void)transport_.send_reliable(wire_message, constants::CHANNEL_RELIABLE);
+}
+
+void LockstepSession::queue_resign_command_for_slot(const std::uint8_t player_slot)
+{
+    sim::player::PlayerCommand command{};
+    command.player_slot = player_slot;
+    command.type = sim::player::PlayerCommandType::Resign;
+    command.execute_tick = next_execute_tick();
+
+    if (player_slot == player_slot_) {
+        command.sequence = local_command_sequence_++;
+        while (has_local_sent(command.execute_tick)) {
+            ++command.execute_tick;
+        }
+
+        local_outbox_[command.execute_tick].push_back(command);
+        ensure_local_batch_sent(command.execute_tick);
+        return;
+    }
+
+    if (ai_command_sequence_by_slot_[player_slot] == 0U) {
+        ai_command_sequence_by_slot_[player_slot] = 1U;
+    }
+
+    command.sequence = ai_command_sequence_by_slot_[player_slot]++;
+    simulation_.enqueue_network_command(command);
+    note_remote_slot_ready(command.execute_tick, player_slot);
+    if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
+        (void)send_slot_input_batch(command.execute_tick, player_slot, {command});
+    }
+}
+
+void LockstepSession::apply_resigned_slot_disconnect(const std::uint8_t player_slot)
+{
+    if (player_slot >= session_player_count_) {
+        return;
+    }
+
+    resigned_slots_mask_ =
+        static_cast<std::uint8_t>(resigned_slots_mask_ | static_cast<std::uint8_t>(1U << player_slot));
+    disconnected_slots_mask_ =
+        static_cast<std::uint8_t>(disconnected_slots_mask_ | static_cast<std::uint8_t>(1U << player_slot));
+    resync_pending_slots_mask_ =
+        static_cast<std::uint8_t>(resync_pending_slots_mask_ & ~static_cast<std::uint8_t>(1U << player_slot));
+    simulation_.set_player_ai_controlled(player_slot, false);
+    ai_controlled_slots_mask_ =
+        static_cast<std::uint8_t>(ai_controlled_slots_mask_ & ~static_cast<std::uint8_t>(1U << player_slot));
+    if (ai_fallback_ && ai_controlled_slot_ == player_slot) {
+        ai_fallback_ = false;
+    }
+
+    if (session_player_count_ == 2U && player_slot == opponent_player_slot()) {
+        opponent_reconnect_pending_ = false;
+        awaiting_reconnect_handshake_ = false;
+        mid_match_reconnect_authorized_ = false;
+    }
+
+    clear_remote_wait();
+    push_system_chat(player_display_name(player_slot) + " has resigned.");
+    LockstepDebugLog::log_event(
+        "player_resigned",
+        "player_slot=" + std::to_string(static_cast<int>(player_slot) + 1) + " tick="
+            + std::to_string(simulation_.tick_count()));
+}
+
+void LockstepSession::handle_player_resign(const std::uint8_t player_slot)
+{
+    if (player_slot >= session_player_count_ || player_slot == player_slot_) {
+        return;
+    }
+
+    if (slot_has_resigned(player_slot)) {
+        return;
+    }
+
+    queue_resign_command_for_slot(player_slot);
+    apply_resigned_slot_disconnect(player_slot);
+    if (role_ == LockstepRole::Host) {
+        send_player_resign(player_slot);
+    }
+}
+
+bool LockstepSession::request_voluntary_resign()
+{
+    {
+        std::lock_guard lock(simulation_access_mutex_);
+        if (desynced_ || host_gone_) {
+            return false;
+        }
+
+        voluntary_leave_ = true;
+        if (!slot_has_resigned(player_slot_)) {
+            queue_resign_command_for_slot(player_slot_);
+            send_player_resign(player_slot_);
+            apply_resigned_slot_disconnect(player_slot_);
+        }
+    }
+
+    transport_.flush_outbound();
+    transport_.disconnect_peer();
+    return true;
+}
+
 void LockstepSession::send_reconnect_snapshot_to_client(
     const std::uint8_t player_slot,
     const bool force_immediate)
@@ -2369,16 +2661,10 @@ void LockstepSession::send_reconnect_snapshot_to_client(
 
     flush_pending_local_commands_to_input_log();
 
-    const std::vector<std::byte> snapshot_bytes = sim::encode_sim_snapshot(simulation_);
+    const std::vector<std::byte> snapshot_bytes = sim::encode_sim_snapshot(simulation_, false);
     if (snapshot_bytes.empty()) {
         std::cerr << "lockstep: snapshot encode failed at tick " << simulation_.tick_count()
                   << " — client reconnect blocked until retry succeeds\n";
-        return;
-    }
-
-    if (!validate_snapshot_roundtrip(simulation_, snapshot_bytes)) {
-        std::cerr << "lockstep: snapshot roundtrip validation failed at tick "
-                  << simulation_.tick_count() << " — not sending to client\n";
         return;
     }
 
@@ -2413,15 +2699,9 @@ void LockstepSession::broadcast_reconnect_snapshot_to_all_clients()
 
     flush_pending_local_commands_to_input_log();
 
-    const std::vector<std::byte> snapshot_bytes = sim::encode_sim_snapshot(simulation_);
+    const std::vector<std::byte> snapshot_bytes = sim::encode_sim_snapshot(simulation_, false);
     if (snapshot_bytes.empty()) {
         std::cerr << "lockstep: catch-up snapshot encode failed at tick "
-                  << simulation_.tick_count() << '\n';
-        return;
-    }
-
-    if (!validate_snapshot_roundtrip(simulation_, snapshot_bytes)) {
-        std::cerr << "lockstep: catch-up snapshot roundtrip validation failed at tick "
                   << simulation_.tick_count() << '\n';
         return;
     }
@@ -2438,14 +2718,6 @@ void LockstepSession::broadcast_reconnect_snapshot_to_all_clients()
             client_slot,
             wire_message,
             constants::CHANNEL_RELIABLE);
-    }
-
-    // Host must share the exact restored pending/cooldown state clients get.
-    // Live host pending + unsnapshotted fields otherwise diverge after warmup.
-    if (!apply_reconnect_snapshot_locally(snapshot_bytes)) {
-        std::cerr << "lockstep: host failed to self-apply catch-up snapshot at tick "
-                  << simulation_.tick_count() << '\n';
-        return;
     }
 
     last_reconnect_snapshot_sent_ = std::chrono::steady_clock::now();
@@ -2465,7 +2737,7 @@ void LockstepSession::handle_peer_connected(const std::uint8_t connected_enet_sl
 
     note_peer_activity();
     if (match_started_ && simulation_.tick_count() > 0U && session_player_count_ <= 2U) {
-        reset_tick_sync_state();
+        reset_reconnect_handshake_sync_state(pending_reconnect_player_slot_);
     }
     else if (is_multi_peer_session(session_player_count_)) {
         flush_pending_local_commands_to_input_log();
@@ -2529,8 +2801,8 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
             return;
         }
 
-        // Keep resync_pending set until broadcasts are queued so try_advance
-        // stays paused (avoids host AI ticks vs reconnecting human ticks).
+        // Keep resync_pending until broadcasts are queued so the reconnecting
+        // slot stays excluded from the live remote-ready mask.
         resume_player_control(player_slot);
         disconnected_slots_mask_ =
             static_cast<std::uint8_t>(disconnected_slots_mask_ & ~(1U << player_slot));
@@ -2544,8 +2816,11 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
             static_cast<std::uint8_t>(resync_pending_slots_mask_ & ~(1U << player_slot));
 
         hash_verify_warmup_ticks_remaining_ = constants::LOCKSTEP_HASH_VERIFY_WARMUP_TICKS;
-        reset_tick_sync_state();
+        reset_reconnect_handshake_sync_state(player_slot);
         ensure_local_batch_sent(next_execute_tick());
+
+        push_system_chat(std::string(aoa::constants::CHAT_SYNC_COMPLETE_TEXT));
+        sync_status_chat_announced_ = false;
 
         LockstepDebugLog::log_event(
             "resync_ready_received",
@@ -2573,10 +2848,13 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
     resync_strict_batch_gate_ = true;
     hash_verify_warmup_ticks_remaining_ = constants::LOCKSTEP_HASH_VERIFY_WARMUP_TICKS;
     flush_pending_local_commands_to_input_log();
-    reset_tick_sync_state();
+    reset_reconnect_handshake_sync_state(player_slot);
     resume_player_control(player_slot);
     begin_opponent_reconnect_grace();
     ensure_local_batch_sent(next_execute_tick());
+
+    push_system_chat(std::string(aoa::constants::CHAT_SYNC_COMPLETE_TEXT));
+    sync_status_chat_announced_ = false;
 
     LockstepDebugLog::log_event(
         "resync_ready_received",
@@ -2640,16 +2918,26 @@ void LockstepSession::handle_reconnect_request(
         const bool slot_ai_controlled = simulation_.is_player_ai_controlled(player_slot);
 
         if (!slot_disconnected && !slot_ai_controlled && !slot_pending_resync) {
-            // Player already live after a completed resync — ignore duplicates.
             LockstepDebugLog::log_event(
-                "reconnect_request_ignored_already_live",
+                "reconnect_request_live_resend_snapshot",
                 "player_slot=" + std::to_string(static_cast<int>(player_slot) + 1));
+        }
+
+        if (slot_pending_resync) {
+            send_reconnect_snapshot_to_client(player_slot, false);
             return;
         }
 
-        if (!slot_pending_resync) {
-            push_system_chat(player_display_name(player_slot) + " is connecting.");
+        if (slot_is_spectator(player_slot)) {
+            send_reconnect_snapshot_to_client(player_slot, false);
+            return;
+        }
+
+        resync_pending_slots_mask_ =
+            static_cast<std::uint8_t>(resync_pending_slots_mask_ | (1U << player_slot));
+        if (!sync_status_chat_announced_) {
             push_system_chat("Synchronizing data with " + player_display_name(player_slot) + ".");
+            sync_status_chat_announced_ = true;
         }
         send_reconnect_snapshot_to_client(player_slot, true);
         return;
@@ -2706,7 +2994,10 @@ void LockstepSession::handle_reconnect_request(
     }
     else if (mid_match_reconnect && client_resync_ready_ && !awaiting_reconnect_handshake_
         && !opponent_needs_snapshot_ && !ai_fallback_) {
-        return;
+        opponent_needs_snapshot_ = true;
+        client_resync_ready_ = false;
+        mid_match_reconnect_authorized_ = true;
+        sync_status_chat_announced_ = false;
     }
 
     if (awaiting_reconnect_handshake_ && !client_resync_ready_) {
@@ -2791,6 +3082,14 @@ void LockstepSession::handle_reconnect_snapshot(const std::vector<std::byte>& pa
                << simulation_.state_hash() << std::dec
                << (actively_reconnecting ? " role=reconnect" : " role=catchup");
         LockstepDebugLog::log_event("snapshot_restored", detail.str());
+    }
+
+    if (slot_is_spectator(player_slot_)) {
+        awaiting_reconnect_handshake_ = false;
+        resync_ready_sent_ = true;
+        sync_status_chat_announced_ = false;
+        ensure_local_batch_sent(next_execute_tick());
+        return;
     }
 
     // Fresh reconnect OR host resent a snapshot before seeing ResyncReady —
@@ -2953,6 +3252,7 @@ void LockstepSession::enter_ai_fallback()
     ai_controlled_slots_mask_ = static_cast<std::uint8_t>(1U << ai_controlled_slot_);
     ai_fallback_ = true;
     simulation_.set_player_ai_controlled(ai_controlled_slot_, true);
+    flush_pending_local_commands_to_input_log();
     reset_tick_sync_state();
     session_ready_ = true;
     debug_tick_accumulator_ = 0.0;
@@ -2966,8 +3266,8 @@ void LockstepSession::enter_ai_fallback()
 
     // Drop a silent-but-still-connected peer so the client can enter host_lost/reconnect
     // instead of blocking forever on batches the host no longer sends in AI mode.
-    if (role_ == LockstepRole::Host && transport_.is_connected()
-        && !is_opponent_reconnect_grace_active() && session_player_count_ == 2U) {
+    // Reconnect grace is armed before this call, so it must not skip the disconnect.
+    if (role_ == LockstepRole::Host && transport_.is_connected() && session_player_count_ == 2U) {
         transport_.disconnect_peer();
     }
 }
@@ -3069,6 +3369,27 @@ void LockstepSession::reset_tick_sync_state()
     ai_input_batches_sent_.clear();
     pending_ai_input_batches_.clear();
     clear_remote_wait();
+}
+
+void LockstepSession::reset_reconnect_handshake_sync_state(const std::uint8_t reconnecting_player_slot)
+{
+    std::unordered_map<std::uint64_t, std::uint8_t> preserved_remote_ready{};
+    if (role_ == LockstepRole::Host && is_multi_peer_session(session_player_count_)) {
+        preserved_remote_ready = remote_ready_slots_by_tick_;
+        if (reconnecting_player_slot != constants::LOCKSTEP_INVALID_PLAYER_SLOT) {
+            for (auto& [execute_tick, ready_mask] : preserved_remote_ready) {
+                (void)execute_tick;
+                ready_mask = static_cast<std::uint8_t>(
+                    ready_mask & ~static_cast<std::uint8_t>(1U << reconnecting_player_slot));
+            }
+        }
+    }
+
+    reset_tick_sync_state();
+
+    if (role_ == LockstepRole::Host && is_multi_peer_session(session_player_count_)) {
+        remote_ready_slots_by_tick_ = std::move(preserved_remote_ready);
+    }
 }
 
 bool LockstepSession::is_remote_input_batch_current(const TickInputBatch& batch) const
@@ -3173,6 +3494,14 @@ void LockstepSession::inject_ai_commands_for_disconnected_slots(const std::uint6
         }
 
         const bool lobby_ai = slot < slot_is_ai_.size() && slot_is_ai_[slot];
+        if (slot_is_spectator(slot)) {
+            continue;
+        }
+
+        if (slot_has_resigned(slot) || slot_is_eliminated(slot)) {
+            continue;
+        }
+
         const bool disconnect_ai = (ai_playing_mask & (1U << slot)) != 0U;
         if (!lobby_ai && !disconnect_ai) {
             continue;
@@ -3236,6 +3565,10 @@ void LockstepSession::prepare_ai_controlled_slots_for_tick(const std::uint64_t e
             continue;
         }
 
+        if (slot_has_resigned(slot) || slot_is_eliminated(slot)) {
+            continue;
+        }
+
         if (is_remote_slot_ready(execute_tick, slot)) {
             continue;
         }
@@ -3276,6 +3609,10 @@ void LockstepSession::inject_ai_commands(const std::uint64_t execute_tick)
 {
     for (std::uint8_t slot = 0U; slot < session_player_count_; ++slot) {
         if ((ai_controlled_slots_mask_ & static_cast<std::uint8_t>(1U << slot)) == 0U) {
+            continue;
+        }
+
+        if (slot_has_resigned(slot) || slot_is_eliminated(slot)) {
             continue;
         }
 
@@ -3638,8 +3975,23 @@ void LockstepSession::process_received_packet(
         return;
     }
 
+    if (decoded_message->first == NetMessageKind::PlayerResign) {
+        const auto message = decode_reconnect_request(decoded_message->second);
+        if (!message.has_value()) {
+            return;
+        }
+
+        handle_player_resign(message->player_slot);
+        return;
+    }
+
     if (decoded_message->first == NetMessageKind::Chat) {
         handle_chat_message(decoded_message->second, sender_slot);
+        return;
+    }
+
+    if (decoded_message->first == NetMessageKind::MatchPause) {
+        handle_match_pause(decoded_message->second, sender_slot);
         return;
     }
 
@@ -3676,9 +4028,17 @@ void LockstepSession::process_received_packet(
             return;
         }
 
+        if (slot_is_spectator(batch.player_slot)) {
+            return;
+        }
+
         if (role_ == LockstepRole::Host && match_started_ && simulation_.tick_count() > 0U
             && should_drop_batch_for_reconnect_handshake(batch.player_slot)) {
             LockstepDebugLog::log_event("batch_ignored", "waiting_resync_ready");
+            return;
+        }
+
+        if (is_remote_slot_ready(batch.execute_tick, batch.player_slot)) {
             return;
         }
 
@@ -3704,6 +4064,13 @@ void LockstepSession::process_received_packet(
             && batch.execute_tick == next_execute_tick()) {
             awaiting_reconnect_handshake_ = false;
             sync_status_chat_announced_ = false;
+            push_system_chat(std::string(aoa::constants::CHAT_SYNC_COMPLETE_TEXT));
+            LockstepDebugLog::log_event(
+                "reconnect_bootstrap_complete",
+                "execute_tick=" + std::to_string(batch.execute_tick));
+        }
+        if (batch.execute_tick == waiting_remote_execute_tick_ && has_remote_ready(batch.execute_tick)) {
+            clear_remote_wait();
         }
         return;
     }
@@ -3720,6 +4087,11 @@ void LockstepSession::process_received_packet(
         }
 
         if (message->execute_tick > simulation_.tick_count()) {
+            return;
+        }
+
+        if (hash_verify_warmup_ticks_remaining_ > 0 || awaiting_reconnect_handshake_
+            || message->execute_tick < simulation_.tick_count()) {
             return;
         }
 
@@ -3791,28 +4163,23 @@ void LockstepSession::verify_state_hash(
 
 bool LockstepSession::try_advance_live_tick()
 {
-    // While a client is restoring from snapshot, the host must not keep
-    // simulating that slot with AI — the restored client is already live and
-    // will diverge within the hash-warmup window.
-    const std::uint8_t live_resync_mask =
-        static_cast<std::uint8_t>(resync_pending_slots_mask_ & ~disconnected_slots_mask_);
-    if (role_ == LockstepRole::Host && live_resync_mask != 0U) {
-        debug_log_advance_blocked(
-            "resync_pending mask=" + std::to_string(live_resync_mask));
-        return false;
-    }
-
     const std::uint64_t execute_tick = next_execute_tick();
     flush_pending_ai_input_batches(execute_tick);
     ensure_local_batches_pipelined();
     inject_ai_commands_for_disconnected_slots(execute_tick);
     prepare_ai_controlled_slots_for_tick(execute_tick);
+    flush_pending_ai_input_batches(execute_tick);
 
     if (!has_remote_ready(execute_tick)) {
         maybe_resend_local_batch(execute_tick);
 
         if (!is_connected()) {
             if (session_player_count_ == 2U) {
+                if (slot_has_resigned(opponent_player_slot())
+                    || slot_is_eliminated(opponent_player_slot())) {
+                    return try_advance_unopposed_tick();
+                }
+
                 note_opponent_transport_down();
                 return try_advance_ai_fallback_tick();
             }
@@ -3827,12 +4194,18 @@ bool LockstepSession::try_advance_live_tick()
             }
 
             prepare_ai_controlled_slots_for_tick(execute_tick);
+            flush_pending_ai_input_batches(execute_tick);
             if (!has_remote_ready(execute_tick)) {
                 return false;
             }
         }
         else if (is_opponent_unresponsive()) {
             if (session_player_count_ == 2U) {
+                if (slot_has_resigned(opponent_player_slot())
+                    || slot_is_eliminated(opponent_player_slot())) {
+                    return try_advance_unopposed_tick();
+                }
+
                 note_opponent_transport_down();
                 return try_advance_ai_fallback_tick();
             }
@@ -3847,6 +4220,7 @@ bool LockstepSession::try_advance_live_tick()
             }
 
             prepare_ai_controlled_slots_for_tick(execute_tick);
+            flush_pending_ai_input_batches(execute_tick);
             if (!has_remote_ready(execute_tick)) {
                 return false;
             }
@@ -3892,6 +4266,20 @@ bool LockstepSession::try_advance_ai_fallback_tick()
 
     flush_local_commands_for_tick(execute_tick);
     inject_ai_commands(execute_tick);
+    simulation_.snapshot_world_positions_for_render();
+    simulation_.tick();
+    publish_render_snapshot_locked();
+
+    match_started_ = true;
+    note_sim_tick_completed();
+    return true;
+}
+
+bool LockstepSession::try_advance_unopposed_tick()
+{
+    const std::uint64_t execute_tick = next_execute_tick();
+
+    flush_local_commands_for_tick(execute_tick);
     simulation_.snapshot_world_positions_for_render();
     simulation_.tick();
     publish_render_snapshot_locked();

@@ -66,7 +66,7 @@ inline constexpr std::uint32_t LOCKSTEP_RECONNECT_INTERVAL_MS = 1500U;
 // Abandon an in-flight client connect that never reaches CONNECTED.
 inline constexpr std::uint32_t LOCKSTEP_RECONNECT_CONNECT_TIMEOUT_MS = 5000U;
 inline constexpr std::uint32_t LOCKSTEP_RECONNECT_REQUEST_RETRY_MS = 2000U;
-inline constexpr std::uint32_t LOCKSTEP_RECONNECT_SNAPSHOT_DEBOUNCE_MS = 500U;
+inline constexpr std::uint32_t LOCKSTEP_RECONNECT_SNAPSHOT_DEBOUNCE_MS = 2000U;
 inline constexpr std::uint32_t LOCKSTEP_RESYNC_READY_RETRY_MS = 500U;
 inline constexpr std::uint32_t LOCKSTEP_RESYNC_READY_RETRY_WINDOW_MS = 10000U;
 // If ResyncReady never lands, abort the handshake so host/peers are not stuck forever.
@@ -106,5 +106,7 @@ inline constexpr std::uint16_t LOCKSTEP_4_RECONNECT_SMOKE_PORT = 27207U;
 inline constexpr std::uint64_t LOCKSTEP_4_RECONNECT_WARMUP_TICKS = 25U;
 inline constexpr std::uint64_t LOCKSTEP_4_RECONNECT_AI_TICKS = 20U;
 inline constexpr std::uint64_t LOCKSTEP_4_RECONNECT_LIVE_TICKS = 25U;
+inline constexpr std::uint8_t MATCH_PAUSE_FLAG_RUNNING = 0U;
+inline constexpr std::uint8_t MATCH_PAUSE_FLAG_PAUSED = 1U;
 
 } // namespace aoa::net::constants

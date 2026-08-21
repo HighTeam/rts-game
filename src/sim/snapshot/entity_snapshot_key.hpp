@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/grid.hpp"
+
 #include <cstdint>
 #include <entt/entt.hpp>
 #include <optional>
@@ -67,6 +69,11 @@ void mix_entity_snapshot_key(std::uint64_t& hash, const EntitySnapshotKey& key);
 
 void annotate_command_entity_keys(entt::registry& registry, player::PlayerCommand& command);
 
+[[nodiscard]] entt::entity find_owned_building_at_cell(
+    entt::registry& registry,
+    std::uint8_t player_slot,
+    core::GridPos cell);
+
 void resolve_command_entity_ids(entt::registry& registry, player::PlayerCommand& command);
 
 void assign_snapshot_identities(entt::registry& registry);
@@ -80,11 +87,10 @@ void assign_snapshot_identities(entt::registry& registry);
     const EntitySnapshotCategory category);
 
 void set_entity_snapshot_identity(
-
     entt::registry& registry,
-
     const entt::entity entity,
-
     const EntitySnapshotKey key);
+
+void refresh_unit_sex_from_identity(entt::registry& registry, entt::entity entity);
 
 } // namespace aoa::sim::snapshot

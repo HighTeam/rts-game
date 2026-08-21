@@ -68,7 +68,7 @@ namespace {
 
 constexpr std::uint32_t SNAPSHOT_MAGIC = 0x414F4153U; // AOAS
 
-constexpr std::uint16_t SNAPSHOT_VERSION = 21U;
+constexpr std::uint16_t SNAPSHOT_VERSION = 25U;
 
 
 
@@ -552,6 +552,8 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
     if (registry.any_of<components::Projectile>(entity)) {
         const auto& projectile = registry.get<components::Projectile>(entity);
         record.carried_wood = projectile.pierce_damage;
+        record.carried_food = projectile.is_arrow ? 1 : 0;
+        record.carried_money = static_cast<int>(projectile.reveal_to_slot);
         if (projectile.target != entt::null) {
             const auto target_key = snapshot::compute_entity_snapshot_key(registry, projectile.target);
             if (target_key.has_value()) {
@@ -1314,37 +1316,15 @@ entt::entity ensure_entity_for_record(
 
 
 
-        components::Stockpile starting_stockpile{};
-
-        if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::Stockpile)) != 0U) {
-
-            starting_stockpile.wood = record.stockpile_wood;
-
-            starting_stockpile.food = record.stockpile_food;
-
-            starting_stockpile.money = record.stockpile_money;
-
-            starting_stockpile.mana = record.stockpile_mana;
-
-        }
-
-
-
         const bool under_construction =
             (record.flags & static_cast<std::uint16_t>(EntityStateFlags::UnderConstruction)) != 0U;
 
         return spawn::spawn_player_town_center(
-
             registry,
-
             *town_center_archetype,
-
             record.grid_cell,
-
             record.key.player_slot,
-
-            starting_stockpile,
-
+            components::Stockpile{},
             under_construction);
 
     }
@@ -1990,6 +1970,9 @@ void apply_entity_attack_orders(entt::registry& registry, const EntityStateRecor
     if (registry.any_of<components::Projectile>(entity)) {
         auto& projectile = registry.get<components::Projectile>(entity);
         projectile.pierce_damage = record.carried_wood;
+        projectile.is_arrow = record.carried_food != 0;
+        projectile.reveal_to_slot = static_cast<std::uint8_t>(
+            std::clamp(record.carried_money, 0, 255));
         if ((record.flags & static_cast<std::uint16_t>(EntityStateFlags::AttackOrder)) != 0U) {
             projectile.target =
                 snapshot::resolve_entity_snapshot_key(registry, record.attack_target_key);
@@ -2143,6 +2126,12 @@ struct DecodedSnapshot {
         }
     }
 
+    for (std::uint8_t& civ : decoded.metadata.player_civilizations) {
+        if (!read_pod(cursor, civ)) {
+            return std::nullopt;
+        }
+    }
+
     for (std::uint8_t& side : decoded.metadata.player_side_indices) {
         if (!read_pod(cursor, side)) {
             return std::nullopt;
@@ -2161,10 +2150,66 @@ struct DecodedSnapshot {
         }
     }
 
+    for (std::uint8_t& trades : decoded.metadata.player_trades) {
+        if (!read_pod(cursor, trades)) {
+            return std::nullopt;
+        }
+    }
+
     for (std::uint8_t& built_mill : decoded.metadata.player_built_mill) {
         if (!read_pod(cursor, built_mill)) {
             return std::nullopt;
         }
+    }
+
+    for (std::uint8_t& mask : decoded.metadata.player_ally_mask) {
+        if (!read_pod(cursor, mask)) {
+            return std::nullopt;
+        }
+    }
+
+    for (std::uint8_t& victory : decoded.metadata.player_ally_victory) {
+        if (!read_pod(cursor, victory)) {
+            return std::nullopt;
+        }
+    }
+
+    if (!read_pod(cursor, decoded.metadata.block_team_changes)) {
+        return std::nullopt;
+    }
+
+    for (auto& stockpile : decoded.metadata.player_stockpiles) {
+        if (!read_pod(cursor, stockpile.wood) || !read_pod(cursor, stockpile.food)
+            || !read_pod(cursor, stockpile.money) || !read_pod(cursor, stockpile.mana)) {
+            return std::nullopt;
+        }
+    }
+
+    for (auto& stats : decoded.metadata.player_stats) {
+        if (!read_pod(cursor, stats.units_created) || !read_pod(cursor, stats.units_lost)
+            || !read_pod(cursor, stats.units_killed) || !read_pod(cursor, stats.buildings_created)
+            || !read_pod(cursor, stats.buildings_lost)
+            || !read_pod(cursor, stats.buildings_destroyed) || !read_pod(cursor, stats.wood_collected)
+            || !read_pod(cursor, stats.food_collected) || !read_pod(cursor, stats.money_collected)
+            || !read_pod(cursor, stats.mana_collected) || !read_pod(cursor, stats.trades_sent)
+            || !read_pod(cursor, stats.trades_received)) {
+            return std::nullopt;
+        }
+    }
+
+    std::uint32_t flare_count = 0U;
+    if (!read_pod(cursor, flare_count)) {
+        return std::nullopt;
+    }
+    decoded.metadata.attack_reveal_flares.reserve(flare_count);
+    for (std::uint32_t index = 0U; index < flare_count; ++index) {
+        components::AttackRevealFlare flare{};
+        if (!read_pod(cursor, flare.x) || !read_pod(cursor, flare.y) || !read_pod(cursor, flare.width)
+            || !read_pod(cursor, flare.height) || !read_pod(cursor, flare.viewer_slot)
+            || !read_pod(cursor, flare.ticks_remaining)) {
+            return std::nullopt;
+        }
+        decoded.metadata.attack_reveal_flares.push_back(flare);
     }
 
 
@@ -2613,11 +2658,20 @@ SimSnapshot Simulation::export_snapshot() const
 
         snapshot.player_ages = session.player_ages;
 
+        snapshot.player_civilizations = session.player_civilizations;
+
         snapshot.player_side_indices = session.player_side_indices;
 
         snapshot.player_cartography = session.player_cartography;
         snapshot.player_spy = session.player_spy;
+        snapshot.player_trades = session.player_trades;
         snapshot.player_built_mill = session.player_built_mill;
+        snapshot.player_ally_mask = session.player_ally_mask;
+        snapshot.player_ally_victory = session.player_ally_victory;
+        snapshot.block_team_changes = session.block_team_changes ? 1U : 0U;
+        snapshot.player_stockpiles = session.player_stockpiles;
+        snapshot.player_stats = session.player_stats;
+        snapshot.attack_reveal_flares = session.attack_reveal_flares;
 
     }
 
@@ -2651,7 +2705,9 @@ bool Simulation::apply_snapshot(const std::span<const std::byte> snapshot_bytes)
 
 
 
-std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
+std::vector<std::byte> encode_sim_snapshot(
+    const Simulation& simulation,
+    const bool include_input_log)
 
 {
 
@@ -2716,6 +2772,10 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
         append_pod(out, age);
     }
 
+    for (const std::uint8_t civ : metadata.player_civilizations) {
+        append_pod(out, civ);
+    }
+
     for (const std::uint8_t side : metadata.player_side_indices) {
         append_pod(out, side);
     }
@@ -2728,8 +2788,55 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
         append_pod(out, spy);
     }
 
+    for (const std::uint8_t trades : metadata.player_trades) {
+        append_pod(out, trades);
+    }
+
     for (const std::uint8_t built_mill : metadata.player_built_mill) {
         append_pod(out, built_mill);
+    }
+
+    for (const std::uint8_t mask : metadata.player_ally_mask) {
+        append_pod(out, mask);
+    }
+
+    for (const std::uint8_t victory : metadata.player_ally_victory) {
+        append_pod(out, victory);
+    }
+
+    append_pod(out, metadata.block_team_changes);
+
+    for (const auto& stockpile : metadata.player_stockpiles) {
+        append_pod(out, stockpile.wood);
+        append_pod(out, stockpile.food);
+        append_pod(out, stockpile.money);
+        append_pod(out, stockpile.mana);
+    }
+
+    for (const auto& stats : metadata.player_stats) {
+        append_pod(out, stats.units_created);
+        append_pod(out, stats.units_lost);
+        append_pod(out, stats.units_killed);
+        append_pod(out, stats.buildings_created);
+        append_pod(out, stats.buildings_lost);
+        append_pod(out, stats.buildings_destroyed);
+        append_pod(out, stats.wood_collected);
+        append_pod(out, stats.food_collected);
+        append_pod(out, stats.money_collected);
+        append_pod(out, stats.mana_collected);
+        append_pod(out, stats.trades_sent);
+        append_pod(out, stats.trades_received);
+    }
+
+    const auto flare_count = static_cast<std::uint32_t>(metadata.attack_reveal_flares.size());
+    append_pod(out, flare_count);
+    for (const auto& flare : metadata.attack_reveal_flares) {
+        append_pod(out, flare.x);
+        append_pod(out, flare.y);
+        append_pod(out, flare.width);
+        append_pod(out, flare.height);
+        append_pod(out, flare.viewer_slot);
+        append_pod(out, flare.ticks_remaining);
     }
 
 
@@ -2754,10 +2861,13 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
 
 
-    const auto command_count = static_cast<std::uint32_t>(metadata.input_log.size());
+    const auto command_count = include_input_log
+        ? static_cast<std::uint32_t>(metadata.input_log.size())
+        : 0U;
 
     append_pod(out, command_count);
 
+    if (include_input_log) {
     for (const player::PlayerCommand& command : metadata.input_log) {
         player::PlayerCommand snapshot_command = command;
         bool needs_key_annotation = snapshot_command.unit_keys.size() != snapshot_command.unit_ids.size();
@@ -2824,6 +2934,7 @@ std::vector<std::byte> encode_sim_snapshot(const Simulation& simulation)
 
         out.insert(out.end(), command_bytes.begin(), command_bytes.end());
 
+    }
     }
 
 
@@ -3136,11 +3247,20 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
     session.player_ages = decoded->metadata.player_ages;
 
+    session.player_civilizations = decoded->metadata.player_civilizations;
+
     session.player_side_indices = decoded->metadata.player_side_indices;
 
     session.player_cartography = decoded->metadata.player_cartography;
     session.player_spy = decoded->metadata.player_spy;
+    session.player_trades = decoded->metadata.player_trades;
     session.player_built_mill = decoded->metadata.player_built_mill;
+    session.player_ally_mask = decoded->metadata.player_ally_mask;
+    session.player_ally_victory = decoded->metadata.player_ally_victory;
+    session.block_team_changes = decoded->metadata.block_team_changes != 0U;
+    session.player_stockpiles = decoded->metadata.player_stockpiles;
+    session.player_stats = decoded->metadata.player_stats;
+    session.attack_reveal_flares = decoded->metadata.attack_reveal_flares;
 
     session.ai_control_transitions = decoded->metadata.ai_control_transitions;
 
@@ -3177,6 +3297,12 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
     normalize_registry_for_snapshot(simulation.registry());
 
+    // spawn_* used above calls note_unit/building_created. Restore the snapshot
+    // counters so reconnect hash matches the host that encoded this state.
+    session.player_stats = decoded->metadata.player_stats;
+    session.player_stockpiles = decoded->metadata.player_stockpiles;
+    session.player_built_mill = decoded->metadata.player_built_mill;
+
     simulation.set_tick_count(decoded->metadata.tick_count);
 
     systems::compute_state_hash(simulation.registry());
@@ -3197,9 +3323,9 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
                   << decoded->metadata.state_hash << " actual=0x" << simulation.state_hash() << std::dec
 
-                  << " entities=" << decoded->entity_states.size() << '\n';
+                  << " entities=" << decoded->entity_states.size()
 
-        return false;
+                  << " — keeping restored host state\n";
 
     }
 

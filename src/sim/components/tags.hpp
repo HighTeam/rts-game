@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/constants.hpp"
+
 #include <cstdint>
 #include <entt/entt.hpp>
 #include <vector>
@@ -34,6 +36,9 @@ struct MoneyDropOffTag {};
 struct WorkerUnitTag {};
 struct MilitiaUnitTag {};
 struct MageUnitTag {};
+struct UnitSex {
+    constants::UnitSex value{constants::UnitSex::Male};
+};
 struct UnderConstructionTag {};
 struct GarrisonedTag {
     entt::entity building{entt::null};

@@ -682,6 +682,29 @@ void apply_menu_action(MenuContext& context, const MenuButtonHit& hit)
             context.lobby->set_settings(context.state.host_settings);
         }
         return;
+    case MainMenuAction::CycleBlockTeamChanges:
+        context.state.host_settings.block_team_changes =
+            !context.state.host_settings.block_team_changes;
+        if (context.lobby && context.lobby->is_host()) {
+            context.lobby->set_settings(context.state.host_settings);
+        }
+        return;
+    case MainMenuAction::CycleAllowSpectators:
+        context.state.host_settings.allow_spectators =
+            !context.state.host_settings.allow_spectators;
+        if (context.lobby && context.lobby->is_host()) {
+            prepare_host_settings(context.state);
+            context.lobby->set_settings(context.state.host_settings);
+        }
+        return;
+    case MainMenuAction::ReconnectMatch:
+        if (!context.state.reconnect_available) {
+            return;
+        }
+        context.state.join_address = context.state.reconnect_address;
+        context.state.join_port = std::to_string(context.state.reconnect_port);
+        start_connecting(context);
+        return;
     case MainMenuAction::CycleVictoryCondition:
         return;
     case MainMenuAction::CycleSlotKind:
@@ -997,13 +1020,29 @@ void handle_settings_click(MenuContext& context, const float mouse_x, const floa
         return;
     }
 
+    if (action == GameMenuAction::CycleBuildingRangeDisplay) {
+        context.state.settings.building_range_display = next_building_range_display(
+            context.state.settings.building_range_display);
+        context.shell.building_range_display = context.state.settings.building_range_display;
+        save_app_settings(context.shell);
+        return;
+    }
+
+    if (action == GameMenuAction::CycleHudStyle) {
+        context.state.settings.hud_style = next_hud_style(context.state.settings.hud_style);
+        context.shell.hud_style = context.state.settings.hud_style;
+        save_app_settings(context.shell);
+        return;
+    }
+
     if (action == GameMenuAction::SettingsBack) {
         go_back_one_screen(context);
         return;
     }
 
     if (context.state.settings.screen == GameMenuScreen::SettingsGame
-        && scroll_speed_slider_rect(window_size).contains(mouse_x, mouse_y)) {
+        && scroll_speed_slider_rect(window_size, context.state.settings.center_settings_panel)
+               .contains(mouse_x, mouse_y)) {
         context.state.settings.dragging_slider = GameMenuSlider::ScrollSpeed;
         apply_slider_drag(context.state.settings, window_size, mouse_x);
         context.shell.scroll_speed = context.state.settings.scroll_speed;
@@ -1014,7 +1053,8 @@ void handle_settings_click(MenuContext& context, const float mouse_x, const floa
         return;
     }
 
-    const GameMenuSlider slider = hit_test_volume_slider(window_size, mouse_x, mouse_y);
+    const GameMenuSlider slider = hit_test_volume_slider(
+        window_size, mouse_x, mouse_y, context.state.settings.center_settings_panel);
     if (slider == GameMenuSlider::None) {
         return;
     }
@@ -1190,7 +1230,25 @@ void handle_menu_event(MenuContext& context, const sf::Event& event)
     const net::LobbyStateMessage& lobby_view = lobby.view();
     std::array<std::uint8_t, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> lobby_to_match{};
     lobby_to_match.fill(0xFFU);
+    setup.slot_is_spectator.fill(false);
     std::uint8_t compact = 0U;
+    const auto compact_slot = [&](const std::uint8_t slot, const bool spectator) {
+        const net::LobbySlotInfo& info = lobby_view.slots[slot];
+        lobby_to_match[slot] = compact;
+        setup.slot_colors[compact] = info.color;
+        setup.slot_teams[compact] = info.team;
+        setup.slot_is_ai[compact] = !spectator && info.kind == net::LobbySlotKind::Ai;
+        setup.slot_is_spectator[compact] = spectator;
+        setup.player_names[compact] = info.name.empty()
+            ? (spectator
+                ? ("Spectator " + std::to_string(static_cast<int>(compact) + 1))
+                : ("Player " + std::to_string(static_cast<int>(compact) + 1)))
+            : info.name;
+        setup.reconnect_tokens[compact] =
+            reconnect_token_for_slot(compact, setup.player_names[compact]);
+        ++compact;
+    };
+
     for (std::uint8_t slot = 0U; slot < lobby_view.slots.size(); ++slot) {
         const net::LobbySlotInfo& info = lobby_view.slots[slot];
         if (info.kind == net::LobbySlotKind::Spectator) {
@@ -1205,19 +1263,26 @@ void handle_menu_event(MenuContext& context, const sf::Event& event)
             continue;
         }
 
-        lobby_to_match[slot] = compact;
-        setup.slot_colors[compact] = info.color;
-        setup.slot_teams[compact] = info.team;
-        setup.slot_is_ai[compact] = info.kind == net::LobbySlotKind::Ai;
-        setup.player_names[compact] = info.name.empty()
-            ? ("Player " + std::to_string(static_cast<int>(compact) + 1))
-            : info.name;
-        setup.reconnect_tokens[compact] =
-            reconnect_token_for_slot(compact, setup.player_names[compact]);
-        ++compact;
+        compact_slot(slot, false);
+    }
+
+    setup.playing_player_count = compact == 0U ? 1U : compact;
+
+    if (settings.allow_spectators) {
+        for (std::uint8_t slot = 0U; slot < lobby_view.slots.size(); ++slot) {
+            const net::LobbySlotInfo& info = lobby_view.slots[slot];
+            if (!info.occupied || info.kind != net::LobbySlotKind::Spectator) {
+                continue;
+            }
+
+            compact_slot(slot, true);
+        }
     }
 
     setup.player_count = compact < 2U ? 2U : compact;
+    setup.local_is_spectator =
+        lobby.local_slot() < lobby_view.slots.size()
+        && lobby_view.slots[lobby.local_slot()].kind == net::LobbySlotKind::Spectator;
     const std::uint8_t local_match_slot = lobby.local_slot() < lobby_to_match.size()
         ? lobby_to_match[lobby.local_slot()]
         : 0U;
@@ -1348,6 +1413,9 @@ MenuResult run_main_menu(
     state.settings.music_volume = shell.music_volume;
     state.settings.sfx_volume = shell.sfx_volume;
     state.settings.scroll_speed = shell.scroll_speed;
+    state.settings.building_range_display = shell.building_range_display;
+    state.settings.hud_style = shell.hud_style;
+    state.settings.center_settings_panel = true;
     state.settings.fullscreen = display_settings.fullscreen;
     state.settings.mouse_capture = display_settings.mouse_capture;
     state.settings.vsync = display_settings.vsync;
@@ -1424,6 +1492,8 @@ MenuResult run_main_menu(
     shell.music_volume = menu_audio.music_volume();
     shell.sfx_volume = menu_audio.sfx_volume();
     shell.scroll_speed = state.settings.scroll_speed;
+    shell.building_range_display = state.settings.building_range_display;
+    shell.hud_style = state.settings.hud_style;
     return result;
 }
 
@@ -1434,7 +1504,8 @@ MenuResult run_main_menu(
 {
     display_settings.title = std::string(constants::WINDOW_TITLE);
     display_settings.context_settings = sf::ContextSettings{
-        .depthBits = 24U,
+        .depthBits = constants::OPENGL_DEPTH_BITS,
+        .stencilBits = constants::OPENGL_STENCIL_BITS,
         .majorVersion = static_cast<unsigned int>(constants::OPENGL_MAJOR_VERSION),
         .minorVersion = static_cast<unsigned int>(constants::OPENGL_MINOR_VERSION),
     };
@@ -1519,8 +1590,11 @@ int run_app_shell()
         }
 
         const auto& match = menu_result.match_setup;
+        const std::uint8_t map_players = match.playing_player_count == 0U
+            ? match.player_count
+            : match.playing_player_count;
         sim::Simulation simulation{sim::map::make_generation_config(
-            match.player_count,
+            map_players,
             match.map_seed,
             0U,
             match.pattern_payload)};
@@ -1529,7 +1603,8 @@ int run_app_shell()
                 display_settings,
                 simulation,
                 menu_result.match_setup,
-                shell_settings)
+                shell_settings,
+                &state)
             == AppFlow::ExitApp) {
             break;
         }

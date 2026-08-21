@@ -870,8 +870,7 @@ bool try_begin_next_path_step(
     math::Fixed to_y = math::tile_center_coord(path_target.y);
     detail::path_step_destination(path, path_target, is_last_step, to_x, to_y);
     if (is_world_position_solid_blocked(
-            registry, map, components::WorldPosition{to_x, to_y}, entity, false)
-        || is_unit_radius_blocked_at_world(registry, to_x, to_y, entity)) {
+            registry, map, components::WorldPosition{to_x, to_y}, entity, false)) {
         return false;
     }
 
@@ -969,17 +968,7 @@ bool try_begin_next_path_step(
     const math::Fixed point_x,
     const math::Fixed point_y)
 {
-    if (!is_unit_radius_blocked_at_world(registry, point_x, point_y, mover)) {
-        return false;
-    }
-
-    const entt::entity blocker = find_radius_blocking_unit(registry, point_x, point_y, mover);
-    if (blocker == entt::null) {
-        return true;
-    }
-
-    // Higher snapshot key yields: allow the lower-key mover to advance.
-    return !snapshot::compare_entities_for_deterministic_iteration(registry, mover, blocker);
+    return is_unit_radius_blocked_at_world(registry, point_x, point_y, mover);
 }
 
 bool try_divert_around_block(
@@ -1773,31 +1762,17 @@ void run_worker_deposit_system(entt::registry& registry)
         int deposited_food = 0;
         int deposited_money = 0;
         if (registry.any_of<components::TownCenterTag>(depot)
-            && registry.any_of<components::Stockpile>(depot)) {
-            auto& stockpile = registry.get<components::Stockpile>(depot);
+            || registry.any_of<components::WoodDropOffTag>(depot)
+            || registry.any_of<components::FoodDropOffTag>(depot)
+            || registry.any_of<components::MoneyDropOffTag>(depot)) {
             deposited_wood = carried_wood.amount;
             deposited_food = carried_food.amount;
             deposited_money = carried_money.amount;
-            stockpile.wood += deposited_wood;
-            stockpile.food += deposited_food;
-            stockpile.money += deposited_money;
-            carried_wood.amount = 0;
-            carried_food.amount = 0;
-            carried_money.amount = 0;
-        }
-        else if (registry.any_of<components::WoodDropOffTag>(depot) && carried_wood.amount > 0) {
-            deposited_wood = carried_wood.amount;
             player::add_player_wood(registry, player_slot, deposited_wood);
-            carried_wood.amount = 0;
-        }
-        else if (registry.any_of<components::FoodDropOffTag>(depot) && carried_food.amount > 0) {
-            deposited_food = carried_food.amount;
             player::add_player_food(registry, player_slot, deposited_food);
-            carried_food.amount = 0;
-        }
-        else if (registry.any_of<components::MoneyDropOffTag>(depot) && carried_money.amount > 0) {
-            deposited_money = carried_money.amount;
             player::add_player_money(registry, player_slot, deposited_money);
+            carried_wood.amount = 0;
+            carried_food.amount = 0;
             carried_money.amount = 0;
         }
         else {
@@ -2202,12 +2177,111 @@ void run_builder_system(entt::registry& registry, const components::MapGrid& map
             continue;
         }
 
+        const bool first_construction_hit =
+            building_health.current == math::Fixed::from_int(1);
+        if (first_construction_hit) {
+            components::BuildingFootprint start_footprint{};
+            if (registry.any_of<components::BuildingFootprint>(building)) {
+                start_footprint = registry.get<components::BuildingFootprint>(building);
+            }
+            start_footprint = components::effective_building_footprint(
+                start_footprint,
+                registry.any_of<components::TownCenterTag>(building));
+            const auto& start_anchor = registry.get<components::GridPosition>(building);
+            bool units_on_shadow = false;
+            const auto blocking_units =
+                registry.view<components::UnitTag, components::Health, components::GridPosition>();
+            for (const entt::entity occupant : blocking_units) {
+                if (blocking_units.get<components::Health>(occupant).current.raw() <= 0) {
+                    continue;
+                }
+
+                if (registry.any_of<components::BuildOrder>(occupant)
+                    && registry.get<components::BuildOrder>(occupant).building == building) {
+                    continue;
+                }
+
+                if (components::building_contains_cell(
+                        start_anchor,
+                        start_footprint,
+                        blocking_units.get<components::GridPosition>(occupant).cell)) {
+                    units_on_shadow = true;
+                    break;
+                }
+            }
+
+            if (units_on_shadow) {
+                build_order.hit_cooldown_ticks = constants::WORKER_BUILD_HIT_INTERVAL_TICKS;
+                continue;
+            }
+        }
+
         building_health.current =
             building_health.current + math::Fixed::from_int(constants::WORKER_BUILD_HP_PER_HIT);
         if (building_health.current > building_health.max) {
             building_health.current = building_health.max;
         }
         build_order.hit_cooldown_ticks = constants::WORKER_BUILD_HIT_INTERVAL_TICKS;
+
+        if (first_construction_hit) {
+            const auto& winner_anchor = registry.get<components::GridPosition>(building);
+            components::BuildingFootprint winner_footprint{};
+            if (registry.any_of<components::BuildingFootprint>(building)) {
+                winner_footprint = registry.get<components::BuildingFootprint>(building);
+            }
+            winner_footprint = components::effective_building_footprint(
+                winner_footprint,
+                registry.any_of<components::TownCenterTag>(building));
+            const std::uint8_t winner_slot = components::entity_player_slot(registry, building);
+            std::vector<entt::entity> to_refund{};
+            const auto other_view = registry.view<
+                components::BuildingTag,
+                components::GridPosition,
+                components::Health,
+                components::UnderConstructionTag>();
+            for (const entt::entity other : other_view) {
+                if (other == building) {
+                    continue;
+                }
+
+                if (!is_unstarted_construction(registry, other)) {
+                    continue;
+                }
+
+                if (components::entity_player_slot(registry, other) == winner_slot) {
+                    continue;
+                }
+
+                components::BuildingFootprint other_footprint{};
+                if (registry.any_of<components::BuildingFootprint>(other)) {
+                    other_footprint = registry.get<components::BuildingFootprint>(other);
+                }
+                other_footprint = components::effective_building_footprint(
+                    other_footprint,
+                    registry.any_of<components::TownCenterTag>(other));
+                const auto& other_anchor = other_view.get<components::GridPosition>(other);
+                bool overlaps = false;
+                for (int y = 0; y < winner_footprint.height && !overlaps; ++y) {
+                    for (int x = 0; x < winner_footprint.width; ++x) {
+                        if (components::building_contains_cell(
+                                other_anchor,
+                                other_footprint,
+                                {winner_anchor.cell.x + x, winner_anchor.cell.y + y})) {
+                            overlaps = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (overlaps) {
+                    to_refund.push_back(other);
+                }
+            }
+
+            for (const entt::entity other : to_refund) {
+                player::issue_destroy_building_order(registry, other);
+            }
+        }
 
         if (building_health.current < building_health.max) {
             continue;
@@ -2402,15 +2476,55 @@ void run_garrison_enter_system(entt::registry& registry)
     }
 }
 
+[[nodiscard]] math::Fixed entity_world_x(const entt::registry& registry, const entt::entity entity)
+{
+    if (registry.any_of<components::WorldPosition>(entity)) {
+        return registry.get<components::WorldPosition>(entity).x;
+    }
+
+    if (registry.any_of<components::GridPosition>(entity)) {
+        const auto& pos = registry.get<components::GridPosition>(entity);
+        const components::BuildingFootprint footprint =
+            registry.any_of<components::BuildingFootprint>(entity)
+            ? registry.get<components::BuildingFootprint>(entity)
+            : components::BuildingFootprint{1, 1};
+        return math::Fixed::from_int(pos.cell.x)
+            + math::Fixed::from_int(footprint.width) / math::Fixed::from_int(2);
+    }
+
+    return {};
+}
+
+[[nodiscard]] math::Fixed entity_world_y(const entt::registry& registry, const entt::entity entity)
+{
+    if (registry.any_of<components::WorldPosition>(entity)) {
+        return registry.get<components::WorldPosition>(entity).y;
+    }
+
+    if (registry.any_of<components::GridPosition>(entity)) {
+        const auto& pos = registry.get<components::GridPosition>(entity);
+        const components::BuildingFootprint footprint =
+            registry.any_of<components::BuildingFootprint>(entity)
+            ? registry.get<components::BuildingFootprint>(entity)
+            : components::BuildingFootprint{1, 1};
+        return math::Fixed::from_int(pos.cell.y)
+            + math::Fixed::from_int(footprint.height) / math::Fixed::from_int(2);
+    }
+
+    return {};
+}
+
 [[nodiscard]] entt::entity find_nearest_ranged_target(
     entt::registry& registry,
     const entt::entity attacker,
-    const core::GridPos origin,
+    const components::GridPosition& origin,
     const components::BuildingFootprint& footprint,
-    const int attack_range)
+    const int attack_range,
+    const int blind_range)
 {
     entt::entity best = entt::null;
-    int best_distance = attack_range + 1;
+    math::Fixed best_distance_sq = math::Fixed::from_int(attack_range + 1)
+        * math::Fixed::from_int(attack_range + 1);
     const std::uint8_t owner_slot = components::entity_player_slot(registry, attacker);
     const auto target_view = registry.view<components::Health, components::GridPosition>();
     for (const entt::entity candidate : target_view) {
@@ -2431,18 +2545,17 @@ void run_garrison_enter_system(entt::registry& registry)
             continue;
         }
 
-        const auto& target_pos = target_view.get<components::GridPosition>(candidate);
-        const components::BuildingFootprint target_footprint =
-            registry.any_of<components::BuildingFootprint>(candidate)
-            ? registry.get<components::BuildingFootprint>(candidate)
-            : components::BuildingFootprint{1, 1};
-        const int distance = components::chebyshev_distance_to_footprint(
-            origin,
-            target_pos,
-            target_footprint);
-        (void)footprint;
-        if (distance <= attack_range && distance < best_distance) {
-            best_distance = distance;
+        const math::Fixed target_x = entity_world_x(registry, candidate);
+        const math::Fixed target_y = entity_world_y(registry, candidate);
+        if (!components::in_circle_attack_range(
+                target_x, target_y, origin, footprint, attack_range, blind_range)) {
+            continue;
+        }
+
+        const math::Fixed dist_sq = components::euclidean_distance_sq_to_footprint_center(
+            target_x, target_y, origin, footprint);
+        if (dist_sq < best_distance_sq) {
+            best_distance_sq = dist_sq;
             best = candidate;
         }
     }
@@ -2450,10 +2563,51 @@ void run_garrison_enter_system(entt::registry& registry)
     return best;
 }
 
-void fire_building_rock(
+void pulse_attack_reveal(
     entt::registry& registry,
     const entt::entity building,
-    const data::ArchetypeDefinition& definition)
+    const std::uint8_t viewer_slot)
+{
+    if (viewer_slot >= static_cast<std::uint8_t>(constants::MAX_PLAYER_SLOTS)) {
+        return;
+    }
+
+    components::MatchSession* session = match_session(registry);
+    if (session == nullptr || !registry.any_of<components::GridPosition>(building)) {
+        return;
+    }
+
+    const auto& anchor = registry.get<components::GridPosition>(building);
+    const components::BuildingFootprint footprint =
+        registry.any_of<components::BuildingFootprint>(building)
+        ? registry.get<components::BuildingFootprint>(building)
+        : components::BuildingFootprint{1, 1};
+    for (auto& flare : session->attack_reveal_flares) {
+        if (flare.viewer_slot == viewer_slot && flare.x == static_cast<std::int16_t>(anchor.cell.x)
+            && flare.y == static_cast<std::int16_t>(anchor.cell.y)) {
+            flare.ticks_remaining =
+                static_cast<std::uint16_t>(constants::ATTACK_REVEAL_DURATION_TICKS);
+            flare.width = static_cast<std::uint8_t>(std::max(1, footprint.width));
+            flare.height = static_cast<std::uint8_t>(std::max(1, footprint.height));
+            return;
+        }
+    }
+
+    session->attack_reveal_flares.push_back(components::AttackRevealFlare{
+        static_cast<std::int16_t>(anchor.cell.x),
+        static_cast<std::int16_t>(anchor.cell.y),
+        static_cast<std::uint8_t>(std::max(1, footprint.width)),
+        static_cast<std::uint8_t>(std::max(1, footprint.height)),
+        viewer_slot,
+        static_cast<std::uint16_t>(constants::ATTACK_REVEAL_DURATION_TICKS),
+    });
+}
+
+void fire_building_projectile(
+    entt::registry& registry,
+    const entt::entity building,
+    const data::ArchetypeDefinition& definition,
+    const bool is_arrow)
 {
     if (definition.pierce_attack <= 0 || definition.attack_range <= 0) {
         return;
@@ -2474,12 +2628,14 @@ void fire_building_rock(
         registry.any_of<components::BuildingFootprint>(building)
         ? registry.get<components::BuildingFootprint>(building)
         : components::BuildingFootprint{};
+    const int blind_range = is_arrow ? constants::TOWER_BLIND_RANGE_TILES : 0;
     const entt::entity target = find_nearest_ranged_target(
         registry,
         building,
-        anchor.cell,
+        anchor,
         footprint,
-        definition.attack_range);
+        definition.attack_range,
+        blind_range);
     if (target == entt::null) {
         return;
     }
@@ -2488,13 +2644,17 @@ void fire_building_rock(
         math::Fixed::from_int(anchor.cell.x) + math::Fixed::from_int(footprint.width) / math::Fixed::from_int(2);
     const math::Fixed spawn_y =
         math::Fixed::from_int(anchor.cell.y) + math::Fixed::from_int(footprint.height) / math::Fixed::from_int(2);
+    const std::uint8_t viewer_slot = components::entity_player_slot(registry, target);
     (void)spawn::spawn_rock_projectile(
         registry,
         spawn_x,
         spawn_y,
         target,
         components::entity_player_slot(registry, building),
-        definition.pierce_attack);
+        definition.pierce_attack,
+        is_arrow,
+        viewer_slot);
+    pulse_attack_reveal(registry, building, viewer_slot);
     cooldown.ticks_remaining = definition.attack_cooldown_ticks > 0
         ? definition.attack_cooldown_ticks
         : constants::TOWN_CENTER_ATTACK_COOLDOWN_TICKS;
@@ -2543,7 +2703,7 @@ void run_building_autoattack_system(entt::registry& registry, const components::
             continue;
         }
 
-        fire_building_rock(registry, building, *definition);
+        fire_building_projectile(registry, building, *definition, is_tower);
     }
 }
 
@@ -2752,6 +2912,18 @@ void run_building_process_system(entt::registry& registry)
             }
             break;
         }
+        case components::BuildingProcessKind::ResearchTrades: {
+            const entt::entity world = find_world_entity(registry);
+            if (world != entt::null && registry.any_of<components::MatchSession>(world)) {
+                auto& session = registry.get<components::MatchSession>(world);
+                const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+                if (player_slot < session.player_trades.size()) {
+                    session.player_trades[player_slot] = 1U;
+                }
+                completed = true;
+            }
+            break;
+        }
         case components::BuildingProcessKind::ResearchSpy: {
             const entt::entity world = find_world_entity(registry);
             if (world != entt::null && registry.any_of<components::MatchSession>(world)) {
@@ -2919,17 +3091,59 @@ void compute_state_hash(entt::registry& registry)
         for (const std::uint8_t age : session.player_ages) {
             mix(static_cast<std::uint64_t>(age));
         }
+        for (const std::uint8_t civ : session.player_civilizations) {
+            mix(static_cast<std::uint64_t>(civ));
+        }
         for (const std::uint8_t side : session.player_side_indices) {
             mix(static_cast<std::uint64_t>(side));
         }
         for (const std::uint8_t cartography : session.player_cartography) {
             mix(static_cast<std::uint64_t>(cartography));
         }
+        for (const std::uint8_t trades : session.player_trades) {
+            mix(static_cast<std::uint64_t>(trades));
+        }
+        for (const std::uint8_t mask : session.player_ally_mask) {
+            mix(static_cast<std::uint64_t>(mask));
+        }
+        for (const std::uint8_t victory : session.player_ally_victory) {
+            mix(static_cast<std::uint64_t>(victory));
+        }
+        mix(session.block_team_changes ? 1U : 0U);
         for (const std::uint8_t spy : session.player_spy) {
             mix(static_cast<std::uint64_t>(spy));
         }
         for (const std::uint8_t built_mill : session.player_built_mill) {
             mix(static_cast<std::uint64_t>(built_mill));
+        }
+        for (const auto& stockpile : session.player_stockpiles) {
+            mix(static_cast<std::uint64_t>(stockpile.wood));
+            mix(static_cast<std::uint64_t>(stockpile.food));
+            mix(static_cast<std::uint64_t>(stockpile.money));
+            mix(static_cast<std::uint64_t>(stockpile.mana));
+        }
+        for (const auto& stats : session.player_stats) {
+            mix(static_cast<std::uint64_t>(stats.units_created));
+            mix(static_cast<std::uint64_t>(stats.units_lost));
+            mix(static_cast<std::uint64_t>(stats.units_killed));
+            mix(static_cast<std::uint64_t>(stats.buildings_created));
+            mix(static_cast<std::uint64_t>(stats.buildings_lost));
+            mix(static_cast<std::uint64_t>(stats.buildings_destroyed));
+            mix(static_cast<std::uint64_t>(stats.wood_collected));
+            mix(static_cast<std::uint64_t>(stats.food_collected));
+            mix(static_cast<std::uint64_t>(stats.money_collected));
+            mix(static_cast<std::uint64_t>(stats.mana_collected));
+            mix(static_cast<std::uint64_t>(stats.trades_sent));
+            mix(static_cast<std::uint64_t>(stats.trades_received));
+        }
+        mix(static_cast<std::uint64_t>(session.attack_reveal_flares.size()));
+        for (const auto& flare : session.attack_reveal_flares) {
+            mix(static_cast<std::uint64_t>(flare.x));
+            mix(static_cast<std::uint64_t>(flare.y));
+            mix(static_cast<std::uint64_t>(flare.width));
+            mix(static_cast<std::uint64_t>(flare.height));
+            mix(static_cast<std::uint64_t>(flare.viewer_slot));
+            mix(static_cast<std::uint64_t>(flare.ticks_remaining));
         }
     }
 
@@ -2964,6 +3178,11 @@ void compute_state_hash(entt::registry& registry)
     for (const HashableEntity& item : entities) {
         const entt::entity entity = item.entity;
         snapshot::mix_entity_snapshot_key(hash, item.key);
+
+        if (registry.any_of<components::UnitSex>(entity)) {
+            mix(static_cast<std::uint64_t>(
+                static_cast<std::uint8_t>(registry.get<components::UnitSex>(entity).value)));
+        }
 
         if (registry.any_of<components::GridPosition>(entity)) {
             const auto& pos = registry.get<components::GridPosition>(entity).cell;

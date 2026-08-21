@@ -1,7 +1,9 @@
 #pragma once
 
+#include "core/constants.hpp"
 #include "core/grid.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/snapshot/entity_snapshot_key.hpp"
 
 #include <SFML/System/Vector2.hpp>
 
@@ -44,11 +46,14 @@ struct RenderEntityPose {
     int melee_armor{0};
     int pierce_attack{0};
     int pierce_armor{0};
+    int attack_range{0};
     bool is_enemy{false};
     bool is_worker{false};
     bool is_militia{false};
     bool is_mage{false};
     bool is_projectile{false};
+    bool is_arrow{false};
+    std::uint8_t projectile_reveal_slot{constants::MATCH_WINNER_NONE};
     bool is_town_center{false};
     bool is_house{false};
     bool is_lumber_camp{false};
@@ -79,7 +84,9 @@ struct RenderEntityPose {
     int footprint_width{1};
     int footprint_height{1};
     std::uint8_t player_slot{0U};
+    constants::UnitSex unit_sex{constants::UnitSex::Male};
     std::string archetype_id{};
+    std::optional<sim::snapshot::EntitySnapshotKey> snapshot_key{};
     std::vector<core::GridPos> debug_path_cells{};
     int debug_path_next_index{0};
 };
@@ -117,6 +124,7 @@ struct SimRenderSnapshot {
     std::array<RenderHudPlayerStats, 8> hud_by_player{};
     std::array<std::uint8_t, 8> player_color_indices{0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U};
     std::array<std::uint8_t, 8> player_ages{};
+    std::array<std::uint8_t, 8> player_civilizations{};
     std::uint8_t vision_source_slots_mask{0U};
 };
 
