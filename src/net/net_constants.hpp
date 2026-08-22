@@ -94,6 +94,7 @@ inline constexpr std::uint16_t LOCKSTEP_4_SMOKE_PORT = 27202U;
 inline constexpr std::uint16_t LOCKSTEP_4_DISCONNECT_SMOKE_PORT = 27203U;
 inline constexpr std::uint64_t LOCKSTEP_4_SMOKE_TICKS = 40U;
 inline constexpr std::uint64_t LOCKSTEP_4_DISCONNECT_WARMUP_TICKS = 15U;
+inline constexpr int LOCKSTEP_4_DISCONNECT_STALL_ATTEMPTS = 500;
 inline constexpr std::uint64_t LOCKSTEP_4_DISCONNECT_LIVE_TICKS = 15U;
 inline constexpr std::uint16_t LOCKSTEP_PEER_SILENCE_SMOKE_PORT = 27204U;
 inline constexpr std::uint64_t LOCKSTEP_PEER_SILENCE_SMOKE_WARMUP_TICKS = 35U;
