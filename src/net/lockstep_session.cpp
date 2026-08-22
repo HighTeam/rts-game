@@ -2090,7 +2090,6 @@ void LockstepSession::maybe_timeout_resync_handshake()
         }
     }
 
-    reset_tick_sync_state();
     ensure_local_batch_sent(next_execute_tick());
     LockstepDebugLog::log_event(
         "resync_pending_host_timeout",
@@ -2409,9 +2408,9 @@ void LockstepSession::handle_host_player_slot_disconnected(const std::uint8_t pl
 
     handle_slot_ai_takeover(player_slot);
     broadcast_slot_ai_takeover(player_slot);
-    // Re-barrier at the current execute tick so peers that were waiting on the
-    // disconnected slot can complete without the host running a tick ahead.
-    reset_tick_sync_state();
+    // handle_slot_ai_takeover already drops the disconnected slot from the live
+    // ready mask; preserve other peers' batch-ready bits so retransmits cannot
+    // double-apply commands mid-barrier.
     ensure_local_batch_sent(next_execute_tick());
 
     push_system_chat(player_display_name(player_slot) + " has disconnected.");

@@ -1740,6 +1740,27 @@ int run_lockstep_4_disconnect_smoke()
         return 1;
     }
 
+    // Stall player slot 2 mid-barrier: host and peers 1/3 advance while P2 only
+    // polls so the host has already applied their batches for the in-flight tick.
+    for (int attempt = 0; attempt < constants::LOCKSTEP_4_DISCONNECT_STALL_ATTEMPTS; ++attempt) {
+        host.poll();
+        client_one.poll();
+        client_two.poll();
+        client_three.poll();
+
+        if (lockstep_sessions_desynced(host, client_one)
+            || lockstep_sessions_desynced(host, client_three)
+            || lockstep_sessions_desynced(client_one, client_three)) {
+            std::cerr << "lockstep-4-disconnect-smoke: desync during slot 2 stall\n";
+            EnetTransport::global_deinitialize();
+            return 1;
+        }
+
+        (void)host.try_advance_tick();
+        (void)client_one.try_advance_tick();
+        (void)client_three.try_advance_tick();
+    }
+
     const std::uint64_t tick_before_disconnect = host_simulation.tick_count();
     client_two.disconnect_transport();
 
