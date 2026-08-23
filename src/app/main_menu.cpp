@@ -1,5 +1,6 @@
 #include "app/main_menu.hpp"
 
+#include "app/text_field_edit.hpp"
 #include "core/constants.hpp"
 #include "core/runtime_paths.hpp"
 #include "render/hud_overlay.hpp"
@@ -159,6 +160,7 @@ void push_text_field(
             layout.panel.width - PADDING * 2.0F,
             ROW_HEIGHT,
         },
+        false,
     });
     cursor_y += ROW_HEIGHT + BUTTON_GAP;
 }
@@ -369,11 +371,6 @@ void cycle_singleplayer_slot_kind(MainMenuState& state, const std::uint8_t slot)
     const auto& kind_ref = state.slot_kinds[slot];
     if (kind_ref == SingleplayerSlotKind::Disabled
         && occupied >= state.host_settings.pattern_max_players) {
-        return;
-    }
-
-    if (kind_ref == SingleplayerSlotKind::Ai
-        && occupied <= state.host_settings.pattern_min_players) {
         return;
     }
 
@@ -642,8 +639,8 @@ namespace {
     const MainMenuState& state)
 {
     const float width = static_cast<float>(constants::MAIN_MENU_DIALOG_WIDTH_PX);
-    const float height = PADDING * 2.0F + title_height() + SPLIT_BLOCK * 4.0F + LABEL_GAP
-        + ROW_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT * 4.0F + BUTTON_GAP * 3.0F + label_height()
+    const float height = PADDING * 2.0F + title_height() + SPLIT_BLOCK * 3.0F
+        + BUTTON_HEIGHT * 4.0F + BUTTON_GAP * 3.0F + label_height()
         + (state.reconnect_available ? BUTTON_HEIGHT + BUTTON_GAP : 0.0F);
 
     MenuLayout layout{};
@@ -651,8 +648,6 @@ namespace {
 
     float cursor_y = layout.panel.y + PADDING;
     push_title(layout, "Multiplayer", cursor_y);
-    push_split_line(layout, cursor_y);
-    push_text_field(layout, MenuTextField::PlayerName, "Player Name", state.player_name, cursor_y);
     push_split_line(layout, cursor_y);
     const bool name_empty = name_blocks_multiplayer(state);
     if (state.reconnect_available) {
@@ -852,7 +847,10 @@ namespace {
         const MenuRect row = lobby_row_rect(layout.panel, slot);
         const auto kind = state.slot_kinds[static_cast<std::size_t>(slot)];
         const std::string name = slot == 0
-            ? ("P1 " + std::string(constants::SINGLEPLAYER_SLOT_HOST_LABEL))
+            ? ("P1 "
+                + (state.player_name.empty()
+                    ? std::string(constants::MULTIPLAYER_DEFAULT_PLAYER_NAME)
+                    : state.player_name))
             : ("P" + std::to_string(slot + 1));
         layout.labels.push_back(MenuLabel{
             name,
@@ -904,11 +902,9 @@ namespace {
         };
         const std::uint8_t occupied_count = occupied_singleplayer_slots(state);
         const bool at_pattern_max = occupied_count >= state.host_settings.pattern_max_players;
-        const bool at_pattern_min = occupied_count <= state.host_settings.pattern_min_players;
         kind_button.disabled = slot == 0
             || state.required_player_count > 0U
-            || (kind == SingleplayerSlotKind::Disabled && at_pattern_max)
-            || (kind == SingleplayerSlotKind::Ai && at_pattern_min);
+            || (kind == SingleplayerSlotKind::Disabled && at_pattern_max);
         kind_button.slot = static_cast<std::uint8_t>(slot);
         layout.buttons.push_back(kind_button);
     }
@@ -939,6 +935,11 @@ namespace {
             map_size_button_label(state.host_settings),
             cursor_y,
             state.host_settings.map_size_locked);
+        push_option_row(
+            layout,
+            MainMenuAction::CycleBiome,
+            map_biome_button_label(state.host_settings),
+            cursor_y);
     }
 
     push_option_row(layout, MainMenuAction::CycleFogMode, singleplayer_fog_button_label(state), cursor_y);
@@ -1160,11 +1161,9 @@ namespace {
         };
         const std::uint8_t playing = net::lobby_playing_slot_count(lobby);
         const bool at_pattern_max = playing >= lobby.settings.pattern_max_players;
-        const bool at_pattern_min = playing <= lobby.settings.pattern_min_players;
         kind_button.disabled = !is_host
             || (slot != 0 && lobby.settings.required_player_count > 0U)
-            || (info.kind == net::LobbySlotKind::Disabled && at_pattern_max)
-            || (info.kind == net::LobbySlotKind::Ai && at_pattern_min);
+            || (info.kind == net::LobbySlotKind::Disabled && at_pattern_max);
         kind_button.slot = static_cast<std::uint8_t>(slot);
         layout.buttons.push_back(kind_button);
     }
@@ -1206,6 +1205,12 @@ namespace {
             map_size_button_label(lobby.settings),
             cursor_y,
             settings_locked || lobby.settings.map_size_locked);
+        push_option_row(
+            layout,
+            MainMenuAction::CycleBiome,
+            map_biome_button_label(lobby.settings),
+            cursor_y,
+            settings_locked);
     }
 
     push_option_row(
@@ -1507,6 +1512,23 @@ namespace {
 
 } // namespace
 
+[[nodiscard]] TextFieldEdit focused_text_field(MainMenuState& state, std::string& value)
+{
+    const bool port_field = state.focused_field == MenuTextField::JoinPort
+        || state.focused_field == MenuTextField::HostPort;
+    const std::size_t max_length = port_field
+        ? static_cast<std::size_t>(constants::MAIN_MENU_MAX_PORT_LENGTH)
+        : (state.focused_field == MenuTextField::PlayerName
+              ? static_cast<std::size_t>(constants::MAIN_MENU_MAX_NAME_LENGTH)
+              : static_cast<std::size_t>(constants::MAIN_MENU_MAX_ADDRESS_LENGTH));
+    return TextFieldEdit{
+        .text = value,
+        .max_length = max_length,
+        .all_selected = state.text_all_selected,
+        .filter = port_field ? TextFieldFilter::Digits : TextFieldFilter::Printable,
+    };
+}
+
 void append_focused_text(MainMenuState& state, const char character)
 {
     std::string* value = focused_text_value(state);
@@ -1514,35 +1536,33 @@ void append_focused_text(MainMenuState& state, const char character)
         return;
     }
 
-    if (state.focused_field == MenuTextField::JoinPort
-        || state.focused_field == MenuTextField::HostPort) {
-        if (std::isdigit(static_cast<unsigned char>(character)) == 0
-            || value->size() >= static_cast<std::size_t>(constants::MAIN_MENU_MAX_PORT_LENGTH)) {
-            return;
-        }
-
-        value->push_back(character);
-        return;
-    }
-
-    const std::size_t max_length = state.focused_field == MenuTextField::PlayerName
-        ? static_cast<std::size_t>(constants::MAIN_MENU_MAX_NAME_LENGTH)
-        : static_cast<std::size_t>(constants::MAIN_MENU_MAX_ADDRESS_LENGTH);
-    if (value->size() >= max_length) {
-        return;
-    }
-
-    value->push_back(character);
+    TextFieldEdit field = focused_text_field(state, *value);
+    append_text_field_chars(field, std::string_view(&character, 1U));
 }
 
 void backspace_focused_text(MainMenuState& state)
 {
     std::string* value = focused_text_value(state);
-    if (value == nullptr || value->empty()) {
+    if (value == nullptr) {
         return;
     }
 
-    value->pop_back();
+    TextFieldEdit field = focused_text_field(state, *value);
+    apply_text_field_backspace(field);
+}
+
+bool apply_focused_text_hotkey(
+    MainMenuState& state,
+    const sf::Keyboard::Key key,
+    const bool control)
+{
+    std::string* value = focused_text_value(state);
+    if (value == nullptr) {
+        return false;
+    }
+
+    TextFieldEdit field = focused_text_field(state, *value);
+    return apply_text_field_hotkey(key, control, field);
 }
 
 void cycle_player_count(net::LobbySettings& settings)
@@ -1582,6 +1602,22 @@ void cycle_map_size(net::LobbySettings& settings)
 bool player_name_is_acceptable(const std::string& player_name)
 {
     return !player_name.empty();
+}
+
+void cycle_map_biome(net::LobbySettings& settings)
+{
+    settings.biome_preset = static_cast<std::uint8_t>(
+        (static_cast<int>(settings.biome_preset) + 1) % constants::MAP_BIOME_PRESET_COUNT);
+}
+
+std::string map_biome_button_label(const net::LobbySettings& settings)
+{
+    const auto index = static_cast<std::size_t>(settings.biome_preset);
+    if (index >= constants::MAP_BIOME_PRESET_LABELS.size()) {
+        return std::string(constants::MAP_BIOME_PRESET_LABELS[0]);
+    }
+
+    return std::string(constants::MAP_BIOME_PRESET_LABELS[index]);
 }
 
 void cycle_civil_population_cap(net::LobbySettings& settings)

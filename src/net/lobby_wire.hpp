@@ -44,6 +44,7 @@ struct LobbySettings {
     bool map_size_locked{false};
     bool block_team_changes{false};
     bool allow_spectators{false};
+    std::uint8_t biome_preset{aoa::constants::MAP_BIOME_PRESET_MIXED};
 };
 
 struct LobbySlotInfo {

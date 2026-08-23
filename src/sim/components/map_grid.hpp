@@ -12,6 +12,7 @@ enum class TileType : std::uint8_t {
     Berries = 2,
     Blueberries = 3,
     GoldMine = 4,
+    Rock = 5,
 };
 
 enum class GroundType : std::uint8_t {

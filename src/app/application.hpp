@@ -35,6 +35,7 @@ struct AppShellSettings {
     constants::BuildingRangeDisplayMode building_range_display{
         constants::BuildingRangeDisplayMode::Never};
     constants::HudStyle hud_style{constants::HudStyle::Default};
+    std::string player_name{std::string(constants::MULTIPLAYER_DEFAULT_PLAYER_NAME)};
 };
 
 struct SingleplayerSetup {
@@ -51,6 +52,7 @@ struct SingleplayerSetup {
     sim::components::VictoryCondition victory_condition{
         sim::components::VictoryCondition::Normal};
     std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS> player_names{};
+    std::uint8_t biome_preset{constants::MAP_BIOME_PRESET_MIXED};
 };
 
 // Everything a graphical lockstep match needs, independent of the CLI options.

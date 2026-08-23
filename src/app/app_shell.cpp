@@ -452,6 +452,7 @@ void go_back_one_screen(MenuContext& context)
     setup.pattern_payload = state.selected_pattern_payload;
     setup.victory_condition = static_cast<sim::components::VictoryCondition>(
         state.host_settings.victory_condition);
+    setup.biome_preset = state.host_settings.biome_preset;
     setup.slot_is_ai.fill(false);
 
     std::uint8_t compact = 0U;
@@ -667,6 +668,13 @@ void apply_menu_action(MenuContext& context, const MenuButtonHit& hit)
             ? MainMenuScreen::Lobby
             : MainMenuScreen::Singleplayer;
         context.state.pattern_return_to_lobby = false;
+        return;
+    case MainMenuAction::CycleBiome:
+        cycle_map_biome(context.state.host_settings);
+        if (context.lobby && context.lobby->is_host()) {
+            prepare_host_settings(context.state);
+            context.lobby->set_settings(context.state.host_settings);
+        }
         return;
     case MainMenuAction::CycleFogMode:
         cycle_fog_mode(context.state);
@@ -958,6 +966,16 @@ void apply_menu_action(MenuContext& context, const MenuButtonHit& hit)
 void handle_settings_click(MenuContext& context, const float mouse_x, const float mouse_y)
 {
     const sf::Vector2u window_size = context.window.getSize();
+    if (context.state.settings.screen == GameMenuScreen::SettingsGame
+        && settings_player_name_field_rect(window_size, context.state.settings.center_settings_panel)
+               .contains(mouse_x, mouse_y)) {
+        context.state.focused_field = MenuTextField::PlayerName;
+        context.state.text_all_selected = false;
+        return;
+    }
+
+    context.state.focused_field = MenuTextField::None;
+    context.state.text_all_selected = false;
     const GameMenuAction action = hit_test_menu_button(
         build_settings_buttons(context.state.settings, window_size),
         mouse_x,
@@ -1079,12 +1097,24 @@ void handle_layout_click(MenuContext& context, const float mouse_x, const float 
     const MenuTextField field = hit_test_menu_text_fields(layout.text_fields, mouse_x, mouse_y);
     if (field != MenuTextField::None) {
         context.state.focused_field = field;
+        context.state.text_all_selected = false;
         return;
     }
 
     const MenuButtonHit hit = hit_test_menu_buttons(layout.buttons, mouse_x, mouse_y);
     if (hit.action == MainMenuAction::None) {
-        context.state.focused_field = MenuTextField::None;
+        bool on_disabled_button = false;
+        for (const MenuButton& button : layout.buttons) {
+            if (button.rect.contains(mouse_x, mouse_y)) {
+                on_disabled_button = true;
+                break;
+            }
+        }
+
+        if (!on_disabled_button) {
+            context.state.focused_field = MenuTextField::None;
+            context.state.text_all_selected = false;
+        }
         return;
     }
 
@@ -1110,6 +1140,7 @@ void handle_key_pressed(MenuContext& context, const sf::Keyboard::Key key)
 
     if (key == sf::Keyboard::Key::Backspace) {
         backspace_focused_text(context.state);
+        context.shell.player_name = context.state.player_name;
         return;
     }
 
@@ -1143,6 +1174,12 @@ void handle_menu_event(MenuContext& context, const sf::Event& event)
     }
 
     if (const auto* key_pressed = event.getIf<sf::Event::KeyPressed>()) {
+        if (apply_focused_text_hotkey(
+                context.state, key_pressed->code, key_pressed->control)) {
+            context.shell.player_name = context.state.player_name;
+            return;
+        }
+
         handle_key_pressed(context, key_pressed->code);
         return;
     }
@@ -1152,6 +1189,7 @@ void handle_menu_event(MenuContext& context, const sf::Event& event)
         if (unicode >= constants::MAIN_MENU_MIN_PRINTABLE_CHAR
             && unicode <= constants::MAIN_MENU_MAX_PRINTABLE_CHAR) {
             append_focused_text(context.state, static_cast<char>(unicode));
+            context.shell.player_name = context.state.player_name;
         }
         return;
     }
@@ -1415,6 +1453,8 @@ MenuResult run_main_menu(
     state.settings.scroll_speed = shell.scroll_speed;
     state.settings.building_range_display = shell.building_range_display;
     state.settings.hud_style = shell.hud_style;
+    state.settings.player_name = shell.player_name;
+    state.player_name = shell.player_name;
     state.settings.center_settings_panel = true;
     state.settings.fullscreen = display_settings.fullscreen;
     state.settings.mouse_capture = display_settings.mouse_capture;
@@ -1494,6 +1534,7 @@ MenuResult run_main_menu(
     shell.scroll_speed = state.settings.scroll_speed;
     shell.building_range_display = state.settings.building_range_display;
     shell.hud_style = state.settings.hud_style;
+    shell.player_name = state.player_name;
     return result;
 }
 
@@ -1575,7 +1616,8 @@ int run_app_shell()
                 setup.player_count,
                 setup.map_seed,
                 setup.map_pattern,
-                setup.pattern_payload)};
+                setup.pattern_payload,
+                setup.biome_preset)};
             if (run_graphical(
                     window,
                     display_settings,
@@ -1597,7 +1639,8 @@ int run_app_shell()
             map_players,
             match.map_seed,
             0U,
-            match.pattern_payload)};
+            match.pattern_payload,
+            match.lobby_settings.biome_preset)};
         if (run_lockstep_match(
                 window,
                 display_settings,

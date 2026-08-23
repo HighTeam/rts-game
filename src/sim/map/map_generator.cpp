@@ -1567,12 +1567,87 @@ GeneratedMap generate_archipelago(const MapGenerationConfig& config)
 
 } // namespace
 
+void apply_biome_preset(components::MapGrid& grid, const std::uint8_t biome_preset)
+{
+    components::GroundType ground = components::GroundType::Grass;
+    if (biome_preset == constants::MAP_BIOME_PRESET_MIXED) {
+        return;
+    }
+    if (biome_preset == constants::MAP_BIOME_PRESET_SNOW) {
+        ground = components::GroundType::Snow;
+    }
+    else if (biome_preset == constants::MAP_BIOME_PRESET_SAND) {
+        ground = components::GroundType::Sand;
+    }
+    else if (biome_preset != constants::MAP_BIOME_PRESET_GRASS) {
+        return;
+    }
+
+    std::fill(grid.ground.begin(), grid.ground.end(), ground);
+}
+
+[[nodiscard]] bool cell_in_start_keep(
+    const core::GridPos cell,
+    const std::vector<core::GridPos>& start_anchors)
+{
+    for (const core::GridPos& start : start_anchors) {
+        const int dx = std::abs(cell.x - start.x);
+        const int dy = std::abs(cell.y - start.y);
+        if (std::max(dx, dy) <= constants::PLAYER_START_GRASS_KEEP_RING) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void place_nature_rocks(GeneratedMap& result, const MapGenerationConfig& config)
+{
+    if (result.grid.width <= 0 || result.grid.height <= 0) {
+        return;
+    }
+
+    std::uint32_t rng = make_rng(config, 0x80C11111U);
+    const int wanted = rng_range(
+        rng, constants::MAP_ROCK_MIN_COUNT, constants::MAP_ROCK_MAX_COUNT);
+    int placed = 0;
+    for (int attempt = 0; attempt < constants::MAP_ROCK_PLACEMENT_ATTEMPTS && placed < wanted;
+         ++attempt) {
+        const core::GridPos cell{
+            rng_range(rng, 0, result.grid.width - 1),
+            rng_range(rng, 0, result.grid.height - 1),
+        };
+        if (!in_map(result.grid, cell) || cell_in_start_keep(cell, result.start_anchors)) {
+            continue;
+        }
+
+        bool on_mana_lake = false;
+        for (const core::GridPos& lake : result.mana_lake_anchors) {
+            if (lake.x == cell.x && lake.y == cell.y) {
+                on_mana_lake = true;
+                break;
+            }
+        }
+        if (on_mana_lake) {
+            continue;
+        }
+
+        const std::size_t index = cell_index(result.grid, cell);
+        if (result.grid.tiles[index] != components::TileType::Grass) {
+            continue;
+        }
+
+        result.grid.tiles[index] = components::TileType::Rock;
+        ++placed;
+    }
+}
+
 GeneratedMap generate_map(const MapGenerationConfig& config)
 {
+    GeneratedMap result{};
     if (config.pattern.builtin == MapPatternBuiltin::Default
         || (config.pattern.builtin == MapPatternBuiltin::Custom && config.pattern.pieces.empty()
             && config.pattern.name.empty())) {
-        GeneratedMap result{};
         result.grid = create_test_map(
             config.forest_patch_wood,
             config.bush_food_capacity,
@@ -1583,18 +1658,20 @@ GeneratedMap generate_map(const MapGenerationConfig& config)
             config.player_count,
             result.grid.width,
             result.grid.height);
-        return result;
+    }
+    else if (config.pattern.builtin == MapPatternBuiltin::Continental) {
+        result = generate_continental(config);
+    }
+    else if (config.pattern.builtin == MapPatternBuiltin::Archipelago) {
+        result = generate_archipelago(config);
+    }
+    else {
+        result = generate_from_pieces(config);
     }
 
-    if (config.pattern.builtin == MapPatternBuiltin::Continental) {
-        return generate_continental(config);
-    }
-
-    if (config.pattern.builtin == MapPatternBuiltin::Archipelago) {
-        return generate_archipelago(config);
-    }
-
-    return generate_from_pieces(config);
+    apply_biome_preset(result.grid, config.biome_preset);
+    place_nature_rocks(result, config);
+    return result;
 }
 
 std::uint64_t generate_map_seed()

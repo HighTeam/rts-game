@@ -2,6 +2,19 @@
 
 Lobby and lockstep clients must share the same `GAME_VERSION`. Older builds cannot join a newer host.
 
+## alpha_v0.2.1
+
+Lockstep reconnect that survives a second drop, resign/host-leave, and playability polish.
+
+- Mid-match reconnect: host and peer apply the same snapshot (pending orders, map pings, hash caches); handshake no longer freezes or DESYNCs on the second reconnect
+- Resign stays in the match and announces in chat; host leave ends the game for everyone (no frozen host window, no reconnect to a dead match)
+- Lobby: AI slots can be cycled off; biome presets (Mixed / Grass / Snow / Sand)
+- Mill / berry depth sort; rocks on the map; first Town Center waives gold and mana
+- Map ping (spyglass) on the world and minimap
+- Training that finishes at 100% but cannot spawn (pop cap or no free tile) refunds the cost and unlocks Town Center / Barracks / Mage Academy
+- Ctrl+A, Ctrl+C, and Ctrl+V on menu fields, save/load filename, and in-game / diplomacy chat
+- Stronger disconnected-player AI; worker stand retry; longer pathfinding steps
+
 ## alpha_v0.2
 
 Default HUD, diplomacy, more Earth buildings, and reconnect that stays in lockstep after restore.

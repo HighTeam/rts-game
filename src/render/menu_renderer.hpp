@@ -65,6 +65,7 @@ private:
     mutable int preview_map_width_{0};
     mutable int preview_map_height_{0};
     mutable std::uint8_t preview_player_count_{0U};
+    mutable std::uint8_t preview_biome_preset_{255U};
     mutable unsigned int present_fbo_{0U};
     mutable unsigned int present_color_{0U};
     mutable int present_width_{0};

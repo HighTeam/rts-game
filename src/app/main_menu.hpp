@@ -6,6 +6,7 @@
 #include "sim/components/match_session.hpp"
 
 #include <SFML/System/Vector2.hpp>
+#include <SFML/Window/Keyboard.hpp>
 
 #include <array>
 #include <cstdint>
@@ -95,6 +96,7 @@ enum class MainMenuAction : std::uint8_t {
     CycleBlockTeamChanges,
     CycleAllowSpectators,
     ReconnectMatch,
+    CycleBiome,
 };
 
 enum class MenuTextField : std::uint8_t {
@@ -138,6 +140,7 @@ struct MenuTextFieldEntry {
     std::string label{};
     std::string value{};
     MenuRect rect{};
+    bool all_selected{false};
 };
 
 struct MenuLayout {
@@ -161,6 +164,7 @@ struct MainMenuState {
     // Game/Audio tabs are shared with the in-game menu layout.
     GameMenuState settings{};
     MenuTextField focused_field{MenuTextField::None};
+    bool text_all_selected{false};
     std::string player_name{};
     std::string join_address{};
     std::string join_port{};
@@ -222,11 +226,20 @@ void append_focused_text(MainMenuState& state, char character);
 
 void backspace_focused_text(MainMenuState& state);
 
+[[nodiscard]] bool apply_focused_text_hotkey(
+    MainMenuState& state,
+    sf::Keyboard::Key key,
+    bool control);
+
 void cycle_player_count(net::LobbySettings& settings);
 
 void cycle_map_size(net::LobbySettings& settings);
 
 void cycle_civil_population_cap(net::LobbySettings& settings);
+
+void cycle_map_biome(net::LobbySettings& settings);
+
+[[nodiscard]] std::string map_biome_button_label(const net::LobbySettings& settings);
 
 void cycle_singleplayer_game_style(MainMenuState& state);
 

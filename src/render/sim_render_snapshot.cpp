@@ -16,6 +16,7 @@
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/map_pings.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/player_slot.hpp"
@@ -312,9 +313,23 @@ SimRenderSnapshot capture_sim_render_snapshot(
         snapshot.player_civilizations = session.player_civilizations;
         snapshot.vision_source_slots_mask =
             sim::components::cartography_vision_slots_mask(session, local_player_slot);
+        if (registry.any_of<sim::components::MapPingList>(world)) {
+            for (const sim::components::MapPing& ping :
+                 registry.get<sim::components::MapPingList>(world).pings) {
+                if (ping.player_slot != local_player_slot
+                    && !sim::components::slots_are_allied(
+                        session, local_player_slot, ping.player_slot)) {
+                    continue;
+                }
+                snapshot.map_pings.push_back(ping);
+            }
+        }
     }
     else {
         snapshot.vision_source_slots_mask = sim::components::player_slot_bit(local_player_slot);
+        if (registry.any_of<sim::components::MapPingList>(world)) {
+            snapshot.map_pings = registry.get<sim::components::MapPingList>(world).pings;
+        }
     }
 
     const sim::components::FogOfWarState* fog = nullptr;

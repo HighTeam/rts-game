@@ -103,6 +103,7 @@ void append_settings(std::vector<std::byte>& out, const LobbySettings& settings)
     append_pod(out, static_cast<std::uint8_t>(settings.map_size_locked ? 1U : 0U));
     append_pod(out, static_cast<std::uint8_t>(settings.block_team_changes ? 1U : 0U));
     append_pod(out, static_cast<std::uint8_t>(settings.allow_spectators ? 1U : 0U));
+    append_pod(out, settings.biome_preset);
 }
 
 [[nodiscard]] bool read_settings(std::span<const std::byte>& bytes, LobbySettings& settings)
@@ -149,6 +150,18 @@ void append_settings(std::vector<std::byte>& out, const LobbySettings& settings)
         }
 
         settings.allow_spectators = spectators_raw != 0U;
+    }
+
+    settings.biome_preset = aoa::constants::MAP_BIOME_PRESET_MIXED;
+    if (!bytes.empty()) {
+        std::uint8_t biome_raw = 0U;
+        if (!read_pod(bytes, biome_raw)) {
+            return false;
+        }
+
+        if (biome_raw < static_cast<std::uint8_t>(aoa::constants::MAP_BIOME_PRESET_COUNT)) {
+            settings.biome_preset = biome_raw;
+        }
     }
 
     return true;

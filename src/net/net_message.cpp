@@ -29,7 +29,8 @@ namespace {
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyReject)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::LobbyTeam)
         || kind_raw == static_cast<std::uint8_t>(NetMessageKind::MatchPause)
-        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::PlayerResign);
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::PlayerResign)
+        || kind_raw == static_cast<std::uint8_t>(NetMessageKind::HostEnded);
 }
 
 } // namespace

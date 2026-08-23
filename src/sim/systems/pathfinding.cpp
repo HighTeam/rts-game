@@ -490,7 +490,7 @@ bool unit_can_work_cell(
         return unit_in_work_interact_range_building(registry, unit, anchor, footprint);
     }
 
-    if (!is_cardinal_neighbor_cell(occupancy, cell)) {
+    if (core::chebyshev_distance(occupancy, cell) != 1) {
         return false;
     }
 
@@ -686,7 +686,8 @@ core::GridPos find_best_farm_stand_tile(
     entt::registry& registry,
     const entt::entity farm,
     const entt::entity mover,
-    const core::GridPos prefer_not)
+    const core::GridPos prefer_not,
+    const bool avoid_unit_occupancy)
 {
     if (farm == entt::null || !registry.valid(farm)
         || !registry.any_of<components::GridPosition>(farm)) {
@@ -712,6 +713,11 @@ core::GridPos find_best_farm_stand_tile(
             }
 
             if (is_movement_blocked(registry, candidate, mover)) {
+                continue;
+            }
+
+            if (avoid_unit_occupancy
+                && is_unit_occupying_or_reserving_cell(registry, candidate, mover)) {
                 continue;
             }
 
@@ -1423,6 +1429,35 @@ bool is_unit_radius_blocked_at_world(
     return units_block_world_point(registry, point_x, point_y, ignore, also_ignore);
 }
 
+bool is_unit_occupying_or_reserving_cell(
+    entt::registry& registry,
+    const core::GridPos cell,
+    const entt::entity ignore,
+    const entt::entity also_ignore)
+{
+    const auto unit_view = registry.view<components::UnitTag, components::Health>();
+    for (const entt::entity entity : unit_view) {
+        if (is_entity_ignored_for_movement(entity, ignore, also_ignore)) {
+            continue;
+        }
+
+        const auto& health = unit_view.get<components::Health>(entity);
+        if (health.current.raw() <= 0) {
+            continue;
+        }
+
+        if (registry.any_of<components::GarrisonedTag>(entity)) {
+            continue;
+        }
+
+        if (unit_movement_grid_cell(registry, entity) == cell) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool is_movement_blocked(
     entt::registry& registry,
     const core::GridPos cell,
@@ -1647,6 +1682,10 @@ bool is_tile_walkable(
         return map.mine_money[static_cast<std::size_t>(index)] <= 0;
     }
 
+    if (tile == components::TileType::Rock) {
+        return false;
+    }
+
     return false;
 }
 
@@ -1654,7 +1693,8 @@ core::GridPos find_best_approach_stand_tile(
     const components::MapGrid& map,
     entt::registry& registry,
     const core::GridPos target_cell,
-    const entt::entity mover)
+    const entt::entity mover,
+    const bool avoid_unit_occupancy)
 {
     const float target_min_x = static_cast<float>(target_cell.x);
     const float target_min_y = static_cast<float>(target_cell.y);
@@ -1666,15 +1706,18 @@ core::GridPos find_best_approach_stand_tile(
             mover_cell, target_min_x, target_min_y, target_max_x, target_max_y)
         && is_tile_walkable(map, mover_cell, false)
         && !is_movement_blocked(registry, mover_cell, mover)
+        && (!avoid_unit_occupancy
+            || !is_unit_occupying_or_reserving_cell(registry, mover_cell, mover))
         && mover_cell != target_cell
         && is_cardinal_neighbor_cell(mover_cell, target_cell)) {
         return mover_cell;
     }
 
     // Gather/deposit approach: cardinal edges first, corners only if no edge is free.
-    core::GridPos best = target_cell;
+    core::GridPos best{-1, -1};
     int best_travel = std::numeric_limits<int>::max();
     bool best_cardinal = false;
+    bool best_free = false;
     bool found = false;
 
     for (const PathStepOffset& step : path_step_offsets) {
@@ -1686,6 +1729,10 @@ core::GridPos find_best_approach_stand_tile(
             target_cell.x + step.offset.x,
             target_cell.y + step.offset.y,
         };
+        if (candidate == target_cell) {
+            continue;
+        }
+
         if (!work_stand_goal_in_interact_range(
                 candidate, target_min_x, target_min_y, target_max_x, target_max_y)) {
             continue;
@@ -1699,19 +1746,31 @@ core::GridPos find_best_approach_stand_tile(
             continue;
         }
 
+        const bool occupied = is_unit_occupying_or_reserving_cell(registry, candidate, mover);
+        if (avoid_unit_occupancy && occupied) {
+            continue;
+        }
+
         const bool cardinal = is_cardinal_neighbor_cell(candidate, target_cell);
+        const bool free = !occupied;
         const int travel = core::chebyshev_distance(mover_cell, candidate);
         if (!found
             || (cardinal && !best_cardinal)
-            || (cardinal == best_cardinal && travel < best_travel)
-            || (cardinal == best_cardinal && travel == best_travel
+            || (cardinal == best_cardinal && free && !best_free)
+            || (cardinal == best_cardinal && free == best_free && travel < best_travel)
+            || (cardinal == best_cardinal && free == best_free && travel == best_travel
                 && (candidate.y < best.y
                     || (candidate.y == best.y && candidate.x < best.x)))) {
             found = true;
             best_cardinal = cardinal;
+            best_free = free;
             best_travel = travel;
             best = candidate;
         }
+    }
+
+    if (!found) {
+        return {-1, -1};
     }
 
     return best;

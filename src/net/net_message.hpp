@@ -31,6 +31,7 @@ enum class NetMessageKind : std::uint8_t {
     LobbyTeam = 20,
     MatchPause = 21,
     PlayerResign = 22,
+    HostEnded = 23,
 };
 
 [[nodiscard]] std::vector<std::byte> encode_net_message(

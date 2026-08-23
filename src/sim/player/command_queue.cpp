@@ -367,6 +367,9 @@ void apply_player_command(entt::registry& registry, PlayerCommand command)
     case PlayerCommandType::Resign:
         issue_resign_order(registry, command.player_slot);
         break;
+    case PlayerCommandType::MapPing:
+        issue_map_ping_order(registry, command.player_slot, command.cell);
+        break;
     case PlayerCommandType::DestroyBuilding:
         if (!registry.valid(command.target_entity)
             || !registry.any_of<components::BuildingTag>(command.target_entity)) {
@@ -440,6 +443,19 @@ void CommandQueue::apply_pending(entt::registry& registry, const std::uint64_t t
         apply_player_command(registry, command);
         sync_input_log_keys(input_log_, command);
     }
+}
+
+std::vector<PlayerCommand> CommandQueue::unapplied_commands(const std::uint64_t tick_count) const
+{
+    std::vector<PlayerCommand> commands{};
+    commands.reserve(pending_.size());
+    for (const PlayerCommand& command : pending_) {
+        if (command.execute_tick > tick_count) {
+            commands.push_back(command);
+        }
+    }
+
+    return commands;
 }
 
 void CommandQueue::restore_input_log(

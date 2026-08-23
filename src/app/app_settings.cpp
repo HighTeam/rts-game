@@ -89,6 +89,24 @@ AppShellSettings load_app_settings()
         || hud_style == static_cast<int>(constants::HudStyle::Default)) {
         settings.hud_style = static_cast<constants::HudStyle>(hud_style);
     }
+    if (json.contains("player_name") && json["player_name"].is_string()) {
+        settings.player_name.clear();
+        const std::string raw = json["player_name"].get<std::string>();
+        for (const char character : raw) {
+            if (settings.player_name.size()
+                >= static_cast<std::size_t>(constants::MAIN_MENU_MAX_NAME_LENGTH)) {
+                break;
+            }
+
+            const auto code = static_cast<unsigned char>(character);
+            if (code < static_cast<unsigned char>(constants::MAIN_MENU_MIN_PRINTABLE_CHAR)
+                || code > static_cast<unsigned char>(constants::MAIN_MENU_MAX_PRINTABLE_CHAR)) {
+                continue;
+            }
+
+            settings.player_name.push_back(character);
+        }
+    }
     return settings;
 }
 
@@ -117,6 +135,7 @@ void save_app_settings(const AppShellSettings& settings)
         {"scroll_speed", settings.scroll_speed},
         {"building_range_display", static_cast<int>(settings.building_range_display)},
         {"hud_style", static_cast<int>(settings.hud_style)},
+        {"player_name", settings.player_name},
     };
 
     std::ofstream out(path, std::ios::trunc);

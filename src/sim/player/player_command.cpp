@@ -80,6 +80,7 @@ std::vector<std::byte> encode_player_command(const PlayerCommand& command)
         append_pod(out, command.goal_world_y.raw());
         break;
     case PlayerCommandType::Gather:
+    case PlayerCommandType::MapPing:
         append_pod(out, static_cast<std::int16_t>(command.cell.x));
         append_pod(out, static_cast<std::int16_t>(command.cell.y));
         break;
@@ -163,7 +164,7 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         return std::nullopt;
     }
 
-    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::Resign)) {
+    if (type_raw > static_cast<std::uint8_t>(PlayerCommandType::MapPing)) {
         return std::nullopt;
     }
 
@@ -206,7 +207,8 @@ std::optional<PlayerCommand> decode_player_command_body(std::span<const std::byt
         command.goal_world_y = math::Fixed::from_raw(goal_world_y_raw);
         break;
     }
-    case PlayerCommandType::Gather: {
+    case PlayerCommandType::Gather:
+    case PlayerCommandType::MapPing: {
         std::int16_t cell_x = 0;
         std::int16_t cell_y = 0;
         if (!read_pod(cursor, cell_x) || !read_pod(cursor, cell_y)) {

@@ -150,6 +150,13 @@ public:
         return game_menu_.hud_style;
     }
 
+    void set_player_name(const std::string& player_name)
+    {
+        game_menu_.player_name = player_name;
+    }
+
+    [[nodiscard]] const std::string& player_name() const { return game_menu_.player_name; }
+
     [[nodiscard]] bool is_game_menu_open() const { return game_menu_.is_open(); }
     [[nodiscard]] bool is_simulation_paused() const
     {
@@ -224,6 +231,7 @@ public:
 
         attack_targeting_mode_ = false;
         garrison_targeting_mode_ = false;
+        pointer_targeting_mode_ = false;
 
     }
 
@@ -284,6 +292,11 @@ private:
 
 
     bool submit_player_command(sim::Simulation& simulation, sim::player::PlayerCommand command);
+
+    bool submit_map_ping(
+        sim::Simulation& simulation,
+        const render::SimRenderSnapshot* render_snapshot,
+        core::GridPos cell);
 
     void play_order_ack_sfx(
         sim::Simulation& simulation,
@@ -441,12 +454,14 @@ private:
 
     bool attack_targeting_mode_{false};
     bool garrison_targeting_mode_{false};
+    bool pointer_targeting_mode_{false};
     bool local_is_spectator_{false};
     bool minimap_show_units_{true};
 
     bool chat_composing_{false};
 
     std::string chat_draft_{};
+    bool chat_all_selected_{false};
 
     ChatState* chat_state_{nullptr};
     bool multiplayer_{false};

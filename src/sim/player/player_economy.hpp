@@ -19,7 +19,23 @@ namespace aoa::sim::player {
     const entt::registry& registry,
     std::uint8_t player_slot);
 
+// Living town centers, including those still under construction.
+[[nodiscard]] int count_living_player_town_centers(
+    const entt::registry& registry,
+    std::uint8_t player_slot,
+    entt::entity exclude = entt::null);
+
+[[nodiscard]] bool player_town_center_gold_mana_waived(
+    const entt::registry& registry,
+    std::uint8_t player_slot,
+    entt::entity exclude = entt::null);
+
 [[nodiscard]] int count_completed_houses(const entt::registry& registry, std::uint8_t player_slot);
+
+// Living gardens, including those still under construction.
+[[nodiscard]] int count_living_player_gardens(
+    const entt::registry& registry,
+    std::uint8_t player_slot);
 
 [[nodiscard]] int count_completed_extractors(
     const entt::registry& registry,

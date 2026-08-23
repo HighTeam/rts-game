@@ -5,6 +5,7 @@
 #include "core/constants.hpp"
 #include "render/game_renderer.hpp"
 #include "sim/components/fog_of_war.hpp"
+#include "sim/components/match_session.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/systems/visibility_system.hpp"
 
@@ -54,6 +55,10 @@ namespace {
         return constants::SFX_ILL_DO_IT_RELATIVE_PATH;
     case SfxId::MovingHere:
         return constants::SFX_MOVING_HERE_RELATIVE_PATH;
+    case SfxId::NewAge:
+        return constants::SFX_NEW_AGE_RELATIVE_PATH;
+    case SfxId::LookHere:
+        return constants::SFX_LOOK_HERE_RELATIVE_PATH;
     case SfxId::Count:
         break;
     }
@@ -302,7 +307,26 @@ void GameAudio::drain_sim_sfx(
 {
     const std::vector<sim::components::SfxEvent> events =
         sim::components::drain_sfx_events(registry);
+    const sim::components::MatchSession* session = nullptr;
+    {
+        const auto session_view =
+            registry.view<sim::components::WorldTag, sim::components::MatchSession>();
+        if (session_view.begin() != session_view.end()) {
+            session = &session_view.get<sim::components::MatchSession>(*session_view.begin());
+        }
+    }
+
     for (const sim::components::SfxEvent& event : events) {
+        if (event.kind == sim::components::SfxEventKind::LookHere) {
+            if (event.player_slot == local_player_slot
+                || (session != nullptr
+                    && sim::components::slots_are_allied(
+                        *session, local_player_slot, event.player_slot))) {
+                play_sfx(SfxId::LookHere);
+            }
+            continue;
+        }
+
         if (!sfx_event_is_locally_audible(registry, renderer, local_player_slot, event.cell)) {
             continue;
         }
@@ -316,6 +340,8 @@ void GameAudio::drain_sim_sfx(
             break;
         case sim::components::SfxEventKind::UnitDeath:
             play_random_death();
+            break;
+        case sim::components::SfxEventKind::LookHere:
             break;
         }
     }

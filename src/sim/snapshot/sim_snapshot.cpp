@@ -23,6 +23,8 @@
 
 #include "sim/components/map_grid.hpp"
 
+#include "sim/components/map_pings.hpp"
+
 #include "sim/components/match_session.hpp"
 
 #include "sim/components/movement.hpp"
@@ -68,7 +70,7 @@ namespace {
 
 constexpr std::uint32_t SNAPSHOT_MAGIC = 0x414F4153U; // AOAS
 
-constexpr std::uint16_t SNAPSHOT_VERSION = 25U;
+constexpr std::uint16_t SNAPSHOT_VERSION = 26U;
 
 
 
@@ -157,6 +159,10 @@ struct EntityStateRecord {
     core::GridPos gather_cell{-1, -1};
 
     std::uint8_t gather_resource_type{0U};
+
+    core::GridPos gather_stand_cell{-1, -1};
+
+    int gather_stand_block_ticks{0};
 
     components::WorkerState worker_state{components::WorkerState::Idle};
 
@@ -594,6 +600,10 @@ void reset_simulation_to_default_scenario(Simulation& simulation)
 
         record.gather_resource_type = static_cast<std::uint8_t>(gather_target.resource_type);
 
+        record.gather_stand_cell = gather_target.stand_cell;
+
+        record.gather_stand_block_ticks = gather_target.stand_block_ticks;
+
     }
 
 
@@ -769,6 +779,12 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
         append_pod(out, record.gather_cell.y);
 
         append_pod(out, record.gather_resource_type);
+
+        append_pod(out, record.gather_stand_cell.x);
+
+        append_pod(out, record.gather_stand_cell.y);
+
+        append_pod(out, record.gather_stand_block_ticks);
 
     }
 
@@ -995,7 +1011,13 @@ void append_entity_state_record(std::vector<std::byte>& out, const EntityStateRe
 
         && (!read_pod(cursor, record.gather_cell.x) || !read_pod(cursor, record.gather_cell.y)
 
-            || !read_pod(cursor, record.gather_resource_type))) {
+            || !read_pod(cursor, record.gather_resource_type)
+
+            || !read_pod(cursor, record.gather_stand_cell.x)
+
+            || !read_pod(cursor, record.gather_stand_cell.y)
+
+            || !read_pod(cursor, record.gather_stand_block_ticks))) {
 
         return std::nullopt;
 
@@ -1882,7 +1904,11 @@ void apply_entity_state_record(entt::registry& registry, const EntityStateRecord
 
                 record.gather_cell,
 
-                static_cast<components::TileType>(record.gather_resource_type)});
+                static_cast<components::TileType>(record.gather_resource_type),
+
+                record.gather_stand_cell,
+
+                record.gather_stand_block_ticks});
 
     }
 
@@ -2073,6 +2099,8 @@ struct DecodedSnapshot {
     std::vector<std::int32_t> fog_memory_bush_food{};
 
     std::vector<std::int32_t> fog_memory_mine_money{};
+
+    std::vector<components::MapPing> map_pings{};
 
     std::vector<EntityStateRecord> entity_states{};
 
@@ -2578,6 +2606,33 @@ struct DecodedSnapshot {
 
 
 
+    std::uint32_t ping_count = 0U;
+
+    if (!read_pod(cursor, ping_count)) {
+
+        return std::nullopt;
+
+    }
+
+    decoded.map_pings.reserve(ping_count);
+
+    for (std::uint32_t index = 0U; index < ping_count; ++index) {
+
+        components::MapPing ping{};
+
+        if (!read_pod(cursor, ping.cell.x) || !read_pod(cursor, ping.cell.y)
+            || !read_pod(cursor, ping.player_slot) || !read_pod(cursor, ping.ticks_remaining)) {
+
+            return std::nullopt;
+
+        }
+
+        decoded.map_pings.push_back(ping);
+
+    }
+
+
+
     std::uint32_t entity_count = 0U;
 
     if (!read_pod(cursor, entity_count)) {
@@ -2707,7 +2762,8 @@ bool Simulation::apply_snapshot(const std::span<const std::byte> snapshot_bytes)
 
 std::vector<std::byte> encode_sim_snapshot(
     const Simulation& simulation,
-    const bool include_input_log)
+    const bool include_input_log,
+    const bool include_pending_commands)
 
 {
 
@@ -2717,7 +2773,17 @@ std::vector<std::byte> encode_sim_snapshot(
 
     if (world != entt::null) {
 
-        sync_map_tiles_with_forest_wood(registry.get<components::MapGrid>(world));
+        auto& map = registry.get<components::MapGrid>(world);
+
+        sync_map_tiles_with_forest_wood(map);
+
+        map.layer_hash_valid = false;
+
+        if (registry.any_of<components::FogOfWarState>(world)) {
+
+            registry.get<components::FogOfWarState>(world).hash_valid = false;
+
+        }
 
     }
 
@@ -2725,7 +2791,17 @@ std::vector<std::byte> encode_sim_snapshot(
 
 
 
-    const SimSnapshot metadata = simulation.export_snapshot();
+    SimSnapshot metadata = simulation.export_snapshot();
+    bool write_commands = include_input_log;
+    if (include_pending_commands) {
+        metadata.input_log = simulation.command_queue().unapplied_commands(simulation.tick_count());
+        std::uint64_t max_sequence = 0U;
+        for (const player::PlayerCommand& command : metadata.input_log) {
+            max_sequence = std::max(max_sequence, command.sequence);
+        }
+        metadata.next_command_sequence = max_sequence + 1U;
+        write_commands = true;
+    }
 
     if (world == entt::null) {
 
@@ -2861,13 +2937,13 @@ std::vector<std::byte> encode_sim_snapshot(
 
 
 
-    const auto command_count = include_input_log
+    const auto command_count = write_commands
         ? static_cast<std::uint32_t>(metadata.input_log.size())
         : 0U;
 
     append_pod(out, command_count);
 
-    if (include_input_log) {
+    if (write_commands) {
     for (const player::PlayerCommand& command : metadata.input_log) {
         player::PlayerCommand snapshot_command = command;
         bool needs_key_annotation = snapshot_command.unit_keys.size() != snapshot_command.unit_ids.size();
@@ -3075,6 +3151,21 @@ std::vector<std::byte> encode_sim_snapshot(
 
 
 
+    const auto ping_count = registry.any_of<components::MapPingList>(world)
+        ? static_cast<std::uint32_t>(registry.get<components::MapPingList>(world).pings.size())
+        : 0U;
+    append_pod(out, ping_count);
+    if (ping_count > 0U) {
+        for (const components::MapPing& ping : registry.get<components::MapPingList>(world).pings) {
+            append_pod(out, ping.cell.x);
+            append_pod(out, ping.cell.y);
+            append_pod(out, ping.player_slot);
+            append_pod(out, ping.ticks_remaining);
+        }
+    }
+
+
+
     const auto entity_count = static_cast<std::uint32_t>(entity_states.size());
 
     append_pod(out, entity_count);
@@ -3128,14 +3219,6 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
 
     reset_simulation_to_default_scenario(simulation);
-
-    simulation.restore_command_log(
-
-        decoded->metadata.input_log,
-
-        decoded->metadata.next_command_sequence);
-
-
 
     const entt::entity world = find_world_entity(simulation.registry());
 
@@ -3264,6 +3347,9 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
 
     session.ai_control_transitions = decoded->metadata.ai_control_transitions;
 
+    auto& map_pings = simulation.registry().get_or_emplace<components::MapPingList>(world);
+    map_pings.pings = decoded->map_pings;
+
 
 
     destroy_all_grid_entities(simulation.registry());
@@ -3304,6 +3390,10 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
     session.player_built_mill = decoded->metadata.player_built_mill;
 
     simulation.set_tick_count(decoded->metadata.tick_count);
+
+    simulation.restore_command_log(
+        decoded->metadata.input_log,
+        decoded->metadata.next_command_sequence);
 
     systems::compute_state_hash(simulation.registry());
 

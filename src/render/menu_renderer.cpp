@@ -102,6 +102,13 @@ void draw_multiplayer_version_label(
             constants::MENU_PATTERN_PREVIEW_BERRIES_B,
         };
     }
+    if (tile == sim::components::TileType::Rock) {
+        return {
+            constants::MENU_PATTERN_PREVIEW_ROCK_R,
+            constants::MENU_PATTERN_PREVIEW_ROCK_G,
+            constants::MENU_PATTERN_PREVIEW_ROCK_B,
+        };
+    }
     if (ground == sim::components::GroundType::Snow) {
         return {
             constants::MENU_PATTERN_PREVIEW_SNOW_R,
@@ -524,16 +531,16 @@ void MenuRenderer::draw_layout(
             constants::MAIN_MENU_FIELD_BG_G,
             constants::MAIN_MENU_FIELD_BG_B);
 
+        const bool selected = focused && context.state != nullptr && context.state->text_all_selected
+            && !field.value.empty();
         const std::string value = focused ? field.value + "_" : field.value;
-        hud_overlay_.draw_text(
+        hud_overlay_.draw_text_with_selection(
             window_size_,
             field.rect.x + static_cast<float>(constants::MAIN_MENU_PANEL_PADDING_PX),
             centered_text_y(field.rect, constants::HUD_PIXEL_SCALE),
-            value,
+            selected ? field.value : value,
             constants::HUD_PIXEL_SCALE,
-            constants::HUD_TEXT_R,
-            constants::HUD_TEXT_G,
-            constants::HUD_TEXT_B);
+            selected);
     }
 
     for (const app::MenuButton& button : layout.buttons) {
@@ -590,9 +597,11 @@ void MenuRenderer::refresh_pattern_preview_cache(const MenuRenderContext& contex
     const std::uint8_t player_count =
         sim::map::map_pattern_effective_player_count(pattern, requested_players);
 
+    const std::uint8_t biome_preset = state.host_settings.biome_preset;
     if (preview_pattern_index_ == pattern_index && preview_payload_ == state.selected_pattern_payload
         && preview_map_width_ == pattern.map_width && preview_map_height_ == pattern.map_height
-        && preview_player_count_ == player_count && preview_map_.grid.width > 0) {
+        && preview_player_count_ == player_count && preview_biome_preset_ == biome_preset
+        && preview_map_.grid.width > 0) {
         return;
     }
 
@@ -600,12 +609,14 @@ void MenuRenderer::refresh_pattern_preview_cache(const MenuRenderContext& contex
     config.player_count = player_count;
     config.seed = constants::MENU_PATTERN_PREVIEW_SEED;
     config.pattern = pattern;
+    config.biome_preset = biome_preset;
     preview_map_ = sim::map::generate_map(config);
     preview_pattern_index_ = pattern_index;
     preview_payload_ = state.selected_pattern_payload;
     preview_map_width_ = pattern.map_width;
     preview_map_height_ = pattern.map_height;
     preview_player_count_ = player_count;
+    preview_biome_preset_ = biome_preset;
 }
 
 void MenuRenderer::draw_pattern_preview(
@@ -770,6 +781,53 @@ void MenuRenderer::draw_settings(const MenuRenderContext& context) const
     }
 
     if (settings.screen == app::GameMenuScreen::SettingsGame) {
+        const app::GameMenuRect name_field =
+            app::settings_player_name_field_rect(window_size_, settings.center_settings_panel);
+        hud_overlay_.draw_text(
+            window_size_,
+            name_field.x,
+            name_field.y - constants::HUD_SETTINGS_LABEL_GAP_PX,
+            "Player Name",
+            constants::HUD_PIXEL_SCALE,
+            constants::HUD_TEXT_R,
+            constants::HUD_TEXT_G,
+            constants::HUD_TEXT_B);
+        const bool name_focused = context.state != nullptr
+            && context.state->focused_field == app::MenuTextField::PlayerName;
+        hud_overlay_.draw_rect(
+            window_size_,
+            name_field.x,
+            name_field.y,
+            name_field.width,
+            name_field.height,
+            name_focused ? constants::MAIN_MENU_FIELD_FOCUS_R : constants::HUD_OPTIONS_FRAME_BORDER_R,
+            name_focused ? constants::MAIN_MENU_FIELD_FOCUS_G : constants::HUD_OPTIONS_FRAME_BORDER_G,
+            name_focused ? constants::MAIN_MENU_FIELD_FOCUS_B : constants::HUD_OPTIONS_FRAME_BORDER_B);
+        hud_overlay_.draw_rect(
+            window_size_,
+            name_field.x + 1.0F,
+            name_field.y + 1.0F,
+            name_field.width - 2.0F,
+            name_field.height - 2.0F,
+            constants::MAIN_MENU_FIELD_BG_R,
+            constants::MAIN_MENU_FIELD_BG_G,
+            constants::MAIN_MENU_FIELD_BG_B);
+        const std::string& name_text = context.state != nullptr
+            ? context.state->player_name
+            : settings.player_name;
+        const bool name_selected = name_focused && context.state != nullptr
+            && context.state->text_all_selected && !name_text.empty();
+        const std::string name_value = name_focused ? name_text + "_" : name_text;
+        hud_overlay_.draw_text_with_selection(
+            window_size_,
+            name_field.x + static_cast<float>(constants::MAIN_MENU_PANEL_PADDING_PX),
+            name_field.y
+                + (name_field.height - HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE))
+                    * 0.5F,
+            name_selected ? name_text : name_value,
+            constants::HUD_PIXEL_SCALE,
+            name_selected);
+
         const app::GameMenuRect slider =
             app::scroll_speed_slider_rect(window_size_, settings.center_settings_panel);
         const int percent = static_cast<int>(

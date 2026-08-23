@@ -102,6 +102,12 @@ $eulaSrc = Join-Path $RepoRoot "legal\EULA.md"
 $eulaDst = Join-Path $stage "EULA.txt"
 Copy-Item -LiteralPath $eulaSrc -Destination $eulaDst
 
+$releaseNotesSrc = Join-Path $RepoRoot "RELEASE_NOTES.md"
+if (-not (Test-Path -LiteralPath $releaseNotesSrc)) {
+    throw "Missing $releaseNotesSrc"
+}
+Copy-Item -LiteralPath $releaseNotesSrc -Destination (Join-Path $stage "RELEASE_NOTES.md")
+
 $vcRedist = Get-ChildItem -Path @(
     "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\vc_redist.x64.exe",
     "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\vc_redist.x64.exe"

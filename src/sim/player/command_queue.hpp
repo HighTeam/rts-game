@@ -18,6 +18,10 @@ public:
 
     [[nodiscard]] const std::vector<PlayerCommand>& input_log() const { return input_log_; }
 
+    [[nodiscard]] const std::vector<PlayerCommand>& pending() const { return pending_; }
+
+    [[nodiscard]] std::vector<PlayerCommand> unapplied_commands(std::uint64_t tick_count) const;
+
     void restore_input_log(std::vector<PlayerCommand> log, std::uint64_t next_sequence);
 
     void clear_pending();

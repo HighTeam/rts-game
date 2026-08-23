@@ -58,6 +58,7 @@ struct HudUnitContext {
     std::uint8_t selected_building_player_slot{0U};
     int command_panel_pressed_slot{-1};
     bool chat_composing{false};
+    bool chat_all_selected{false};
     std::string chat_draft{};
     std::deque<app::ChatLine> chat_lines{};
     bool has_camera_view{false};
@@ -159,6 +160,14 @@ public:
         float r,
         float g,
         float b) const;
+
+    void draw_text_with_selection(
+        sf::Vector2u window_size,
+        float x,
+        float y,
+        const std::string& text,
+        int pixel_scale,
+        bool selected) const;
 
     void draw_rect(
         sf::Vector2u window_size,

@@ -59,6 +59,13 @@ void reset_pathfind_profile();
     entt::entity ignore = entt::null,
     entt::entity also_ignore = entt::null);
 
+/// True when another living unit's body is on `cell`. Path waypoints do not count.
+[[nodiscard]] bool is_unit_occupying_or_reserving_cell(
+    entt::registry& registry,
+    core::GridPos cell,
+    entt::entity ignore = entt::null,
+    entt::entity also_ignore = entt::null);
+
 // Actual unit bodies only. Path waypoints do not block construction.
 [[nodiscard]] bool is_cell_blocked_for_building(
     entt::registry& registry,
@@ -139,7 +146,8 @@ void reset_pathfind_profile();
     entt::registry& registry,
     entt::entity farm,
     entt::entity mover,
-    core::GridPos prefer_not = {-1, -1});
+    core::GridPos prefer_not = {-1, -1},
+    bool avoid_unit_occupancy = false);
 
 /// Deterministic wander cell on a farm footprint, avoiding `avoid` when possible.
 [[nodiscard]] core::GridPos pick_farm_wander_cell(
@@ -171,7 +179,8 @@ void reset_pathfind_profile();
     const components::MapGrid& map,
     entt::registry& registry,
     core::GridPos target_cell,
-    entt::entity mover);
+    entt::entity mover,
+    bool avoid_unit_occupancy = false);
 
 /// World goal inside `stand_cell` pulled toward a target cell AABB (gather).
 void work_stand_world_goal_for_cell(
@@ -209,7 +218,7 @@ void work_stand_world_goal_for_building(
     const components::GridPosition& anchor,
     const components::BuildingFootprint& footprint);
 
-/// True when the unit occupies a cardinal-adjacent stand cell and is in gather range.
+/// True when the unit occupies a Chebyshev-1 stand cell and is in gather range.
 [[nodiscard]] bool unit_can_work_cell(
     entt::registry& registry,
     entt::entity unit,

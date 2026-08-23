@@ -198,11 +198,6 @@ void LobbySession::cycle_slot_kind(const std::uint8_t slot)
         return;
     }
 
-    if (current_kind == LobbySlotKind::Ai
-        && playing <= view_.settings.pattern_min_players) {
-        return;
-    }
-
     if (slot == 0U) {
         return;
     }

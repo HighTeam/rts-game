@@ -14,6 +14,7 @@
 #include "sim/components/health.hpp"
 #include "sim/components/fog_of_war.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/map_pings.hpp"
 #include "sim/components/building_footprint.hpp"
 #include "sim/systems/visibility_system.hpp"
 #include "sim/systems/pathfinding.hpp"
@@ -1008,6 +1009,43 @@ struct BuildingSpriteVisual {
     return primary + constants::RENDER_BUILDING_SORT_BIAS + axis_tie + layer;
 }
 
+[[nodiscard]] float nature_tile_sort_key(
+    const int tile_x,
+    const int tile_y,
+    const std::vector<core::GridPos>& building_anchors,
+    const std::vector<sim::components::BuildingFootprint>& building_footprints)
+{
+    float sort_key = static_cast<float>(tile_x + tile_y) + constants::RENDER_TREE_SORT_BIAS;
+    const std::size_t count = std::min(building_anchors.size(), building_footprints.size());
+    const int pad = constants::RENDER_NATURE_BUILDING_OVERLAP_PAD_TILES;
+    const int tile_sum = tile_x + tile_y;
+    for (std::size_t index = 0U; index < count; ++index) {
+        const core::GridPos& anchor = building_anchors[index];
+        const sim::components::BuildingFootprint& footprint = building_footprints[index];
+        const int width = std::max(1, footprint.width);
+        const int height = std::max(1, footprint.height);
+        const int min_x = anchor.x;
+        const int min_y = anchor.y;
+        const int max_x = anchor.x + width - 1;
+        const int max_y = anchor.y + height - 1;
+        if (tile_sum < min_x + min_y) {
+            continue;
+        }
+
+        if (tile_x < min_x - pad || tile_y < min_y - pad
+            || tile_x > max_x + pad || tile_y > max_y + pad) {
+            continue;
+        }
+
+        const float building_sort =
+            building_footprint_sort_key(anchor.x, anchor.y, width, height, false);
+        sort_key = std::max(
+            sort_key, building_sort + constants::RENDER_NATURE_IN_FRONT_OF_BUILDING_SORT);
+    }
+
+    return sort_key;
+}
+
 [[nodiscard]] float farm_sprite_sort_key(
     const int anchor_x,
     const int anchor_y,
@@ -1991,6 +2029,61 @@ void GameRenderer::draw_screen_line_immediate(
     glBindVertexArray(0U);
 }
 
+void GameRenderer::draw_screen_thick_line_immediate(
+    const float screen_x0,
+    const float screen_y0,
+    const float screen_x1,
+    const float screen_y1,
+    const float thickness_px,
+    const float r,
+    const float g,
+    const float b) const
+{
+    const float window_width = static_cast<float>(window_size_.x);
+    const float window_height = static_cast<float>(window_size_.y);
+    if (window_width <= 0.0F || window_height <= 0.0F || thickness_px <= 0.0F) {
+        return;
+    }
+
+    const float dx = screen_x1 - screen_x0;
+    const float dy = screen_y1 - screen_y0;
+    const float length = std::sqrt(dx * dx + dy * dy);
+    if (length <= 0.0F) {
+        return;
+    }
+
+    const auto to_ndc_x = [window_width](const float screen_x) {
+        return (screen_x / window_width) * 2.0F - 1.0F;
+    };
+    const auto to_ndc_y = [window_height](const float screen_y) {
+        return 1.0F - (screen_y / window_height) * 2.0F;
+    };
+
+    const float half = thickness_px * 0.5F;
+    const float nx = (-dy / length) * half;
+    const float ny = (dx / length) * half;
+    const float depth = -0.99F;
+    const std::array<SceneVertex, 6> vertices = {
+        SceneVertex{to_ndc_x(screen_x0 + nx), to_ndc_y(screen_y0 + ny), depth, r, g, b},
+        SceneVertex{to_ndc_x(screen_x1 + nx), to_ndc_y(screen_y1 + ny), depth, r, g, b},
+        SceneVertex{to_ndc_x(screen_x1 - nx), to_ndc_y(screen_y1 - ny), depth, r, g, b},
+        SceneVertex{to_ndc_x(screen_x0 + nx), to_ndc_y(screen_y0 + ny), depth, r, g, b},
+        SceneVertex{to_ndc_x(screen_x1 - nx), to_ndc_y(screen_y1 - ny), depth, r, g, b},
+        SceneVertex{to_ndc_x(screen_x0 - nx), to_ndc_y(screen_y0 - ny), depth, r, g, b},
+    };
+
+    glBindVertexArray(scene_vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, scene_vbo_);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizei>(vertices.size() * sizeof(SceneVertex)),
+        vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glUseProgram(scene_shader_program_);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+    glBindVertexArray(0U);
+}
+
 void GameRenderer::draw_scene_line_xz(
     const float x0,
     const float z0,
@@ -2719,6 +2812,71 @@ SceneTextureKind GameRenderer::gold_mine_texture_for_cell(const int grid_x, cons
     return SceneTextureKind::GoldMine0;
 }
 
+SceneTextureKind GameRenderer::rock_texture_for_cell(const int grid_x, const int grid_y) const
+{
+    static constexpr SceneTextureKind variants[] = {
+        SceneTextureKind::Rock1,
+        SceneTextureKind::Rock2,
+        SceneTextureKind::Rock3,
+    };
+    const int variant_index =
+        (grid_x * 13 + grid_y * 17) % constants::MAP_ROCK_VARIANT_COUNT;
+    const SceneTextureKind kind = variants[variant_index];
+    if (scene_textures_.texture_id(kind) != 0U) {
+        return kind;
+    }
+
+    for (const SceneTextureKind fallback : variants) {
+        if (scene_textures_.texture_id(fallback) != 0U) {
+            return fallback;
+        }
+    }
+
+    return SceneTextureKind::Rock1;
+}
+
+void GameRenderer::draw_map_ping_marks(const std::vector<sim::components::MapPing>& pings) const
+{
+    if (pings.empty()) {
+        return;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+    for (const sim::components::MapPing& ping : pings) {
+        const int phase = ping.ticks_remaining / constants::MAP_PING_FLASH_PERIOD_TICKS;
+        if ((phase % 2) != 0) {
+            continue;
+        }
+
+        const sf::Vector2f center = world_to_screen(
+            static_cast<float>(ping.cell.x) + 0.5F,
+            0.0F,
+            static_cast<float>(ping.cell.y) + 0.5F);
+        const float half = constants::MAP_PING_WORLD_HALF_PX;
+        const auto& rgb =
+            sim::components::player_slot_rgb(g_draw_player_color_indices, ping.player_slot);
+        draw_screen_thick_line_immediate(
+            center.x - half,
+            center.y - half,
+            center.x + half,
+            center.y + half,
+            constants::MAP_PING_WORLD_LINE_THICKNESS_PX,
+            rgb[0],
+            rgb[1],
+            rgb[2]);
+        draw_screen_thick_line_immediate(
+            center.x - half,
+            center.y + half,
+            center.x + half,
+            center.y - half,
+            constants::MAP_PING_WORLD_LINE_THICKNESS_PX,
+            rgb[0],
+            rgb[1],
+            rgb[2]);
+    }
+    glEnable(GL_DEPTH_TEST);
+}
+
 void GameRenderer::draw_screen_sprite(
     const float screen_left,
     const float screen_top,
@@ -3351,7 +3509,8 @@ std::vector<OccluderSprite> GameRenderer::collect_unit_front_occluder_sprites(
                     || tile == sim::components::TileType::Blueberries)
                 && static_cast<std::size_t>(index) < map.bush_food.size()
                 && map.bush_food[static_cast<std::size_t>(index)] > 0;
-            if (!is_forest && !is_berries) {
+            const bool is_rock = tile == sim::components::TileType::Rock;
+            if (!is_forest && !is_berries && !is_rock) {
                 continue;
             }
 
@@ -3368,6 +3527,12 @@ std::vector<OccluderSprite> GameRenderer::collect_unit_front_occluder_sprites(
                 const auto offset = tree_sprite_offset_for_kind(sprite.texture_kind);
                 sprite.offset_x_tiles = offset.first;
                 sprite.offset_y_tiles = offset.second;
+            }
+            else if (is_rock) {
+                sprite.texture_kind = rock_texture_for_cell(cell.x, cell.y);
+                sprite.width_scale = constants::RENDER_ROCK_SPRITE_WIDTH_SCALE;
+                sprite.offset_x_tiles = constants::RENDER_ROCK_SPRITE_OFFSET_X;
+                sprite.offset_y_tiles = constants::RENDER_ROCK_SPRITE_OFFSET_Y;
             }
             else {
                 sprite.texture_kind = tile == sim::components::TileType::Blueberries
@@ -4041,6 +4206,9 @@ void GameRenderer::draw_hitbox_overlays(
                 blocked = static_cast<std::size_t>(index) < map.mine_money.size()
                     && map.mine_money[static_cast<std::size_t>(index)] > 0;
             }
+            else if (tile == sim::components::TileType::Rock) {
+                blocked = true;
+            }
 
             if (!blocked) {
                 continue;
@@ -4129,6 +4297,9 @@ void GameRenderer::draw_hitbox_overlays_snapshot(
             else if (tile == sim::components::TileType::GoldMine) {
                 blocked = index < static_cast<int>(snapshot.mine_money.size())
                     && snapshot.mine_money[static_cast<std::size_t>(index)] > 0;
+            }
+            else if (tile == sim::components::TileType::Rock) {
+                blocked = true;
             }
 
             if (!blocked) {
@@ -5313,7 +5484,8 @@ void GameRenderer::draw(
                     && bush_food > 0;
                 const bool draw_gold_mine =
                     tile == sim::components::TileType::GoldMine && mine_money > 0;
-                if (!draw_forest && !draw_bush && !draw_gold_mine) {
+                const bool draw_rock = tile == sim::components::TileType::Rock;
+                if (!draw_forest && !draw_bush && !draw_gold_mine && !draw_rock) {
                     continue;
                 }
 
@@ -5343,19 +5515,27 @@ void GameRenderer::draw(
                         sim::components::ground_at(map, static_cast<std::size_t>(index)))
                     : (draw_gold_mine
                         ? gold_mine_texture_for_cell(x, y)
-                        : (tile == sim::components::TileType::Blueberries
-                            ? SceneTextureKind::Blueberries
-                            : SceneTextureKind::Berries));
+                        : (draw_rock
+                            ? rock_texture_for_cell(x, y)
+                            : (tile == sim::components::TileType::Blueberries
+                                ? SceneTextureKind::Blueberries
+                                : SceneTextureKind::Berries)));
                 const float width_scale = draw_gold_mine
                     ? constants::RENDER_GOLD_MINE_SPRITE_WIDTH_SCALE
-                    : (draw_forest
-                        ? tree_sprite_width_scale(object_kind)
-                        : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
+                    : (draw_rock
+                        ? constants::RENDER_ROCK_SPRITE_WIDTH_SCALE
+                        : (draw_forest
+                            ? tree_sprite_width_scale(object_kind)
+                            : constants::RENDER_TREE_SPRITE_WIDTH_SCALE));
                 float offset_x = 0.0F;
                 float offset_y = 0.0F;
                 if (draw_gold_mine) {
                     offset_x = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_X;
                     offset_y = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_Y;
+                }
+                else if (draw_rock) {
+                    offset_x = constants::RENDER_ROCK_SPRITE_OFFSET_X;
+                    offset_y = constants::RENDER_ROCK_SPRITE_OFFSET_Y;
                 }
                 else if (draw_forest) {
                     const auto tree_offset = tree_sprite_offset_for_kind(object_kind);
@@ -5372,7 +5552,7 @@ void GameRenderer::draw(
                     object_kind,
                     width_scale,
                     brightness,
-                    static_cast<float>(x + y) + constants::RENDER_TREE_SORT_BIAS,
+                    nature_tile_sort_key(x, y, building_anchors, building_footprints),
                     offset_x,
                     offset_y);
             }
@@ -5936,6 +6116,28 @@ void GameRenderer::draw(
 
     draw_hitbox_overlays(simulation, interpolation_alpha);
     draw_debug_path_overlays(simulation, interpolation_alpha);
+    {
+        const auto ping_world_view =
+            simulation.registry().view<sim::components::WorldTag, sim::components::MapPingList>();
+        if (ping_world_view.begin() != ping_world_view.end()) {
+            const auto& session_view = simulation.registry()
+                .view<sim::components::WorldTag, sim::components::MatchSession>();
+            const sim::components::MatchSession* session = nullptr;
+            if (session_view.begin() != session_view.end()) {
+                session = &session_view.get<sim::components::MatchSession>(*session_view.begin());
+            }
+            std::vector<sim::components::MapPing> visible_pings{};
+            for (const sim::components::MapPing& ping :
+                 ping_world_view.get<sim::components::MapPingList>(*ping_world_view.begin()).pings) {
+                if (session == nullptr || ping.player_slot == local_player_slot_
+                    || sim::components::slots_are_allied(
+                        *session, local_player_slot_, ping.player_slot)) {
+                    visible_pings.push_back(ping);
+                }
+            }
+            draw_map_ping_marks(visible_pings);
+        }
+    }
 
     render::HudUnitContext hud_context = hud_context_input;
     if (selected_entities.size() == 1U) {
@@ -6329,7 +6531,8 @@ void GameRenderer::draw_snapshot(
                     && bush_food > 0;
                 const bool draw_gold_mine =
                     tile == sim::components::TileType::GoldMine && mine_money > 0;
-                if (!draw_forest && !draw_bush && !draw_gold_mine) {
+                const bool draw_rock = tile == sim::components::TileType::Rock;
+                if (!draw_forest && !draw_bush && !draw_gold_mine && !draw_rock) {
                     continue;
                 }
 
@@ -6361,19 +6564,27 @@ void GameRenderer::draw_snapshot(
                             : sim::components::GroundType::Grass)
                     : (draw_gold_mine
                         ? gold_mine_texture_for_cell(x, y)
-                        : (tile == sim::components::TileType::Blueberries
-                            ? SceneTextureKind::Blueberries
-                            : SceneTextureKind::Berries));
+                        : (draw_rock
+                            ? rock_texture_for_cell(x, y)
+                            : (tile == sim::components::TileType::Blueberries
+                                ? SceneTextureKind::Blueberries
+                                : SceneTextureKind::Berries)));
                 const float width_scale = draw_gold_mine
                     ? constants::RENDER_GOLD_MINE_SPRITE_WIDTH_SCALE
-                    : (draw_forest
-                        ? tree_sprite_width_scale(object_kind)
-                        : constants::RENDER_TREE_SPRITE_WIDTH_SCALE);
+                    : (draw_rock
+                        ? constants::RENDER_ROCK_SPRITE_WIDTH_SCALE
+                        : (draw_forest
+                            ? tree_sprite_width_scale(object_kind)
+                            : constants::RENDER_TREE_SPRITE_WIDTH_SCALE));
                 float offset_x = 0.0F;
                 float offset_y = 0.0F;
                 if (draw_gold_mine) {
                     offset_x = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_X;
                     offset_y = constants::RENDER_GOLD_MINE_SPRITE_OFFSET_Y;
+                }
+                else if (draw_rock) {
+                    offset_x = constants::RENDER_ROCK_SPRITE_OFFSET_X;
+                    offset_y = constants::RENDER_ROCK_SPRITE_OFFSET_Y;
                 }
                 else if (draw_forest) {
                     const auto tree_offset = tree_sprite_offset_for_kind(object_kind);
@@ -6390,7 +6601,8 @@ void GameRenderer::draw_snapshot(
                     object_kind,
                     width_scale,
                     brightness,
-                    static_cast<float>(x + y) + constants::RENDER_TREE_SORT_BIAS,
+                    nature_tile_sort_key(
+                        x, y, snapshot_building_anchors, snapshot_building_footprints),
                     offset_x,
                     offset_y);
             }
@@ -6838,6 +7050,7 @@ void GameRenderer::draw_snapshot(
 
     draw_hitbox_overlays_snapshot(snapshot, interpolation_alpha);
     draw_debug_path_overlays_snapshot(snapshot, interpolation_alpha);
+    draw_map_ping_marks(snapshot.map_pings);
 
     render::HudUnitContext hud_context = hud_context_input;
     if (selected_entities.size() == 1U) {

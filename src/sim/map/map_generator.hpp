@@ -18,6 +18,7 @@ struct MapGenerationConfig {
     int forest_patch_wood{100};
     int bush_food_capacity{constants::BERRY_BUSH_FOOD_CAPACITY};
     int mine_money_capacity{constants::GOLD_MINE_MONEY_CAPACITY};
+    std::uint8_t biome_preset{constants::MAP_BIOME_PRESET_MIXED};
 };
 
 struct GeneratedMap {
@@ -46,12 +47,14 @@ struct GeneratedMap {
     const std::uint8_t player_count,
     const std::uint64_t seed,
     const std::uint8_t pattern_index,
-    const std::string& pattern_payload)
+    const std::string& pattern_payload,
+    const std::uint8_t biome_preset = constants::MAP_BIOME_PRESET_MIXED)
 {
     MapGenerationConfig config{};
     config.player_count = player_count;
     config.seed = seed;
     config.pattern = resolve_map_pattern(pattern_index, pattern_payload);
+    config.biome_preset = biome_preset;
     return config;
 }
 

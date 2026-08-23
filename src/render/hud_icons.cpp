@@ -46,6 +46,7 @@ constexpr std::array<IconTile, static_cast<std::size_t>(HudIcon::Count)> ICON_TI
     {5, 6},   // MiningCamp
     {14, 13}, // Map
     {1, 3},   // ClosedEye
+    {11, 8},  // Spyglass
 }};
 
 constexpr const char* ATLAS_RELATIVE_PATH =

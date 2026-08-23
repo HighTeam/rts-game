@@ -81,7 +81,8 @@ void drain_match_announcements_to_chat(
     entt::registry& registry,
     ChatState& chat_state,
     const std::uint8_t local_player_slot,
-    const std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS>& names)
+    const std::array<std::string, aoa::net::constants::LOCKSTEP_MAX_PLAYER_SLOTS>& names,
+    audio::GameAudio& game_audio)
 {
     for (const sim::components::MatchAnnouncement& event :
          sim::components::drain_match_announcements(registry)) {
@@ -94,6 +95,9 @@ void drain_match_announcements_to_chat(
                 ChatTextSpan{std::string(constants::CHAT_AGE_ADVANCED_MID), false, 0U},
                 ChatTextSpan{std::string(age_name), false, 0U},
             }, ChatChannel::All, false);
+            if (event.player_slot == local_player_slot) {
+                game_audio.play_sfx(audio::SfxId::NewAge);
+            }
             continue;
         }
 
@@ -452,6 +456,7 @@ AppFlow run_graphical(
     game_input.set_scroll_speed(shell_settings.scroll_speed);
     game_input.set_building_range_display(shell_settings.building_range_display);
     game_input.set_hud_style(shell_settings.hud_style);
+    game_input.set_player_name(shell_settings.player_name);
     renderer.set_show_perf_hud(shell_settings.show_perf_hud);
     game_cursor.force_reapply(window);
 
@@ -566,8 +571,9 @@ AppFlow run_graphical(
             drain_match_announcements_to_chat(
                 simulation.registry(),
                 chat_state,
-                0U,
-                setup.player_names);
+                renderer.local_player_slot(),
+                setup.player_names,
+                game_audio);
             game_input.update_continuous(window, renderer, simulation);
             (void)window.setActive(true);
             const app::PlayerSelection& selection = game_input.selection();
@@ -680,6 +686,7 @@ AppFlow run_graphical(
     shell_settings.scroll_speed = game_input.scroll_speed();
     shell_settings.building_range_display = game_input.building_range_display();
     shell_settings.hud_style = game_input.hud_style();
+    shell_settings.player_name = game_input.player_name();
     save_app_settings(shell_settings);
     return flow;
 }
@@ -698,7 +705,7 @@ void update_lockstep_window_title(
         title += " - DESYNC tick " + std::to_string(session.desync_tick());
     }
     else if (session.is_host_gone()) {
-        title += " - Host left the game";
+        title += " - Host has ended the game";
     }
     else if (session.is_reconnecting()) {
         title += " - Reconnecting to host...";
@@ -751,8 +758,12 @@ bool lockstep_should_show_waiting_overlay(
     const net::LockstepSession& session,
     const net::LockstepRole role)
 {
-    if (session.is_desynced() || session.is_host_gone()) {
+    if (session.is_desynced()) {
         return false;
+    }
+
+    if (session.is_host_gone()) {
+        return true;
     }
 
     if (role == net::LockstepRole::Client
@@ -797,6 +808,12 @@ std::pair<std::string, std::string> lockstep_waiting_overlay_text(
     const net::LockstepSession& session,
     const net::LockstepRole role)
 {
+    if (session.is_host_gone()) {
+        return {
+            std::string(constants::HOST_ENDED_OVERLAY_TITLE),
+            std::string(constants::HOST_ENDED_OVERLAY_DETAIL)};
+    }
+
     if (session.is_awaiting_reconnect_handshake()
         || (role == net::LockstepRole::Client && session.is_connected()
             && !session.is_session_ready())) {
@@ -1005,6 +1022,7 @@ AppFlow run_lockstep_match(
     game_input.set_scroll_speed(shell_settings.scroll_speed);
     game_input.set_building_range_display(shell_settings.building_range_display);
     game_input.set_hud_style(shell_settings.hud_style);
+    game_input.set_player_name(shell_settings.player_name);
     renderer.set_show_perf_hud(shell_settings.show_perf_hud);
     game_cursor.force_reapply(window);
 
@@ -1112,7 +1130,8 @@ AppFlow run_lockstep_match(
                 simulation.registry(),
                 chat_state,
                 player_slot,
-                setup.player_names);
+                setup.player_names,
+                game_audio);
         }
 
         session.service_network_latency();
@@ -1229,6 +1248,7 @@ AppFlow run_lockstep_match(
     shell_settings.scroll_speed = game_input.scroll_speed();
     shell_settings.building_range_display = game_input.building_range_display();
     shell_settings.hud_style = game_input.hud_style();
+    shell_settings.player_name = game_input.player_name();
     save_app_settings(shell_settings);
     return flow;
 }

@@ -40,7 +40,9 @@ enum class SfxId : std::uint8_t {
     Okay = 14,
     IllDoIt = 15,
     MovingHere = 16,
-    Count = 17,
+    NewAge = 17,
+    LookHere = 18,
+    Count = 19,
 };
 
 enum class MusicMode : std::uint8_t {

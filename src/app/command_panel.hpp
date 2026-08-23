@@ -149,6 +149,9 @@ struct CommandPanelBuildOptions {
     int garden_money_cost{constants::GARDEN_BUILD_MONEY_COST};
     int garden_mana_cost{constants::GARDEN_BUILD_MANA_COST};
     bool can_afford_garden{true};
+    int garden_count{0};
+    int garden_limit{constants::GARDEN_MAX_PER_PLAYER};
+    bool garden_at_limit{false};
     int reservoir_wood_cost{constants::RESERVOIR_BUILD_WOOD_COST};
     int reservoir_money_cost{constants::RESERVOIR_BUILD_MONEY_COST};
     bool can_afford_reservoir{true};
@@ -754,7 +757,8 @@ struct CommandPanelBuildOptions {
             button.cost_money = build_options.garden_money_cost;
             button.cost_mana = build_options.garden_mana_cost;
             button.locked = !build_options.unlocked_garden;
-            button.disabled = button.locked || !build_options.can_afford_garden;
+            button.disabled = button.locked || build_options.garden_at_limit
+                || !build_options.can_afford_garden;
         }
         if (button.action == CommandPanelAction::BuildReservoir) {
             button.cost_wood = build_options.reservoir_wood_cost;
@@ -870,7 +874,8 @@ struct CommandPanelBuildOptions {
             return CommandPanelAction::None;
         }
         if (action == CommandPanelAction::BuildGarden
-            && (!build_options.unlocked_garden || !build_options.can_afford_garden)) {
+            && (!build_options.unlocked_garden || build_options.garden_at_limit
+                || !build_options.can_afford_garden)) {
             return CommandPanelAction::None;
         }
         if (action == CommandPanelAction::BuildReservoir

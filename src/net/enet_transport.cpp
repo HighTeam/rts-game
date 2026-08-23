@@ -469,13 +469,13 @@ void EnetTransport::disconnect_peer()
     if (is_server_) {
         for (std::uint8_t client_slot = 1U; client_slot <= max_clients_; ++client_slot) {
             if (client_peers_[client_slot] != nullptr) {
-                enet_peer_disconnect(client_peers_[client_slot], 0);
+                enet_peer_disconnect_now(client_peers_[client_slot], 0);
                 client_peers_[client_slot] = nullptr;
             }
         }
 
         ENetEvent event{};
-        while (host_ != nullptr && enet_host_service(host_, &event, 1000) > 0) {
+        while (host_ != nullptr && enet_host_service(host_, &event, 0) > 0) {
             if (event.type == ENET_EVENT_TYPE_RECEIVE) {
                 enet_packet_destroy(event.packet);
             }
@@ -488,9 +488,9 @@ void EnetTransport::disconnect_peer()
         return;
     }
 
-    enet_peer_disconnect(client_peer_, 0);
+    enet_peer_disconnect_now(client_peer_, 0);
     ENetEvent event{};
-    while (enet_host_service(host_, &event, 1000) > 0) {
+    while (enet_host_service(host_, &event, 0) > 0) {
         if (event.type == ENET_EVENT_TYPE_RECEIVE) {
             enet_packet_destroy(event.packet);
         }

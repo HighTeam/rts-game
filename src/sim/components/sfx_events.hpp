@@ -14,11 +14,13 @@ enum class SfxEventKind : std::uint8_t {
     MilitiaMeleeHit = 0,
     WorkerMeleeHit = 1,
     UnitDeath = 2,
+    LookHere = 3,
 };
 
 struct SfxEvent {
     SfxEventKind kind{SfxEventKind::MilitiaMeleeHit};
     core::GridPos cell{};
+    std::uint8_t player_slot{0xFFU};
 };
 
 struct SfxEventQueue {
@@ -29,7 +31,8 @@ struct SfxEventQueue {
 inline void push_sfx_event(
     entt::registry& registry,
     const SfxEventKind kind,
-    const core::GridPos cell)
+    const core::GridPos cell,
+    const std::uint8_t player_slot = 0xFFU)
 {
     if (!registry.ctx().contains<SfxEventQueue>()) {
         registry.ctx().emplace<SfxEventQueue>();
@@ -37,7 +40,7 @@ inline void push_sfx_event(
 
     auto& queue = registry.ctx().get<SfxEventQueue>();
     const std::lock_guard<std::mutex> lock(queue.mutex);
-    queue.events.push_back(SfxEvent{kind, cell});
+    queue.events.push_back(SfxEvent{kind, cell, player_slot});
 }
 
 inline std::vector<SfxEvent> drain_sfx_events(entt::registry& registry)

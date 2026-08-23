@@ -96,9 +96,12 @@ std::optional<core::GridPos> find_building_unit_spawn_cell(
                 continue;
             }
 
-            if (!systems::is_movement_blocked(registry, candidate, entt::null)) {
-                return candidate;
+            if (systems::is_cell_blocked_for_building(registry, candidate, entt::null)
+                || systems::is_unit_occupying_or_reserving_cell(registry, candidate, entt::null)) {
+                continue;
             }
+
+            return candidate;
         }
     }
 

@@ -348,6 +348,8 @@ private:
         sim::components::GroundType ground) const;
     [[nodiscard]] float tree_sprite_width_scale(SceneTextureKind kind) const;
     [[nodiscard]] SceneTextureKind gold_mine_texture_for_cell(int grid_x, int grid_y) const;
+    [[nodiscard]] SceneTextureKind rock_texture_for_cell(int grid_x, int grid_y) const;
+    void draw_map_ping_marks(const std::vector<sim::components::MapPing>& pings) const;
     [[nodiscard]] SceneVertex make_scene_vertex(
         float world_x,
         float world_y,
@@ -394,6 +396,15 @@ private:
         float screen_y0,
         float screen_x1,
         float screen_y1,
+        float r,
+        float g,
+        float b) const;
+    void draw_screen_thick_line_immediate(
+        float screen_x0,
+        float screen_y0,
+        float screen_x1,
+        float screen_y1,
+        float thickness_px,
         float r,
         float g,
         float b) const;

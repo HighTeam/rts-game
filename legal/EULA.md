@@ -1,6 +1,6 @@
-# Age of Affinities — End User License Agreement (draft)
+# Age of Affinities - End User License Agreement (draft)
 
-**Version:** 0.1 (draft, pre-release)
+**Version:** alpha_v0.2.1 (draft, pre-release)
 
 Copyright (c) 2026 HighTeam. All Rights Reserved.
 
@@ -28,4 +28,4 @@ THE GAME IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
 
 ---
 
-*Working draft — not legal advice. Final text ships in the installer.*
+*Working draft - not legal advice. Final text ships in the installer.*

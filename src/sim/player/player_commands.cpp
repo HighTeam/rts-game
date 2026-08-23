@@ -13,10 +13,12 @@
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/map_pings.hpp"
 #include "sim/components/match_announcements.hpp"
 #include "sim/components/match_session.hpp"
 #include "sim/components/movement.hpp"
 #include "sim/components/resources.hpp"
+#include "sim/components/sfx_events.hpp"
 #include "sim/components/player_slot.hpp"
 #include "sim/components/tags.hpp"
 #include "sim/components/world_position.hpp"
@@ -147,6 +149,74 @@ bool try_start_building_process(
     return true;
 }
 
+void refund_training_process(
+    entt::registry& registry,
+    const entt::entity building,
+    const components::BuildingProcessKind kind)
+{
+    if (!registry.valid(building)) {
+        return;
+    }
+
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::ContentPack>(world)) {
+        return;
+    }
+
+    const std::uint8_t player_slot = components::entity_player_slot(registry, building);
+    const auto& content_pack = registry.get<components::ContentPack>(world);
+    if (!registry.any_of<components::DefinitionRef>(building)) {
+        return;
+    }
+
+    const auto* structure = data::find_structure_archetype(
+        content_pack.content,
+        registry.get<components::DefinitionRef>(building).id);
+
+    if (kind == components::BuildingProcessKind::TrainWorker) {
+        const int food_cost = structure != nullptr && structure->spawn_worker_food_cost > 0
+            ? structure->spawn_worker_food_cost
+            : constants::WORKER_FOOD_COST;
+        if (food_cost > 0) {
+            add_player_food(registry, player_slot, food_cost);
+        }
+        return;
+    }
+
+    if (kind == components::BuildingProcessKind::TrainMilitia) {
+        const int food_cost = structure != nullptr && structure->spawn_militia_food_cost > 0
+            ? structure->spawn_militia_food_cost
+            : 0;
+        const int money_cost = structure != nullptr && structure->spawn_militia_money_cost > 0
+            ? structure->spawn_militia_money_cost
+            : constants::MILITIA_MONEY_COST;
+        if (food_cost > 0) {
+            add_player_food(registry, player_slot, food_cost);
+        }
+        if (money_cost > 0) {
+            add_player_money(registry, player_slot, money_cost);
+        }
+        return;
+    }
+
+    if (kind != components::BuildingProcessKind::TrainMage) {
+        return;
+    }
+
+    const int money_cost = structure != nullptr && structure->spawn_mage_money_cost > 0
+        ? structure->spawn_mage_money_cost
+        : constants::MAGE_MONEY_COST;
+    const int mana_cost = structure != nullptr && structure->spawn_mage_mana_cost > 0
+        ? structure->spawn_mage_mana_cost
+        : constants::MAGE_MANA_COST;
+    if (money_cost > 0) {
+        add_player_money(registry, player_slot, money_cost);
+    }
+    if (mana_cost > 0) {
+        add_player_mana(registry, player_slot, mana_cost);
+    }
+}
+
 bool market_is_ready(entt::registry& registry, const entt::entity market)
 {
     return registry.valid(market)
@@ -260,11 +330,6 @@ bool issue_move_order(
         }
     }
 
-    if (registry.any_of<components::AttackCooldown>(entity)
-        && registry.get<components::AttackCooldown>(entity).ticks_remaining > 0) {
-        return false;
-    }
-
     mark_manual_control(registry, entity);
     registry.remove<components::AttackOrder>(entity);
     registry.remove<components::GatherTarget>(entity);
@@ -288,11 +353,6 @@ bool issue_attack_order(
     const entt::entity target)
 {
     if (!is_alive_player_unit(registry, entity)) {
-        return false;
-    }
-
-    if (registry.any_of<components::AttackCooldown>(entity)
-        && registry.get<components::AttackCooldown>(entity).ticks_remaining > 0) {
         return false;
     }
 
@@ -397,7 +457,7 @@ bool issue_gather_order(
     const core::GridPos stand_tile = is_farm
         ? systems::find_best_farm_stand_tile(map, registry, farm, entity)
         : (has_resource ? find_adjacent_walkable(map, registry, forest_cell, entity) : forest_cell);
-    if (stand_tile.x < 0) {
+    if (stand_tile.x < 0 || !systems::is_tile_walkable(map, stand_tile, false)) {
         return false;
     }
 
@@ -407,6 +467,8 @@ bool issue_gather_order(
     auto& gather_target = registry.get_or_emplace<components::GatherTarget>(entity);
     gather_target.cell = forest_cell;
     gather_target.resource_type = tile;
+    gather_target.stand_cell = stand_tile;
+    gather_target.stand_block_ticks = 0;
     registry.get_or_emplace<components::WorkerBrain>(entity).state = components::WorkerState::MovingToResource;
     math::Fixed gather_goal_x{};
     math::Fixed gather_goal_y{};
@@ -908,6 +970,12 @@ bool issue_destroy_building_order(entt::registry& registry, const entt::entity b
             }
         }
 
+        if (registry.any_of<components::TownCenterTag>(building)
+            && player_town_center_gold_mana_waived(registry, player_slot, building)) {
+            refund_money = 0;
+            refund_mana = 0;
+        }
+
         if (refund_wood <= 0) {
             if (registry.any_of<components::TownCenterTag>(building)) {
                 refund_wood = constants::TOWN_CENTER_BUILD_WOOD_COST;
@@ -1072,12 +1140,17 @@ bool issue_build_town_center_order(
     const int build_cost = town_center_archetype->build_wood_cost > 0
         ? town_center_archetype->build_wood_cost
         : constants::TOWN_CENTER_BUILD_WOOD_COST;
-    const int money_cost = town_center_archetype->build_money_cost > 0
-        ? town_center_archetype->build_money_cost
-        : constants::TOWN_CENTER_BUILD_MONEY_COST;
-    const int mana_cost = town_center_archetype->build_mana_cost > 0
-        ? town_center_archetype->build_mana_cost
-        : constants::TOWN_CENTER_BUILD_MANA_COST;
+    const bool waive_gold_mana = player_town_center_gold_mana_waived(registry, player_slot);
+    const int money_cost = waive_gold_mana
+        ? 0
+        : (town_center_archetype->build_money_cost > 0
+               ? town_center_archetype->build_money_cost
+               : constants::TOWN_CENTER_BUILD_MONEY_COST);
+    const int mana_cost = waive_gold_mana
+        ? 0
+        : (town_center_archetype->build_mana_cost > 0
+               ? town_center_archetype->build_mana_cost
+               : constants::TOWN_CENTER_BUILD_MANA_COST);
     if (!can_afford_player_wood(registry, player_slot, build_cost)
         || !can_afford_player_money(registry, player_slot, money_cost)
         || !can_afford_player_mana(registry, player_slot, mana_cost)) {
@@ -1652,27 +1725,10 @@ bool issue_build_simple_structure(
         return false;
     }
 
-    if (archetype_id == constants::GARDEN_BUILDING_ID) {
-        int garden_count = 0;
-        const auto garden_view = registry.view<
-            components::GardenTag,
-            components::PlayerOwnedTag,
-            components::Health>();
-        for (const entt::entity garden : garden_view) {
-            if (garden_view.get<components::Health>(garden).current.raw() <= 0) {
-                continue;
-            }
-
-            if (components::entity_player_slot(registry, garden) != player_slot) {
-                continue;
-            }
-
-            ++garden_count;
-        }
-
-        if (garden_count >= constants::GARDEN_MAX_PER_PLAYER) {
-            return false;
-        }
+    if (archetype_id == constants::GARDEN_BUILDING_ID
+        && count_living_player_gardens(registry, player_slot)
+            >= constants::GARDEN_MAX_PER_PLAYER) {
+        return false;
     }
 
     const entt::entity world = find_world_entity(registry);
@@ -2357,6 +2413,39 @@ bool issue_resign_order(entt::registry& registry, const std::uint8_t player_slot
 
     session.eliminated_slots_mask = static_cast<std::uint8_t>(
         session.eliminated_slots_mask | components::player_slot_bit(player_slot));
+    return true;
+}
+
+bool issue_map_ping_order(
+    entt::registry& registry,
+    const std::uint8_t player_slot,
+    const core::GridPos cell)
+{
+    const entt::entity world = find_world_entity(registry);
+    if (world == entt::null || !registry.any_of<components::MapGrid>(world)) {
+        return false;
+    }
+
+    const auto& map = registry.get<components::MapGrid>(world);
+    if (!core::is_inside_grid(cell, map.width, map.height)) {
+        return false;
+    }
+
+    if (!registry.any_of<components::MapPingList>(world)) {
+        registry.emplace<components::MapPingList>(world);
+    }
+
+    auto& pings = registry.get<components::MapPingList>(world);
+    pings.pings.push_back(components::MapPing{
+        cell,
+        player_slot,
+        constants::MAP_PING_DURATION_TICKS,
+    });
+    components::push_sfx_event(
+        registry,
+        components::SfxEventKind::LookHere,
+        cell,
+        player_slot);
     return true;
 }
 

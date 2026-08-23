@@ -10,7 +10,7 @@ namespace aoa::constants {
 inline constexpr std::string_view WINDOW_TITLE = "Age of Affinities";
 inline constexpr std::string_view GAME_EXECUTABLE_STEM = "AgeofAffinities";
 // Owner-controlled. Do not change unless the owner asks.
-inline constexpr std::string_view GAME_VERSION = "alpha_v0.2";
+inline constexpr std::string_view GAME_VERSION = "alpha_v0.2.1";
 inline constexpr std::string_view GAME_WEBSITE_URL = "https://aoa-web.4ort.workers.dev/";
 inline constexpr std::string_view GAME_DESCRIPTION =
     "Age of Empires II-style RTS. Civilizations rise through Water, Earth, Fire, and Air. "
@@ -153,6 +153,9 @@ inline constexpr int MOVE_BLOCKED_REPATH_COOLDOWN_TICKS = 5;
 inline constexpr int MOVE_SEGMENT_SOLID_SAMPLE_COUNT = 8;
 // Pause this many ticks on a radius block, then drop the segment and repath.
 inline constexpr int MOVE_SEGMENT_RADIUS_BLOCK_WAIT_TICKS = 8;
+inline constexpr int WORKER_STAND_RETRY_ATTEMPTS = 3;
+inline constexpr int WORKER_STAND_RETRY_TICKS =
+    MOVE_BLOCKED_REPATH_COOLDOWN_TICKS * WORKER_STAND_RETRY_ATTEMPTS;
 
 // P1..P8: Red, Blue, Green, Yellow, Purple, Gray, Cyan, Pink
 inline constexpr std::array<std::array<float, 3>, 8> PLAYER_SLOT_COLOR_RGB{{
@@ -317,7 +320,7 @@ inline constexpr std::string_view PATTERN_WRONG_KIND_OPEN_LABEL =
 inline constexpr std::string_view PATTERN_WRONG_KIND_GAME_LABEL =
     "This file is not a game .pattern export.";
 inline constexpr int PATTERN_DOUBLE_CLICK_MS = 400;
-inline constexpr int SINGLEPLAYER_OPTION_ROW_COUNT = 9;
+inline constexpr int SINGLEPLAYER_OPTION_ROW_COUNT = 10;
 inline constexpr int SINGLEPLAYER_COLOR_BUTTON_WIDTH_PX = 90;
 inline constexpr int SINGLEPLAYER_KIND_BUTTON_WIDTH_PX = 90;
 inline constexpr int SINGLEPLAYER_TEAM_BUTTON_WIDTH_PX = 40;
@@ -337,6 +340,8 @@ inline constexpr float HUD_HOVER_SWITCH_MARGIN_PX = 8.0F;
 inline constexpr int SELECTION_BOX_DRAG_THRESHOLD_PX = 6;
 
 inline constexpr int HUD_PIXEL_SCALE = 2;
+inline constexpr int HUD_AGE_TITLE_PIXEL_SCALE = 3;
+inline constexpr float HUD_AGE_TITLE_BOLD_OFFSET_PX = 1.0F;
 inline constexpr int HUD_GLYPH_WIDTH = 5;
 inline constexpr int HUD_FONT_CHARACTER_SIZE = 18;
 inline constexpr int HUD_RESOURCE_BAR_GROUP_COUNT = 5;
@@ -480,6 +485,9 @@ inline constexpr float RENDER_TOWN_CENTER_SPRITE_WIDTH_SCALE = 1.18F;
 // Tight-cropped Earth building sheets: one tile-width per footprint cell.
 inline constexpr float RENDER_BUILDING_SPRITE_FOOTPRINT_SCALE = 1.0F;
 inline constexpr float RENDER_GOLD_MINE_SPRITE_WIDTH_SCALE = 0.72F;
+inline constexpr float RENDER_ROCK_SPRITE_WIDTH_SCALE = 0.82F;
+inline constexpr float RENDER_ROCK_SPRITE_OFFSET_X = 0.5F;
+inline constexpr float RENDER_ROCK_SPRITE_OFFSET_Y = 0.5F;
 // Sprite draw offsets in grid tiles (+X = SE, +Y = SW on the iso diamond compass).
 inline constexpr float RENDER_GOLD_MINE_SPRITE_OFFSET_X = 0.5F;
 inline constexpr float RENDER_GOLD_MINE_SPRITE_OFFSET_Y = 0.5F;
@@ -519,6 +527,10 @@ inline constexpr float RENDER_BERRY_SPRITE_OFFSET_Y = 0.5F;
 inline constexpr int BUILDING_UNIT_SPAWN_MAX_RING = 8;
 inline constexpr float RENDER_TREE_SORT_BIAS = 0.10F;
 inline constexpr float RENDER_BUILDING_SORT_BIAS = 0.05F;
+// Nature sprites (berries, trees) that sit beside a building must draw after
+// that building so fence/sail overhangs stay behind the prop.
+inline constexpr int RENDER_NATURE_BUILDING_OVERLAP_PAD_TILES = 2;
+inline constexpr float RENDER_NATURE_IN_FRONT_OF_BUILDING_SORT = 0.02F;
 inline constexpr float RENDER_UNIT_IN_FRONT_OF_BUILDING_SORT = 0.02F;
 inline constexpr float RENDER_UNIT_BEHIND_BUILDING_SORT = 0.01F;
 inline constexpr float RENDER_ISO_FRONT_EDGE_DX_EPSILON = 0.0001F;
@@ -649,6 +661,8 @@ inline constexpr int HOUSE_VISUAL_VARIANT_COUNT = 3;
 inline constexpr int HOUSE_MAX_HP = 150;
 inline constexpr int TOWN_CENTER_BUILD_MONEY_COST = 45;
 inline constexpr int TOWN_CENTER_BUILD_MANA_COST = 10;
+// Gold and mana are waived while the player owns fewer living town centers than this.
+inline constexpr int TOWN_CENTER_FULL_COST_MIN_OWNED = 1;
 inline constexpr int TOWN_CENTER_ATTACK_RANGE_TILES = 7;
 inline constexpr int TOWN_CENTER_PIERCE_ATTACK = 8;
 inline constexpr int TOWN_CENTER_PIERCE_ARMOR = 4;
@@ -792,6 +806,10 @@ inline constexpr int FOREST_GROVE_MIN_RING = 14;
 inline constexpr int FOREST_GROVE_MAX_RING = 18;
 inline constexpr int FOREST_GROVE_GROW_RING_SLACK = 4;
 inline constexpr int PLAYER_START_GRASS_KEEP_RING = 10;
+inline constexpr int MAP_ROCK_VARIANT_COUNT = 3;
+inline constexpr int MAP_ROCK_MIN_COUNT = 10;
+inline constexpr int MAP_ROCK_MAX_COUNT = 28;
+inline constexpr int MAP_ROCK_PLACEMENT_ATTEMPTS = 480;
 inline constexpr int PINE_GROVE_TILE_COUNT = 180;
 inline constexpr int PINE_GROVE_COUNT_TWO_PLAYER = 2;
 inline constexpr int PINE_GROVE_COUNT_MULTI_PLAYER = 2;
@@ -846,15 +864,35 @@ inline constexpr int HUD_PROCESS_FULL_PERCENT = 100;
 inline constexpr int MILITIA_FOOD_COST = 65;
 inline constexpr int MILITIA_MONEY_COST = 35;
 inline constexpr int AI_THINK_INTERVAL_TICKS = 4;
-inline constexpr int AI_WOOD_WORKERS_MIN = 2;
-inline constexpr int AI_FOOD_WORKERS_MIN = 1;
-inline constexpr int AI_GOLD_WORKERS_MIN = 1;
-inline constexpr int AI_HOUSE_TARGET = 2;
-// Min Chebyshev gap from any house tile to the TC footprint (1 walkable stand ring).
-inline constexpr int AI_HOUSE_TC_MIN_SEPARATION_TILES = 2;
-inline constexpr int AI_MILITIA_WAVE_SIZE = 4;
+// Walkable tiles left between building footprints so a group can pass.
+inline constexpr int AI_BUILDING_CORRIDOR_TILES = 3;
+inline constexpr int AI_BUILDING_MIN_SEPARATION_TILES = AI_BUILDING_CORRIDOR_TILES + 1;
+inline constexpr int AI_HOUSE_TC_MIN_SEPARATION_TILES = AI_BUILDING_MIN_SEPARATION_TILES;
+inline constexpr int AI_RESOURCE_CAMP_SEARCH_RADIUS_TILES = 16;
+inline constexpr int AI_BUILD_SEARCH_RADIUS_TILES = 20;
+inline constexpr int AI_POP_HEADROOM_SLOTS = 2;
+inline constexpr int AI_EARLY_WOOD_WORKERS = 1;
+inline constexpr int AI_AGE_PREP_WORKER_MIN = 7;
+inline constexpr int AI_AGE_PREP_WORKER_MAX = 9;
+inline constexpr int AI_ECONOMY_RATIO_PERCENT = 60;
+inline constexpr int AI_MILITARY_RATIO_PERCENT = 40;
+inline constexpr int AI_RATIO_PERCENT_BASE = 100;
+inline constexpr int AI_MILL_WORKER_MIN = 2;
+inline constexpr int AI_SCOUT_WAYPOINT_CORNER_COUNT = 4;
+inline constexpr int AI_NATURAL_FOOD_SEARCH_RADIUS = 22;
+inline constexpr int AI_NATURAL_FOOD_LOW_AMOUNT = 80;
 inline constexpr int AI_SCOUT_COUNT = 1;
-inline constexpr int AI_WOOD_STOCKPILE_TARGET = 90;
+inline constexpr int AI_ATTACK_MIN_ARMY = 3;
+inline constexpr int AI_ATTACK_ADVANTAGE = 1;
+inline constexpr int AI_MIN_FARMS_WHEN_NATURAL_FOOD_LOW = 2;
+inline constexpr int AI_FARMS_PER_FOOD_WORKER = 1;
+inline constexpr int AI_WOOD_WORKERS_STABLE = 2;
+inline constexpr int AI_GOLD_WORKERS_STABLE = 2;
+inline constexpr int AI_BARRACKS_WORKER_MIN = 3;
+inline constexpr int AI_AGE_GOLD_WORKER_DIVISOR = 3;
+inline constexpr int AI_AGE_FOOD_WORKER_DIVISOR = 2;
+inline constexpr int AI_SCOUT_WAYPOINT_PERIOD_TICKS = 40;
+inline constexpr int AI_SCOUT_WAYPOINT_INSET = 4;
 inline constexpr int HUD_COMMAND_PANEL_KEY_PRESS_TTL_MS = 120;
 // Construction: 9 HP per hit at ~1.34 hits/s (20 TPS => 15-tick interval).
 inline constexpr int WORKER_BUILD_HP_PER_HIT = 9;
@@ -971,6 +1009,9 @@ inline constexpr float MINIMAP_FOG_VISIBLE_GOLD_B = 0.16F;
 inline constexpr float MINIMAP_FOG_VISIBLE_BERRY_R = 0.63F;
 inline constexpr float MINIMAP_FOG_VISIBLE_BERRY_G = 0.16F;
 inline constexpr float MINIMAP_FOG_VISIBLE_BERRY_B = 0.27F;
+inline constexpr float MINIMAP_FOG_VISIBLE_ROCK_R = 0.46F;
+inline constexpr float MINIMAP_FOG_VISIBLE_ROCK_G = 0.42F;
+inline constexpr float MINIMAP_FOG_VISIBLE_ROCK_B = 0.38F;
 inline constexpr float MINIMAP_FOG_EXPLORED_DIM = 0.62F;
 inline constexpr float MINIMAP_CAMERA_BOX_R = 1.0F;
 inline constexpr float MINIMAP_CAMERA_BOX_G = 1.0F;
@@ -996,6 +1037,16 @@ inline constexpr std::string_view SFX_NO_RELATIVE_PATH = "sfx/Cringemarine/no.wa
 inline constexpr std::string_view SFX_OKAY_RELATIVE_PATH = "sfx/Cringemarine/okay.wav";
 inline constexpr std::string_view SFX_ILL_DO_IT_RELATIVE_PATH = "sfx/Cringemarine/i-ll-do-it.wav";
 inline constexpr std::string_view SFX_MOVING_HERE_RELATIVE_PATH = "sfx/Cringemarine/moving-here.wav";
+inline constexpr std::string_view SFX_NEW_AGE_RELATIVE_PATH = "sfx/Cringemarine/new-age.wav";
+inline constexpr std::string_view SFX_LOOK_HERE_RELATIVE_PATH = "sfx/Cringemarine/look-here.wav";
+inline constexpr int MAP_PING_DURATION_SECONDS = 10;
+inline constexpr int MAP_PING_DURATION_TICKS = SIM_TICKS_PER_SECOND * MAP_PING_DURATION_SECONDS;
+inline constexpr int MAP_PING_FLASH_PERIOD_TICKS = SIM_TICKS_PER_SECOND / 4;
+inline constexpr float MAP_PING_WORLD_HALF_PX = 20.0F;
+inline constexpr float MAP_PING_MINIMAP_HALF_PX = 5.0F;
+inline constexpr float MAP_PING_WORLD_LINE_THICKNESS_PX = 3.5F;
+inline constexpr float MAP_PING_MINIMAP_LINE_THICKNESS_PX = 2.0F;
+inline constexpr float POINTER_BUTTON_SPYGLASS_SCALE = 0.62F;
 inline constexpr std::string_view MUSIC_TRACK_1_RELATIVE_PATH = "music/game_music1.wav";
 inline constexpr std::string_view MUSIC_TRACK_2_RELATIVE_PATH = "music/game_music2.wav";
 inline constexpr std::string_view MUSIC_TRACK_3_RELATIVE_PATH = "music/game_music3.wav";
@@ -1056,6 +1107,10 @@ inline constexpr std::string_view DIPLOMACY_ALLY_LABEL = "Ally";
 inline constexpr std::string_view DIPLOMACY_ENEMY_LABEL = "Enemy";
 inline constexpr std::string_view DIPLOMACY_ALLY_VICTORY_LABEL = "Ally victory";
 inline constexpr std::string_view CHAT_SYNC_COMPLETE_TEXT = "Synchronization complete";
+inline constexpr std::string_view CHAT_HOST_ENDED_GAME_TEXT = "Host has ended the game.";
+inline constexpr std::string_view CHAT_PLAYER_RESIGNED_SUFFIX = " has resigned.";
+inline constexpr std::string_view HOST_ENDED_OVERLAY_TITLE = "MATCH ENDED";
+inline constexpr std::string_view HOST_ENDED_OVERLAY_DETAIL = "HOST HAS ENDED THE GAME";
 inline constexpr std::string_view HUD_STYLE_AOE_LABEL = "HUD: AoE Style";
 inline constexpr std::string_view HUD_STYLE_DEFAULT_LABEL = "HUD: Default";
 inline constexpr std::string_view GAME_MENU_PAUSE_LABEL = "Pause";
@@ -1092,7 +1147,7 @@ inline constexpr float HUD_GAME_MENU_BUTTON_HEIGHT_PX = 42.0F;
 inline constexpr float HUD_GAME_MENU_RAIL_MARGIN_PX = 6.0F;
 inline constexpr float HUD_GAME_MENU_SIDE_GAP_PX = 8.0F;
 inline constexpr float HUD_SETTINGS_WIDTH_FRACTION = 0.34F;
-inline constexpr float HUD_SETTINGS_HEIGHT_FRACTION = 0.52F;
+inline constexpr float HUD_SETTINGS_HEIGHT_FRACTION = 0.64F;
 inline constexpr int HUD_GRID_COLUMNS = 32;
 inline constexpr int HUD_GRID_ROWS = 18;
 inline constexpr float HUD_DEFAULT_MINIMAP_SIZE_U = 5.0F;
@@ -1224,6 +1279,23 @@ inline constexpr float HUD_DEFEAT_TITLE_B = 0.25F;
 inline constexpr std::string_view SINGLEPLAYER_CHEATS_DISABLED_LABEL = "Disabled";
 inline constexpr std::string_view SINGLEPLAYER_CHEATS_ENABLED_LABEL = "Enabled";
 inline constexpr std::string_view SINGLEPLAYER_SLOT_HOST_LABEL = "You";
+inline constexpr std::uint8_t MAP_BIOME_PRESET_MIXED = 0U;
+inline constexpr std::uint8_t MAP_BIOME_PRESET_GRASS = 1U;
+inline constexpr std::uint8_t MAP_BIOME_PRESET_SNOW = 2U;
+inline constexpr std::uint8_t MAP_BIOME_PRESET_SAND = 3U;
+inline constexpr int MAP_BIOME_PRESET_COUNT = 4;
+inline constexpr std::array<std::string_view, 4> MAP_BIOME_PRESET_LABELS = {
+    "Biome: Mixed",
+    "Biome: Grass",
+    "Biome: Snow",
+    "Biome: Sand",
+};
+inline constexpr float TEXT_FIELD_SELECTION_R = 0.22F;
+inline constexpr float TEXT_FIELD_SELECTION_G = 0.42F;
+inline constexpr float TEXT_FIELD_SELECTION_B = 0.78F;
+inline constexpr float TEXT_FIELD_SELECTION_TEXT_R = 1.0F;
+inline constexpr float TEXT_FIELD_SELECTION_TEXT_G = 1.0F;
+inline constexpr float TEXT_FIELD_SELECTION_TEXT_B = 1.0F;
 inline constexpr std::string_view SINGLEPLAYER_SLOT_HOST_KIND_LABEL = "Host";
 inline constexpr std::string_view SINGLEPLAYER_SLOT_SPECTATOR_LABEL = "Spectator";
 inline constexpr std::string_view SINGLEPLAYER_SLOT_AI_LABEL = "AI";
@@ -1276,6 +1348,9 @@ inline constexpr float MENU_PATTERN_PREVIEW_FOREST_B = 0.12F;
 inline constexpr float MENU_PATTERN_PREVIEW_GOLD_R = 0.86F;
 inline constexpr float MENU_PATTERN_PREVIEW_GOLD_G = 0.71F;
 inline constexpr float MENU_PATTERN_PREVIEW_GOLD_B = 0.16F;
+inline constexpr float MENU_PATTERN_PREVIEW_ROCK_R = 0.46F;
+inline constexpr float MENU_PATTERN_PREVIEW_ROCK_G = 0.42F;
+inline constexpr float MENU_PATTERN_PREVIEW_ROCK_B = 0.38F;
 inline constexpr float MENU_PATTERN_PREVIEW_BERRIES_R = 0.63F;
 inline constexpr float MENU_PATTERN_PREVIEW_BERRIES_G = 0.16F;
 inline constexpr float MENU_PATTERN_PREVIEW_BERRIES_B = 0.27F;
@@ -1355,7 +1430,7 @@ inline constexpr int PATHFIND_CARDINAL_STEP_COST = 10;
 inline constexpr int PATHFIND_DIAGONAL_STEP_COST = 14;
 inline constexpr int PATHFIND_KNIGHT_STEP_COST = 22;
 inline constexpr float PATHFIND_LINE_T_EPSILON = 0.0001F;
-inline constexpr int PATHFIND_STEP_CELLS_MAX = 16;
+inline constexpr int PATHFIND_STEP_CELLS_MAX = 256;
 inline constexpr int PATHFIND_MAX_EXPANDED_NODES = 2048;
 inline constexpr int MOVE_REPATH_SEGMENT_LOOKAHEAD_TICKS = 1;
 inline constexpr float MOVE_PATH_STEP_REACHED_TILE_DISTANCE = 0.08F;

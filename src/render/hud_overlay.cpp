@@ -1195,6 +1195,8 @@ void apply_nature_title_color(HudInfoPanel& panel)
         return "blueberries";
     case sim::components::TileType::GoldMine:
         return "gold_mine";
+    case sim::components::TileType::Rock:
+        return "rock";
     default:
         return "grass";
     }
@@ -1307,10 +1309,8 @@ void fill_combat_from_pose(HudInfoPanel& panel, const RenderEntityPose& pose)
     const bool multiplayer,
     const std::array<std::string, net::constants::LOCKSTEP_MAX_PLAYER_SLOTS>* player_names)
 {
-    if (!multiplayer && player_slot == local_player_slot) {
-        return " (You)";
-    }
-
+    (void)local_player_slot;
+    (void)multiplayer;
     if (player_names != nullptr && player_slot < player_names->size()
         && !(*player_names)[player_slot].empty()) {
         return " (" + (*player_names)[player_slot] + ")";
@@ -2272,7 +2272,8 @@ void draw_screen_line(
     const float y1,
     const float r,
     const float g,
-    const float b)
+    const float b,
+    const float thickness_px = constants::HUD_LINE_THICKNESS_PX)
 {
     if (window_size.x == 0U || window_size.y == 0U) {
         return;
@@ -2294,7 +2295,7 @@ void draw_screen_line(
         return;
     }
 
-    const float half = constants::HUD_LINE_THICKNESS_PX * 0.5F;
+    const float half = thickness_px * 0.5F;
     const float nx = (-dy / length) * half;
     const float ny = (dx / length) * half;
     const auto p0 = to_ndc(x0 + nx, y0 + ny);
@@ -2906,6 +2907,14 @@ void draw_screen_rect_border(
         });
     }
 
+    if (tile == sim::components::TileType::Rock) {
+        return dim_if_explored({
+            constants::MINIMAP_FOG_VISIBLE_ROCK_R,
+            constants::MINIMAP_FOG_VISIBLE_ROCK_G,
+            constants::MINIMAP_FOG_VISIBLE_ROCK_B,
+        });
+    }
+
     if (index < snapshot.ground.size()
         && snapshot.ground[index] == sim::components::GroundType::Snow) {
         return dim_if_explored({
@@ -3138,6 +3147,42 @@ void draw_minimap_contents(
         }
     }
 
+    for (const sim::components::MapPing& ping : snapshot.map_pings) {
+        const int phase = ping.ticks_remaining / constants::MAP_PING_FLASH_PERIOD_TICKS;
+        if ((phase % 2) != 0) {
+            continue;
+        }
+
+        const sf::Vector2f center = minimap_world_to_screen(
+            layout,
+            static_cast<float>(ping.cell.x) + 0.5F,
+            static_cast<float>(ping.cell.y) + 0.5F);
+        const float half = constants::MAP_PING_MINIMAP_HALF_PX;
+        const auto& rgb = sim::components::player_slot_rgb(hud_player_color_indices, ping.player_slot);
+        draw_screen_line(
+            window_size,
+            color_shader,
+            center.x - half,
+            center.y - half,
+            center.x + half,
+            center.y + half,
+            rgb[0],
+            rgb[1],
+            rgb[2],
+            constants::MAP_PING_MINIMAP_LINE_THICKNESS_PX);
+        draw_screen_line(
+            window_size,
+            color_shader,
+            center.x - half,
+            center.y + half,
+            center.x + half,
+            center.y - half,
+            rgb[0],
+            rgb[1],
+            rgb[2],
+            constants::MAP_PING_MINIMAP_LINE_THICKNESS_PX);
+    }
+
     if (unit_context.has_camera_view) {
         const float min_x =
             std::clamp(unit_context.camera_world_min_x, 0.0F, static_cast<float>(map_width));
@@ -3341,6 +3386,49 @@ void HudOverlay::draw_text(
     const float b) const
 {
     draw_string_scaled(window_size, x, y, text, pixel_scale, r, g, b);
+}
+
+void HudOverlay::draw_text_with_selection(
+    const sf::Vector2u window_size,
+    const float x,
+    const float y,
+    const std::string& text,
+    const int pixel_scale,
+    const bool selected) const
+{
+    if (selected && !text.empty()) {
+        const float width = text_width_px(text, pixel_scale);
+        const float height = text_height_px(pixel_scale);
+        draw_rect(
+            window_size,
+            x,
+            y,
+            width,
+            height,
+            constants::TEXT_FIELD_SELECTION_R,
+            constants::TEXT_FIELD_SELECTION_G,
+            constants::TEXT_FIELD_SELECTION_B);
+        draw_string_scaled(
+            window_size,
+            x,
+            y,
+            text,
+            pixel_scale,
+            constants::TEXT_FIELD_SELECTION_TEXT_R,
+            constants::TEXT_FIELD_SELECTION_TEXT_G,
+            constants::TEXT_FIELD_SELECTION_TEXT_B);
+        return;
+    }
+
+    draw_string_scaled(
+        window_size,
+        x,
+        y,
+        text,
+        pixel_scale,
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G,
+        constants::HUD_TEXT_B);
 }
 
 void HudOverlay::draw_rect(
@@ -3837,9 +3925,15 @@ void HudOverlay::draw_command_panel(
         draw_mode_button(
             app::minimap_mode_button_rect(window_size, hud_style),
             unit_context.minimap_show_units);
-        draw_mode_button(
-            app::pointer_mode_button_rect(window_size, hud_style),
-            unit_context.pointer_attack_mode);
+        const auto pointer_button = app::pointer_mode_button_rect(window_size, hud_style);
+        draw_mode_button(pointer_button, unit_context.pointer_attack_mode);
+        if (pointer_button.width > 0.0F && pointer_button.height > 0.0F) {
+            const float icon_size = std::min(pointer_button.width, pointer_button.height)
+                * constants::POINTER_BUTTON_SPYGLASS_SCALE;
+            const float icon_x = pointer_button.x + (pointer_button.width - icon_size) * 0.5F;
+            const float icon_y = pointer_button.y + (pointer_button.height - icon_size) * 0.5F;
+            draw_icon(window_size, icon_x, icon_y, icon_size, HudIcon::Spyglass);
+        }
     }
 
     const bool mouse_down = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
@@ -3889,7 +3983,9 @@ void HudOverlay::draw_command_panel(
                 hover_name_label = "Market";
             }
             else if (button.action == app::CommandPanelAction::BuildGarden) {
-                hover_name_label = "Garden";
+                hover_name_label = "Garden ("
+                    + std::to_string(build_options.garden_count) + "/"
+                    + std::to_string(build_options.garden_limit) + ")";
             }
             else if (button.action == app::CommandPanelAction::BuildReservoir) {
                 hover_name_label = "Reservoir";
@@ -4521,22 +4617,31 @@ void HudOverlay::draw_age_title(
     const constants::PlayerAge age,
     const constants::HudStyle hud_style) const
 {
-    const std::string_view name = sim::components::player_age_name(age);
-    const float char_step = static_cast<float>(
-        (GLYPH_WIDTH + constants::HUD_CHAR_SPACING) * constants::HUD_PIXEL_SCALE);
-    const float text_width = static_cast<float>(name.size()) * char_step;
-    const float text_height = HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE);
+    const std::string name{sim::components::player_age_name(age)};
+    const int scale = constants::HUD_AGE_TITLE_PIXEL_SCALE;
+    const float text_width = HudOverlay::text_width_px(name, scale);
+    const float text_height = HudOverlay::text_height_px(scale);
     const float x = (static_cast<float>(window_size.x) - text_width) * 0.5F;
     const float y = app::hud_is_classic_aoe(hud_style)
         ? constants::HUD_MARGIN_Y
         : (app::HudGrid::from(window_size).h(constants::HUD_DEFAULT_TOP_BAR_HEIGHT_U)
             - text_height)
             * 0.5F;
-    draw_string(
+    draw_string_scaled(
         window_size,
         x,
         y,
-        std::string(name),
+        name,
+        scale,
+        constants::HUD_TEXT_R,
+        constants::HUD_TEXT_G,
+        constants::HUD_TEXT_B);
+    draw_string_scaled(
+        window_size,
+        x + constants::HUD_AGE_TITLE_BOLD_OFFSET_PX,
+        y,
+        name,
+        scale,
         constants::HUD_TEXT_R,
         constants::HUD_TEXT_G,
         constants::HUD_TEXT_B);
@@ -4660,6 +4765,7 @@ void HudOverlay::draw_chat(
             });
 
         std::string draft = unit_context.chat_draft;
+        const bool selected = unit_context.chat_all_selected && !unit_context.chat_draft.empty();
         if (draft.empty()) {
             draft = "...";
         }
@@ -4667,14 +4773,13 @@ void HudOverlay::draw_chat(
             draft = draft.substr(draft.size() - static_cast<std::size_t>(constants::CHAT_INPUT_VISIBLE_CHARS));
         }
 
-        draw_string(
+        draw_text_with_selection(
             window_size,
             input_x + 6.0F,
             input_y + (input_height - HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE)) * 0.5F,
             draft,
-            constants::HUD_TEXT_R,
-            constants::HUD_TEXT_G,
-            constants::HUD_TEXT_B);
+            constants::HUD_PIXEL_SCALE,
+            selected);
 
         const app::GameMenuRect channel_rect = app::chat_channel_toggle_rect(window_size);
         const unsigned int channel_shader = hud_shader_program();
@@ -5006,18 +5111,18 @@ void HudOverlay::draw_game_menu(
                 shader,
                 app::CommandPanelFrame{input.x, input.y, input.width, input.height});
             std::string draft = unit_context.chat_draft;
+            const bool selected = unit_context.chat_all_selected && !unit_context.chat_draft.empty();
             if (draft.empty()) {
                 draft = "...";
             }
-            draw_string(
+            draw_text_with_selection(
                 window_size,
                 input.x + 6.0F,
                 input.y
                     + (input.height - HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE)) * 0.5F,
                 draft,
-                constants::HUD_TEXT_R,
-                constants::HUD_TEXT_G,
-                constants::HUD_TEXT_B);
+                constants::HUD_PIXEL_SCALE,
+                selected);
             draw_labeled_button(
                 app::GameMenuButton{
                     app::GameMenuAction::None,
@@ -5332,18 +5437,18 @@ void HudOverlay::draw_game_menu(
                 : constants::MAIN_MENU_FIELD_BG_B);
 
         const float field_pad = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX) * 0.5F;
-        const std::string filename_label = unit_context.game_menu.filename_draft.empty()
+        const bool filename_placeholder = unit_context.game_menu.filename_draft.empty();
+        const std::string filename_label = filename_placeholder
             ? "Filename"
             : unit_context.game_menu.filename_draft;
-        draw_string(
+        draw_text_with_selection(
             window_size,
             filename.x + field_pad,
             filename.y
                 + (filename.height - HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE)) * 0.5F,
             filename_label,
-            constants::HUD_TEXT_R,
-            constants::HUD_TEXT_G,
-            constants::HUD_TEXT_B);
+            constants::HUD_PIXEL_SCALE,
+            unit_context.game_menu.filename_all_selected && !filename_placeholder);
 
         const app::GameMenuRect list = app::save_load_list_rect(window_size);
         draw_screen_quad(
@@ -5487,6 +5592,58 @@ void HudOverlay::draw_game_menu(
     }
 
     if (unit_context.game_menu.screen == app::GameMenuScreen::SettingsGame) {
+        const app::GameMenuRect name_field = app::settings_player_name_field_rect(
+            window_size, unit_context.game_menu.center_settings_panel);
+        draw_string(
+            window_size,
+            name_field.x,
+            name_field.y - constants::HUD_SETTINGS_LABEL_GAP_PX,
+            "Player Name",
+            constants::HUD_TEXT_R,
+            constants::HUD_TEXT_G,
+            constants::HUD_TEXT_B);
+        draw_screen_quad(
+            window_size,
+            shader_program,
+            name_field.x,
+            name_field.y,
+            name_field.width,
+            name_field.height,
+            unit_context.game_menu.player_name_focused
+                ? constants::MAIN_MENU_FIELD_FOCUS_R
+                : constants::HUD_OPTIONS_FRAME_BORDER_R,
+            unit_context.game_menu.player_name_focused
+                ? constants::MAIN_MENU_FIELD_FOCUS_G
+                : constants::HUD_OPTIONS_FRAME_BORDER_G,
+            unit_context.game_menu.player_name_focused
+                ? constants::MAIN_MENU_FIELD_FOCUS_B
+                : constants::HUD_OPTIONS_FRAME_BORDER_B);
+        draw_screen_quad(
+            window_size,
+            shader_program,
+            name_field.x + 1.0F,
+            name_field.y + 1.0F,
+            name_field.width - 2.0F,
+            name_field.height - 2.0F,
+            constants::MAIN_MENU_FIELD_BG_R,
+            constants::MAIN_MENU_FIELD_BG_G,
+            constants::MAIN_MENU_FIELD_BG_B);
+        const float name_pad = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX) * 0.5F;
+        const std::string name_value = unit_context.game_menu.player_name_focused
+            ? unit_context.game_menu.player_name + "_"
+            : unit_context.game_menu.player_name;
+        draw_text_with_selection(
+            window_size,
+            name_field.x + name_pad,
+            name_field.y
+                + (name_field.height - HudOverlay::text_height_px(constants::HUD_PIXEL_SCALE))
+                    * 0.5F,
+            name_value,
+            constants::HUD_PIXEL_SCALE,
+            unit_context.game_menu.player_name_focused
+                && unit_context.game_menu.player_name_all_selected
+                && !unit_context.game_menu.player_name.empty());
+
         const app::GameMenuRect slider = app::scroll_speed_slider_rect(
             window_size, unit_context.game_menu.center_settings_panel);
         const int percent = static_cast<int>(

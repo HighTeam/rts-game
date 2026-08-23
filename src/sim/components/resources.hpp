@@ -60,6 +60,8 @@ struct ForestResource {
 struct GatherTarget {
     core::GridPos cell{-1, -1};
     TileType resource_type{TileType::Grass};
+    core::GridPos stand_cell{-1, -1};
+    int stand_block_ticks{0};
 };
 
 struct GatherCooldown {

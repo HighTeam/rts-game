@@ -14,10 +14,10 @@ Unicode True
   !error "Pass /DAOA_LICENSE_FILE=... (EULA text)."
 !endif
 !ifndef AOA_DISPLAY_VERSION
-  !define AOA_DISPLAY_VERSION "alpha_v0.1"
+  !define AOA_DISPLAY_VERSION "alpha_v0.2.1"
 !endif
 !ifndef AOA_PRODUCT_VERSION
-  !define AOA_PRODUCT_VERSION "0.1.0.0"
+  !define AOA_PRODUCT_VERSION "0.2.1.0"
 !endif
 
 !define PRODUCT_NAME "Age of Affinities"
@@ -46,6 +46,8 @@ VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 ${COMPANY_NAME}"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\AgeofAffinities.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch ${PRODUCT_NAME}"
+!define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\RELEASE_NOTES.md"
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "View release notes"
 
 !insertmacro MUI_PAGE_LICENSE "${AOA_LICENSE_FILE}"
 !insertmacro MUI_PAGE_COMPONENTS
@@ -65,6 +67,7 @@ Section "${PRODUCT_NAME}" SecGame
   File "${AOA_STAGE_DIR}\*.dll"
   File "${AOA_STAGE_DIR}\assets.dat"
   File "${AOA_STAGE_DIR}\EULA.txt"
+  File "${AOA_STAGE_DIR}\RELEASE_NOTES.md"
 
   SetOutPath "$INSTDIR\scenarios"
   File /r "${AOA_STAGE_DIR}\scenarios\*.*"
@@ -75,6 +78,7 @@ Section "${PRODUCT_NAME}" SecGame
   SetOutPath "$INSTDIR"
   CreateDirectory "$SMPROGRAMS\${COMPANY_NAME}"
   CreateShortCut "$SMPROGRAMS\${COMPANY_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\AgeofAffinities.exe"
+  CreateShortCut "$SMPROGRAMS\${COMPANY_NAME}\Release notes.lnk" "$INSTDIR\RELEASE_NOTES.md"
   CreateShortCut "$SMPROGRAMS\${COMPANY_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -110,7 +114,7 @@ Section "Visual C++ runtime" SecVcRedist
 SectionEnd
 !endif
 
-LangString DESC_SecGame ${LANG_ENGLISH} "Game executable, libraries, and packed assets."
+LangString DESC_SecGame ${LANG_ENGLISH} "Game executable, libraries, packed assets, and release notes."
 !ifdef AOA_HAS_PATTERN_MAKER
 LangString DESC_SecPatternMaker ${LANG_ENGLISH} "Map pattern editor (optional tool)."
 !endif
@@ -146,6 +150,7 @@ Section "Uninstall"
   Delete "$INSTDIR\assets.dat"
   Delete "$INSTDIR\*.dll"
   Delete "$INSTDIR\EULA.txt"
+  Delete "$INSTDIR\RELEASE_NOTES.md"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir /r "$INSTDIR\scenarios"
   RMDir /r "$INSTDIR\patterns"
@@ -153,6 +158,7 @@ Section "Uninstall"
 
   Delete "$SMPROGRAMS\${COMPANY_NAME}\${PRODUCT_NAME}.lnk"
   Delete "$SMPROGRAMS\${COMPANY_NAME}\Pattern Maker.lnk"
+  Delete "$SMPROGRAMS\${COMPANY_NAME}\Release notes.lnk"
   Delete "$SMPROGRAMS\${COMPANY_NAME}\Uninstall.lnk"
   RMDir "$SMPROGRAMS\${COMPANY_NAME}"
   Delete "$DESKTOP\${PRODUCT_NAME}.lnk"

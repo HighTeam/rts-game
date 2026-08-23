@@ -47,7 +47,14 @@ struct SimSnapshot {
 
 [[nodiscard]] std::vector<std::byte> encode_sim_snapshot(
     const Simulation& simulation,
-    bool include_input_log = true);
+    bool include_input_log = true,
+    bool include_pending_commands = false);
+
+[[nodiscard]] inline std::vector<std::byte> encode_reconnect_sim_snapshot(
+    const Simulation& simulation)
+{
+    return encode_sim_snapshot(simulation, false, true);
+}
 
 [[nodiscard]] std::optional<SimSnapshot> decode_sim_snapshot_metadata(std::span<const std::byte> bytes);
 

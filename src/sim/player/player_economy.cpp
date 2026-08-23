@@ -96,6 +96,66 @@ int count_completed_town_centers(const entt::registry& registry, const std::uint
     return count;
 }
 
+int count_living_player_town_centers(
+    const entt::registry& registry,
+    const std::uint8_t player_slot,
+    const entt::entity exclude)
+{
+    int count = 0;
+    const auto view = registry.view<
+        components::TownCenterTag,
+        components::PlayerOwnedTag,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (entity == exclude) {
+            continue;
+        }
+
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        ++count;
+    }
+
+    return count;
+}
+
+int count_living_player_gardens(const entt::registry& registry, const std::uint8_t player_slot)
+{
+    int count = 0;
+    const auto view = registry.view<
+        components::GardenTag,
+        components::PlayerOwnedTag,
+        components::Health>();
+    for (const entt::entity entity : view) {
+        if (components::entity_player_slot(registry, entity) != player_slot) {
+            continue;
+        }
+
+        if (view.get<components::Health>(entity).current.raw() <= 0) {
+            continue;
+        }
+
+        ++count;
+    }
+
+    return count;
+}
+
+bool player_town_center_gold_mana_waived(
+    const entt::registry& registry,
+    const std::uint8_t player_slot,
+    const entt::entity exclude)
+{
+    return count_living_player_town_centers(registry, player_slot, exclude)
+        < constants::TOWN_CENTER_FULL_COST_MIN_OWNED;
+}
+
 int count_completed_houses(const entt::registry& registry, const std::uint8_t player_slot)
 {
     int count = 0;

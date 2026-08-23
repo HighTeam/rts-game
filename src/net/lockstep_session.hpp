@@ -86,6 +86,7 @@ public:
     void set_last_auto_input_tick(const std::uint64_t tick_count);
 
     [[nodiscard]] bool try_advance_tick();
+    [[nodiscard]] bool request_match_resign();
     [[nodiscard]] bool request_voluntary_resign();
     [[nodiscard]] bool voluntary_leave_requested() const;
 
@@ -156,6 +157,8 @@ private:
     void handle_slot_ai_takeover(std::uint8_t player_slot);
     void handle_slot_ai_resume(std::uint8_t player_slot);
     void handle_player_resign(std::uint8_t player_slot);
+    void handle_host_ended();
+    void send_host_ended();
     void queue_resign_command_for_slot(std::uint8_t player_slot);
     void send_player_resign(std::uint8_t player_slot);
     void apply_resigned_slot_disconnect(std::uint8_t player_slot);
@@ -303,7 +306,9 @@ private:
     std::uint8_t pending_reconnect_player_slot_{constants::LOCKSTEP_INVALID_PLAYER_SLOT};
     bool resync_ready_sent_{false};
     bool snapshot_restored_pending_{false};
+    std::uint64_t resync_hash_min_tick_{0U};
     bool voluntary_leave_{false};
+    bool host_ended_sent_{false};
     std::chrono::steady_clock::time_point last_reconnect_request_sent_{};
     std::chrono::steady_clock::time_point last_reconnect_snapshot_sent_{};
     std::chrono::steady_clock::time_point last_resync_ready_sent_{};

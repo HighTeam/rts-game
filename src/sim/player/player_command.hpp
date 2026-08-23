@@ -52,6 +52,7 @@ enum class PlayerCommandType : std::uint8_t {
     SendTrade = 36,
     SetDiplomacy = 37,
     Resign = 38,
+    MapPing = 39,
 };
 
 struct PlayerCommand {

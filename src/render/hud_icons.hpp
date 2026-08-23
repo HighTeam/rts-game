@@ -33,6 +33,7 @@ enum class HudIcon : std::uint8_t {
     MiningCamp,
     Map,
     ClosedEye,
+    Spyglass,
     Count,
 };
 

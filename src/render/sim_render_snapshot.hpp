@@ -3,6 +3,7 @@
 #include "core/constants.hpp"
 #include "core/grid.hpp"
 #include "sim/components/map_grid.hpp"
+#include "sim/components/map_pings.hpp"
 #include "sim/snapshot/entity_snapshot_key.hpp"
 
 #include <SFML/System/Vector2.hpp>
@@ -126,6 +127,7 @@ struct SimRenderSnapshot {
     std::array<std::uint8_t, 8> player_ages{};
     std::array<std::uint8_t, 8> player_civilizations{};
     std::uint8_t vision_source_slots_mask{0U};
+    std::vector<sim::components::MapPing> map_pings{};
 };
 
 class BuildingSightMemory;

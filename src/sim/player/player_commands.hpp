@@ -3,6 +3,7 @@
 #include "core/grid.hpp"
 #include "math/fixed.hpp"
 #include "render/game_renderer.hpp"
+#include "sim/components/building_process.hpp"
 
 #include <SFML/System/Vector2.hpp>
 #include <cstdint>
@@ -87,6 +88,11 @@ bool issue_spawn_worker_order(entt::registry& registry, entt::entity town_center
 bool issue_spawn_militia_order(entt::registry& registry, entt::entity barracks);
 
 bool issue_spawn_mage_order(entt::registry& registry, entt::entity mage_academy);
+
+void refund_training_process(
+    entt::registry& registry,
+    entt::entity building,
+    components::BuildingProcessKind kind);
 
 void issue_kill_orders(entt::registry& registry, const std::vector<entt::entity>& entities);
 
@@ -201,6 +207,11 @@ bool issue_set_diplomacy_order(
     bool ally_victory);
 
 bool issue_resign_order(entt::registry& registry, std::uint8_t player_slot);
+
+bool issue_map_ping_order(
+    entt::registry& registry,
+    std::uint8_t player_slot,
+    core::GridPos cell);
 
 void eject_garrisoned_units(entt::registry& registry, entt::entity building);
 

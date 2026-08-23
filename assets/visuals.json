@@ -24,7 +24,10 @@
     "gold_mine_0": "textures/Ore pack/Ore/Ore6.png",
     "gold_mine_1": "textures/Ore pack/Ore/Ore8.png",
     "gold_mine_2": "textures/Ore pack/Ore/Ore10.png",
-    "gold_mine_3": "textures/Ore pack/Ore/Ore12.png"
+    "gold_mine_3": "textures/Ore pack/Ore/Ore12.png",
+    "rock_1": "textures/Evergrow/Nature_Assets_Separated/Old/Rock_1_Shadow.png",
+    "rock_2": "textures/Evergrow/Nature_Assets_Separated/Old/Rock_2_Shadow.png",
+    "rock_3": "textures/Evergrow/Nature_Assets_Separated/Old/Rock_3_Shadow.png"
   },
   "buildings": {
     "town_center": "textures/HighTeam/generated/earth/earth-tc1.png",
@@ -95,6 +98,8 @@
     "okay": "sfx/Cringemarine/okay.wav",
     "ill_do_it": "sfx/Cringemarine/i-ll-do-it.wav",
     "moving_here": "sfx/Cringemarine/moving-here.wav",
+    "new_age": "sfx/Cringemarine/new-age.wav",
+    "look_here": "sfx/Cringemarine/look-here.wav",
     "game_music1": "music/game_music1.wav",
     "game_music2": "music/game_music2.wav",
     "game_music3": "music/game_music3.wav",

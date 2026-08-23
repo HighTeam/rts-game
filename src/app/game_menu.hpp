@@ -50,6 +50,7 @@ enum class GameMenuAction : std::uint8_t {
     CycleFps,
     CycleBuildingRangeDisplay,
     CycleHudStyle,
+    FocusPlayerName,
     BeginDragMaster,
     BeginDragMusic,
     BeginDragSfx,
@@ -111,6 +112,9 @@ struct GameMenuState {
     constants::BuildingRangeDisplayMode building_range_display{
         constants::BuildingRangeDisplayMode::Never};
     constants::HudStyle hud_style{constants::HudStyle::Default};
+    std::string player_name{std::string(constants::MULTIPLAYER_DEFAULT_PLAYER_NAME)};
+    bool player_name_focused{false};
+    bool player_name_all_selected{false};
     bool center_settings_panel{false};
     GameMenuSlider dragging_slider{GameMenuSlider::None};
     bool fullscreen{false};
@@ -120,6 +124,7 @@ struct GameMenuState {
     bool multiplayer{false};
     std::string filename_draft{};
     bool filename_focused{false};
+    bool filename_all_selected{false};
     std::vector<std::string> save_entries{};
     int selected_save_index{-1};
     int save_list_scroll{0};
@@ -156,6 +161,8 @@ struct GameMenuState {
         screen = GameMenuScreen::Main;
         dragging_slider = GameMenuSlider::None;
         filename_focused = false;
+        player_name_focused = false;
+        player_name_all_selected = false;
     }
 
     void close()
@@ -163,6 +170,8 @@ struct GameMenuState {
         screen = GameMenuScreen::Closed;
         dragging_slider = GameMenuSlider::None;
         filename_focused = false;
+        player_name_focused = false;
+        player_name_all_selected = false;
         selected_save_index = -1;
         save_list_scroll = 0;
     }
@@ -304,6 +313,7 @@ struct GameMenuState {
     const bool load_disabled = false,
     const bool pause_disabled = false)
 {
+    (void)pause_disabled;
     const GameMenuRect panel = game_menu_rail_rect(window_size);
     const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
     const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
@@ -318,7 +328,7 @@ struct GameMenuState {
     };
     const Entry entries[] = {
         {GameMenuAction::Resume, "Resume", false},
-        {GameMenuAction::Pause, constants::GAME_MENU_PAUSE_LABEL, pause_disabled},
+        {GameMenuAction::Pause, constants::GAME_MENU_PAUSE_LABEL, true},
         {GameMenuAction::Save, "Save", false},
         {GameMenuAction::Load, "Load", load_disabled},
         {GameMenuAction::OpenSettings, "Settings", false},
@@ -546,6 +556,23 @@ struct GameMenuState {
     return buttons;
 }
 
+[[nodiscard]] inline GameMenuRect settings_player_name_field_rect(
+    const sf::Vector2u window_size,
+    const bool centered = false)
+{
+    const GameMenuRect panel = settings_panel_rect(window_size, centered);
+    const float padding = static_cast<float>(constants::HUD_OPTIONS_FRAME_PADDING_PX);
+    const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
+    const float y = panel.y + padding + constants::HUD_SETTINGS_TAB_HEIGHT_PX + gap * 2.0F
+        + constants::HUD_SETTINGS_LABEL_GAP_PX;
+    return GameMenuRect{
+        panel.x + padding,
+        y,
+        panel.width - padding * 2.0F,
+        constants::HUD_SETTINGS_ROW_HEIGHT_PX,
+    };
+}
+
 [[nodiscard]] inline GameMenuRect volume_slider_rect(
     const sf::Vector2u window_size,
     const int row_index,
@@ -572,7 +599,14 @@ struct GameMenuState {
     const sf::Vector2u window_size,
     const bool centered = false)
 {
-    return volume_slider_rect(window_size, 0, centered);
+    const GameMenuRect name_field = settings_player_name_field_rect(window_size, centered);
+    const float gap = static_cast<float>(constants::HUD_OPTIONS_BUTTON_GAP_PX);
+    return GameMenuRect{
+        name_field.x,
+        name_field.y + name_field.height + gap + constants::HUD_SETTINGS_LABEL_GAP_PX,
+        name_field.width,
+        constants::HUD_VOLUME_SLIDER_HEIGHT_PX,
+    };
 }
 
 [[nodiscard]] inline GameMenuRect shooting_range_option_rect(
