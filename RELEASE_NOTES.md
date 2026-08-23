@@ -7,6 +7,7 @@ Lobby and lockstep clients must share the same `GAME_VERSION`. Older builds cann
 Lockstep reconnect that survives a second drop, resign/host-leave, and playability polish.
 
 - Mid-match reconnect: host and peer apply the same snapshot (pending orders, map pings, hash caches); handshake no longer freezes or DESYNCs on the second reconnect
+- AoE Style HUD no longer draws the Default HUD center double-diamond over the command bar
 - Resign stays in the match and announces in chat; host leave ends the game for everyone (no frozen host window, no reconnect to a dead match)
 - Lobby: AI slots can be cycled off; biome presets (Mixed / Grass / Snow / Sand)
 - Mill / berry depth sort; rocks on the map; first Town Center waives gold and mana

@@ -3240,14 +3240,16 @@ void draw_minimap_contents(
         }
     }
 
-    stroke_hud_polygon(
-        window_size,
-        color_shader,
-        app::default_minimap_diamond_points(app::default_minimap_rect(window_size)));
-    stroke_hud_polygon(
-        window_size,
-        color_shader,
-        app::default_minimap_diamond_points(app::default_minimap_inner_rect(window_size)));
+    if (!app::hud_is_classic_aoe(unit_context.game_menu.hud_style)) {
+        stroke_hud_polygon(
+            window_size,
+            color_shader,
+            app::default_minimap_diamond_points(app::default_minimap_rect(window_size)));
+        stroke_hud_polygon(
+            window_size,
+            color_shader,
+            app::default_minimap_diamond_points(app::default_minimap_inner_rect(window_size)));
+    }
 
     hud_active_color_batch = previous_color_target;
 }
