@@ -2795,11 +2795,6 @@ std::vector<std::byte> encode_sim_snapshot(
     bool write_commands = include_input_log;
     if (include_pending_commands) {
         metadata.input_log = simulation.command_queue().unapplied_commands(simulation.tick_count());
-        std::uint64_t max_sequence = 0U;
-        for (const player::PlayerCommand& command : metadata.input_log) {
-            max_sequence = std::max(max_sequence, command.sequence);
-        }
-        metadata.next_command_sequence = max_sequence + 1U;
         write_commands = true;
     }
 
