@@ -142,15 +142,11 @@ int smooth_latency_sample(const int previous_ms, const int sample_ms)
 
 void adopt_host_command_queue_from_reconnect_snapshot(sim::Simulation& simulation)
 {
+    const std::uint64_t next_command_sequence = simulation.export_snapshot().next_command_sequence;
     const std::uint64_t tick_count = simulation.tick_count();
     std::vector<sim::player::PlayerCommand> commands =
         simulation.command_queue().unapplied_commands(tick_count);
-    std::uint64_t next_sequence = 1U;
-    for (const sim::player::PlayerCommand& command : commands) {
-        next_sequence = std::max(next_sequence, command.sequence + 1U);
-    }
-
-    simulation.restore_command_log(std::move(commands), next_sequence);
+    simulation.restore_command_log(std::move(commands), next_command_sequence);
 }
 
 } // namespace
@@ -2919,6 +2915,10 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
             resume_player_control(player_slot);
             disconnected_slots_mask_ =
                 static_cast<std::uint8_t>(disconnected_slots_mask_ & ~(1U << player_slot));
+            broadcast_slot_ai_resume(player_slot);
+            broadcast_reconnect_snapshot_to_all_clients();
+            hash_verify_warmup_ticks_remaining_ = constants::LOCKSTEP_HASH_VERIFY_WARMUP_TICKS;
+            resync_hash_min_tick_ = simulation_.tick_count();
             reset_reconnect_handshake_sync_state(player_slot);
             ensure_local_batch_sent(next_execute_tick());
             LockstepDebugLog::log_event(
