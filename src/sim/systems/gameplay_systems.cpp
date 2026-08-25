@@ -3059,11 +3059,8 @@ void run_building_process_system(entt::registry& registry)
             continue;
         }
 
-        const std::uint8_t player_slot = components::entity_player_slot(registry, building);
-        if (!player::player_can_spawn_units(registry, player_slot)) {
-            player::refund_training_process(registry, building, process.kind);
-            components::clear_building_process(process);
-        }
+        player::refund_training_process(registry, building, process.kind);
+        components::clear_building_process(process);
     }
 }
 

@@ -2119,6 +2119,10 @@ void LockstepSession::maybe_timeout_resync_handshake()
         }
     }
 
+    if (resync_pending_slots_mask_ == 0U) {
+        resync_handshake_started_ = {};
+    }
+
     reset_tick_sync_state();
     ensure_local_batch_sent(next_execute_tick());
     LockstepDebugLog::log_event(
@@ -2798,11 +2802,13 @@ void LockstepSession::send_reconnect_snapshot_to_client(
 
     adopt_host_command_queue_from_reconnect_snapshot(simulation_);
     sync_command_sequences_from_input_log();
+    const bool had_any_pending = resync_pending_slots_mask_ != 0U;
+    const bool slot_was_pending =
+        (resync_pending_slots_mask_ & (1U << player_slot)) != 0U;
     resync_pending_slots_mask_ =
         static_cast<std::uint8_t>(resync_pending_slots_mask_ | (1U << player_slot));
     last_reconnect_snapshot_sent_ = std::chrono::steady_clock::now();
-    if (resync_handshake_started_.time_since_epoch().count() == 0
-        || (resync_pending_slots_mask_ & (1U << player_slot)) != 0U) {
+    if (!slot_was_pending && !had_any_pending) {
         resync_handshake_started_ = last_reconnect_snapshot_sent_;
     }
 
@@ -2941,6 +2947,9 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
 
         resync_pending_slots_mask_ =
             static_cast<std::uint8_t>(resync_pending_slots_mask_ & ~(1U << player_slot));
+        if (resync_pending_slots_mask_ == 0U) {
+            resync_handshake_started_ = {};
+        }
 
         hash_verify_warmup_ticks_remaining_ = constants::LOCKSTEP_HASH_VERIFY_WARMUP_TICKS;
         resync_hash_min_tick_ = simulation_.tick_count();
@@ -3572,19 +3581,7 @@ bool LockstepSession::should_drop_batch_for_reconnect_handshake(
         return false;
     }
 
-    if (pending_reconnect_player_slot_ == constants::LOCKSTEP_INVALID_PLAYER_SLOT) {
-        return false;
-    }
-
-    if (batch_player_slot != pending_reconnect_player_slot_) {
-        return false;
-    }
-
-    if (!client_resync_ready_) {
-        return true;
-    }
-
-    return awaiting_reconnect_handshake_;
+    return (resync_pending_slots_mask_ & (1U << batch_player_slot)) != 0U;
 }
 
 void LockstepSession::clear_remote_wait()
