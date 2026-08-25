@@ -31,25 +31,29 @@ $Src    = Join-Path $Repo "build\x64-release\Release"
 $Stage  = "D:\aoa-lan"
 
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $Stage "scenarios") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $Stage "patterns") | Out-Null
 
-Copy-Item -Force (Join-Path $Src "AgeofAffinities.exe")              $Stage
-Copy-Item -Force (Join-Path $Src "sfml-system-3.dll")    $Stage
-Copy-Item -Force (Join-Path $Src "sfml-window-3.dll")    $Stage
-Copy-Item -Recurse -Force (Join-Path $Src "data")        $Stage
-Copy-Item -Recurse -Force (Join-Path $Src "assets")       $Stage
+Copy-Item -Force (Join-Path $Src "AgeofAffinities.exe") $Stage
+Copy-Item -Force (Join-Path $Src "assets.dat")          $Stage
+Get-ChildItem -LiteralPath $Src -Filter "*.dll" | ForEach-Object {
+    Copy-Item -Force $_.FullName $Stage
+}
+Copy-Item -Recurse -Force (Join-Path $Src "scenarios\*") (Join-Path $Stage "scenarios")
+Copy-Item -Recurse -Force (Join-Path $Src "patterns\*")  (Join-Path $Stage "patterns")
 ```
 
-**Ship these five items** (same layout on both PCs):
+**Ship these items** (same layout on both PCs):
 
 | Path (under `$Stage`) | Required |
 |----------------------|----------|
 | `AgeofAffinities.exe` | yes |
-| `sfml-system-3.dll` | yes |
-| `sfml-window-3.dll` | yes |
-| `data\` | yes |
-| `assets\` | yes |
+| `assets.dat` | yes (POST_BUILD pack; includes former `assets/` + `data/`) |
+| `*.dll` | yes (all SFML/runtime DLLs next to the exe) |
+| `scenarios\` | yes |
+| `patterns\` | yes |
 
-Do **not** copy the repo, `build\`, `raw-assets\`, or CMake presets. `logs\` is created at runtime when you pass `--lockstep-debug`.
+Do **not** copy loose `assets\` / `data\` trees, the repo, `build\`, or `raw-assets\`. Release POST_BUILD removes those loose folders from the output. `logs\` is created at runtime when you pass `--lockstep-debug`.
 
 Copy the whole `$Stage` folder to the second PC (ZIP, USB, network share). On PC B, use the same folder name/path or any path — only the contents matter.
 
@@ -159,7 +163,7 @@ cd D:\Projects\rts-game
 | Symptom | Check |
 |--------|--------|
 | Client cannot connect | Firewall, correct `HOST_IP`, host already listening on `--port 27000` |
-| Missing DLL / assets | Re-run **§2**; confirm `data\`, `assets\`, and both SFML DLLs sit next to `AgeofAffinities.exe` |
+| Missing DLL / assets | Re-run **§2**; confirm `assets.dat`, `scenarios\`, `patterns\`, and all `*.dll` sit next to `AgeofAffinities.exe` |
 | Stuck after reconnect | Host/client `logs\lockstep_*.log` for `resync_ready_received`, `reconnect_bootstrap_complete` |
 | Desync | Both logs at desync tick; compare `tick=` and hash lines |
 | Movement stutter only | Usually render/interpolation; note if it happens only while waiting on opponent batches |
@@ -172,13 +176,16 @@ Run from repo (not required on the second PC):
 
 ```powershell
 cd D:\Projects\rts-game
-.\build\x64-release\Release\AgeofAffinities.exe --harness
-.\build\x64-release\Release\AgeofAffinities.exe --lockstep-smoke
-.\build\x64-release\Release\AgeofAffinities.exe --lockstep-disconnect-smoke
-.\build\x64-release\Release\AgeofAffinities.exe --lockstep-reconnect-smoke
-.\build\x64-release\Release\AgeofAffinities.exe --lockstep-4-smoke
+$exe = ".\build\x64-release\Release\AgeofAffinities.exe"
+& $exe --harness
+& $exe --lockstep-smoke
+& $exe --lockstep-disconnect-smoke
+& $exe --lockstep-reconnect-smoke
+& $exe --lockstep-4-smoke
+& $exe --lockstep-4-disconnect-smoke
+& $exe --lockstep-4-reconnect-smoke
 ```
 
-Pass these before spending time on the LAN soak.
+Pass these before spending time on the LAN soak. Full port table and caveats: [LOCKSTEP.md](LOCKSTEP.md).
 
 Scale testing (4–8 players, two-PC layouts): [M3_SCALE_TESTING.md](M3_SCALE_TESTING.md)
