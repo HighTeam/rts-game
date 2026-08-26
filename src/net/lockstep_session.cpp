@@ -1078,6 +1078,10 @@ bool LockstepSession::submit_local_command(sim::player::PlayerCommand command)
         return false;
     }
 
+    if (slot_has_resigned(player_slot_)) {
+        return false;
+    }
+
     if (commands_blocked_during_resync()) {
         return false;
     }
@@ -2230,6 +2234,46 @@ std::optional<std::uint8_t> LockstepSession::enet_slot_for_player(
     return enet_slot;
 }
 
+bool LockstepSession::client_sender_claims_player_slot(
+    const std::uint8_t sender_enet_slot,
+    const std::uint8_t claimed_player_slot) const
+{
+    if (sender_enet_slot == 0U || claimed_player_slot == 0U) {
+        return false;
+    }
+
+    if (claimed_player_slot >= session_player_count_) {
+        return false;
+    }
+
+    const std::optional<std::uint8_t> mapped_enet_slot = enet_slot_for_player(claimed_player_slot);
+    if (mapped_enet_slot.has_value()) {
+        return *mapped_enet_slot == sender_enet_slot;
+    }
+
+    return sender_enet_slot == claimed_player_slot;
+}
+
+void LockstepSession::discard_non_resign_local_outbox_commands()
+{
+    for (auto iterator = local_outbox_.begin(); iterator != local_outbox_.end();) {
+        bool keep_tick = false;
+        for (const sim::player::PlayerCommand& command : iterator->second) {
+            if (command.type == sim::player::PlayerCommandType::Resign) {
+                keep_tick = true;
+                break;
+            }
+        }
+
+        if (keep_tick) {
+            ++iterator;
+            continue;
+        }
+
+        iterator = local_outbox_.erase(iterator);
+    }
+}
+
 void LockstepSession::apply_post_join_accepted_host_state()
 {
     if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
@@ -2655,6 +2699,9 @@ void LockstepSession::apply_resigned_slot_disconnect(const std::uint8_t player_s
     }
 
     clear_remote_wait();
+    if (player_slot == player_slot_) {
+        discard_non_resign_local_outbox_commands();
+    }
     push_system_chat(
         player_display_name(player_slot) + std::string(aoa::constants::CHAT_PLAYER_RESIGNED_SUFFIX));
     LockstepDebugLog::log_event(
@@ -4086,6 +4133,15 @@ void LockstepSession::process_received_packet(
             return;
         }
 
+        if (role_ == LockstepRole::Host && sender_slot != 0U
+            && !client_sender_claims_player_slot(sender_slot, message->player_slot)) {
+            LockstepDebugLog::log_event(
+                "resync_ready_rejected",
+                "player_slot=" + std::to_string(static_cast<int>(message->player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
+            return;
+        }
+
         handle_resync_ready(message->player_slot);
         return;
     }
@@ -4113,6 +4169,15 @@ void LockstepSession::process_received_packet(
     if (decoded_message->first == NetMessageKind::PlayerResign) {
         const auto message = decode_reconnect_request(decoded_message->second);
         if (!message.has_value()) {
+            return;
+        }
+
+        if (role_ == LockstepRole::Host && sender_slot != 0U
+            && !client_sender_claims_player_slot(sender_slot, message->player_slot)) {
+            LockstepDebugLog::log_event(
+                "player_resign_rejected",
+                "player_slot=" + std::to_string(static_cast<int>(message->player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
             return;
         }
 
