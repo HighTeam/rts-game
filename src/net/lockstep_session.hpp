@@ -238,6 +238,9 @@ private:
     void bind_player_to_enet_slot(std::uint8_t player_slot, std::uint8_t enet_slot);
     void clear_enet_slot_mapping(std::uint8_t enet_slot);
     [[nodiscard]] std::optional<std::uint8_t> enet_slot_for_player(std::uint8_t player_slot) const;
+    [[nodiscard]] bool client_sender_claims_player_slot(
+        std::uint8_t sender_enet_slot,
+        std::uint8_t claimed_player_slot) const;
     void note_opponent_transport_down();
     void take_over_unconnected_human_slots();
     [[nodiscard]] bool can_run_live_lockstep() const;

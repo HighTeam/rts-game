@@ -466,7 +466,6 @@ void LockstepSession::note_player_slot_transport_down(const std::uint8_t player_
     }
 
     handle_host_player_slot_disconnected(player_slot);
-    enable_slot_ai_control(player_slot);
     opponent_needs_snapshot_ = true;
 
     LockstepDebugLog::log_event(
@@ -2228,6 +2227,26 @@ std::optional<std::uint8_t> LockstepSession::enet_slot_for_player(
     }
 
     return enet_slot;
+}
+
+bool LockstepSession::client_sender_claims_player_slot(
+    const std::uint8_t sender_enet_slot,
+    const std::uint8_t claimed_player_slot) const
+{
+    if (sender_enet_slot == 0U || claimed_player_slot == 0U) {
+        return false;
+    }
+
+    if (claimed_player_slot >= session_player_count_) {
+        return false;
+    }
+
+    const std::optional<std::uint8_t> mapped_enet_slot = enet_slot_for_player(claimed_player_slot);
+    if (mapped_enet_slot.has_value()) {
+        return *mapped_enet_slot == sender_enet_slot;
+    }
+
+    return sender_enet_slot == claimed_player_slot;
 }
 
 void LockstepSession::apply_post_join_accepted_host_state()
@@ -4169,6 +4188,15 @@ void LockstepSession::process_received_packet(
         }
 
         if (slot_is_spectator(batch.player_slot)) {
+            return;
+        }
+
+        if (role_ == LockstepRole::Host && sender_slot != 0U
+            && !client_sender_claims_player_slot(sender_slot, batch.player_slot)) {
+            LockstepDebugLog::log_event(
+                "batch_rejected",
+                "player_slot=" + std::to_string(static_cast<int>(batch.player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
             return;
         }
 
