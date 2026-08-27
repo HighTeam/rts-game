@@ -40,6 +40,9 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 
 - [BUILD.md](docs/BUILD.md) — x64 Debug/Release, vcpkg, CMake presets
 - [HARNESS.md](docs/HARNESS.md) — headless CLI, scenario JSON, command replay, hash updates
+- [LOCKSTEP.md](docs/LOCKSTEP.md) — ENet lockstep runbook (ports, reconnect, multi-peer)
+- [LAN_SOAK.md](docs/LAN_SOAK.md) — two-PC LAN soak checklist
+- [M3_SCALE_TESTING.md](docs/M3_SCALE_TESTING.md) — 4–8 player scale testing without 8 PCs
 - [ECS.md](docs/ECS.md) — EnTT components, tick pipeline, systems, data-driven hooks
 - [TAXONOMY.md](docs/TAXONOMY.md) — world object terms and live archetype JSON
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
@@ -47,7 +50,8 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 - [WORKFLOW.md](docs/WORKFLOW.md) — Kanban, labels, branches, **PR workflow (required)**
 - [ORG.md](docs/ORG.md) — repos, licensing, distribution
 - [GITHUB_SETUP.md](docs/GITHUB_SETUP.md) — project board setup
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) — shipped alpha versions
 
 ## Status
 
-M1 landed on `main` (PR #27 + follow-up). M2 prep: tick-scoped player commands, binary command format, extended state hash, disconnect policy documented. Next: **M2 lockstep** (#7).
+**alpha_v0.2.1** on `main`: Earth loop, default HUD / diplomacy, 2–4p lockstep (CLI `--players` / `--player-slot`), reconnect + AI takeover, resign / host-leave, SP save/load, packed `assets.dat`. See [LOCKSTEP.md](docs/LOCKSTEP.md). Open: 8-player CI smoke, MP coordinated save/load, map redesign — [BACKLOG.md](docs/BACKLOG.md).
