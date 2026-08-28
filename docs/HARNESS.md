@@ -1,6 +1,6 @@
 # Headless regression harness
 
-Runbook for deterministic sim checks. The same `aoa` binary drives graphical play, ad-hoc headless ticks, and scripted scenarios.
+Runbook for deterministic sim checks. The same `AgeofAffinities` binary drives graphical play, ad-hoc headless ticks, and scripted scenarios.
 
 ## Intent
 
@@ -8,7 +8,9 @@ Catch sim regressions (movement, gather, combat, command timing) before they bec
 
 ## CLI
 
-Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves (CI and local presets define `AOA_DATA_DIR`):
+Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves
+(`AOA_RUNTIME_ROOT` compile definition + POST_BUILD pack; see [LOCKSTEP.md](LOCKSTEP.md)
+runtime paths — there is no `AOA_DATA_DIR`):
 
 ```powershell
 # All scenarios under data/scenarios/*.json
@@ -16,7 +18,7 @@ Build first (see [BUILD.md](BUILD.md)), then from a tree where `data/` resolves 
 
 # Ad-hoc: default Earth scenario, no scripted commands
 .\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --print-hash
-.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --expect-hash 0xc59dd1cc68525745
+.\build\x64-debug\Debug\AgeofAffinities.exe --headless --ticks 200 --expect-hash 0xcb4f9a25c25d549c
 ```
 
 | Flag | Effect |
@@ -37,7 +39,7 @@ Files live in `data/scenarios/`. Minimal shape:
 {
   "scenario_id": "earth_default",
   "ticks": 200,
-  "expected_state_hash": "0xc59dd1cc68525745"
+  "expected_state_hash": "0xcb4f9a25c25d549c"
 }
 ```
 
@@ -47,7 +49,7 @@ Optional `commands` array (command replay):
 {
   "scenario_id": "earth_player_commands",
   "ticks": 150,
-  "expected_state_hash": "0xb0c1f568cc7d28cd",
+  "expected_state_hash": "0xb6766a26ec990428",
   "commands": [
     {
       "execute_tick": 5,
@@ -131,10 +133,11 @@ Render-only state is excluded. See `src/sim/systems/gameplay_systems.cpp`.
 | Unsupported `scenario_id` | New JSON id without harness allow-list update |
 | Command seems one tick late/early | `execute_tick` is absolute sim tick, not “ticks from now” |
 | Player militia won’t auto-attack in replay | By design — player militia auto-AI was removed; issue an `attack` command |
-| Scenarios directory not found | Binary run without `AOA_DATA_DIR` / cwd that reaches `data/` |
+| Scenarios directory not found | Binary run without resolvable `data/` (`AOA_RUNTIME_ROOT` / pack / cwd) |
 
 ## Related
 
 - [BUILD.md](BUILD.md) — presets and daily build commands
+- [LOCKSTEP.md](LOCKSTEP.md) — multiplayer delay, hash exchange, reconnect
 - [ECS.md](ECS.md) — tick pipeline and system order
 - [DECISIONS.md](DECISIONS.md) — command delay, combat tie-break, disconnect policy
