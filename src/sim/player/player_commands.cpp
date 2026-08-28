@@ -2078,6 +2078,21 @@ bool issue_advance_age_order(entt::registry& registry, const entt::entity town_c
         return false;
     }
 
+    const auto town_center_view = registry.view<
+        components::TownCenterTag,
+        components::BuildingProcess,
+        components::PlayerOwnedTag>();
+    for (const entt::entity candidate : town_center_view) {
+        if (components::entity_player_slot(registry, candidate) != player_slot) {
+            continue;
+        }
+
+        const auto& process = town_center_view.get<components::BuildingProcess>(candidate);
+        if (process.kind == components::BuildingProcessKind::AdvanceAge && process.ticks_total > 0) {
+            return false;
+        }
+    }
+
     if (cost.food > 0 && !player::try_deduct_player_food(registry, player_slot, cost.food)) {
         return false;
     }

@@ -305,6 +305,7 @@ void LockstepSession::background_tick_loop()
                 && can_run_live_lockstep();
             const bool can_pipeline_batches =
                 session_ready_ && !desynced_ && !host_lost_ && !reconnecting_ && !host_gone_
+                && !match_paused_.load()
                 && !awaiting_reconnect_handshake_blocks_tick_advance(
                     role_, awaiting_reconnect_handshake_, session_player_count_);
             if (match_paused_.load() || !live_lockstep_ready) {
@@ -2916,9 +2917,24 @@ void LockstepSession::handle_resync_ready(const std::uint8_t player_slot)
 
     if (session_player_count_ > 2U) {
         if ((resync_pending_slots_mask_ & (1U << player_slot)) == 0U) {
+            if (!simulation_.is_player_ai_controlled(player_slot)
+                && (disconnected_slots_mask_ & (1U << player_slot)) == 0U) {
+                ensure_local_batches_pipelined();
+                force_resend_local_batch(next_execute_tick());
+                LockstepDebugLog::log_event(
+                    "resync_ready_duplicate_bootstrap",
+                    "player_slot=" + std::to_string(static_cast<int>(player_slot) + 1) + " tick="
+                        + std::to_string(simulation_.tick_count()));
+                return;
+            }
+
             resume_player_control(player_slot);
             disconnected_slots_mask_ =
                 static_cast<std::uint8_t>(disconnected_slots_mask_ & ~(1U << player_slot));
+            broadcast_slot_ai_resume(player_slot);
+            broadcast_reconnect_snapshot_to_all_clients();
+            hash_verify_warmup_ticks_remaining_ = constants::LOCKSTEP_HASH_VERIFY_WARMUP_TICKS;
+            resync_hash_min_tick_ = simulation_.tick_count();
             reset_reconnect_handshake_sync_state(player_slot);
             ensure_local_batch_sent(next_execute_tick());
             LockstepDebugLog::log_event(
@@ -3619,9 +3635,6 @@ void LockstepSession::inject_ai_commands_for_slot(
 
 void LockstepSession::inject_ai_commands_for_disconnected_slots(const std::uint64_t execute_tick)
 {
-    const std::uint8_t ai_playing_mask =
-        static_cast<std::uint8_t>(disconnected_slots_mask_ | resync_pending_slots_mask_);
-
     for (std::uint8_t slot = 0U; slot < session_player_count_; ++slot) {
         if (slot == player_slot_) {
             continue;
@@ -3636,7 +3649,11 @@ void LockstepSession::inject_ai_commands_for_disconnected_slots(const std::uint6
             continue;
         }
 
-        const bool disconnect_ai = (ai_playing_mask & (1U << slot)) != 0U;
+        if ((resync_pending_slots_mask_ & (1U << slot)) != 0U) {
+            continue;
+        }
+
+        const bool disconnect_ai = (disconnected_slots_mask_ & (1U << slot)) != 0U;
         if (!lobby_ai && !disconnect_ai) {
             continue;
         }
