@@ -399,6 +399,12 @@ void CommandQueue::enqueue(PlayerCommand command)
 
 void CommandQueue::enqueue_network(PlayerCommand command)
 {
+    for (const PlayerCommand& existing : input_log_) {
+        if (existing.player_slot == command.player_slot && existing.sequence == command.sequence) {
+            return;
+        }
+    }
+
     input_log_.push_back(command);
     pending_.push_back(std::move(command));
 
