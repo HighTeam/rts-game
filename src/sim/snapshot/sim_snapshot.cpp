@@ -70,7 +70,7 @@ namespace {
 
 constexpr std::uint32_t SNAPSHOT_MAGIC = 0x414F4153U; // AOAS
 
-constexpr std::uint16_t SNAPSHOT_VERSION = 26U;
+constexpr std::uint16_t SNAPSHOT_VERSION = 27U;
 
 
 
@@ -2206,6 +2206,15 @@ struct DecodedSnapshot {
         return std::nullopt;
     }
 
+    if (!read_pod(cursor, decoded.metadata.playing_slots_mask)
+        || !read_pod(cursor, decoded.metadata.eliminated_slots_mask)
+        || !read_pod(cursor, decoded.metadata.match_finished)
+        || !read_pod(cursor, decoded.metadata.winner_slot)
+        || !read_pod(cursor, decoded.metadata.last_eliminating_slot)
+        || !read_pod(cursor, decoded.metadata.finished_tick)) {
+        return std::nullopt;
+    }
+
     for (auto& stockpile : decoded.metadata.player_stockpiles) {
         if (!read_pod(cursor, stockpile.wood) || !read_pod(cursor, stockpile.food)
             || !read_pod(cursor, stockpile.money) || !read_pod(cursor, stockpile.mana)) {
@@ -2724,6 +2733,12 @@ SimSnapshot Simulation::export_snapshot() const
         snapshot.player_ally_mask = session.player_ally_mask;
         snapshot.player_ally_victory = session.player_ally_victory;
         snapshot.block_team_changes = session.block_team_changes ? 1U : 0U;
+        snapshot.playing_slots_mask = session.playing_slots_mask;
+        snapshot.eliminated_slots_mask = session.eliminated_slots_mask;
+        snapshot.match_finished = session.match_finished ? 1U : 0U;
+        snapshot.winner_slot = session.winner_slot;
+        snapshot.last_eliminating_slot = session.last_eliminating_slot;
+        snapshot.finished_tick = session.finished_tick;
         snapshot.player_stockpiles = session.player_stockpiles;
         snapshot.player_stats = session.player_stats;
         snapshot.attack_reveal_flares = session.attack_reveal_flares;
@@ -2881,6 +2896,12 @@ std::vector<std::byte> encode_sim_snapshot(
     }
 
     append_pod(out, metadata.block_team_changes);
+    append_pod(out, metadata.playing_slots_mask);
+    append_pod(out, metadata.eliminated_slots_mask);
+    append_pod(out, metadata.match_finished);
+    append_pod(out, metadata.winner_slot);
+    append_pod(out, metadata.last_eliminating_slot);
+    append_pod(out, metadata.finished_tick);
 
     for (const auto& stockpile : metadata.player_stockpiles) {
         append_pod(out, stockpile.wood);
@@ -3341,6 +3362,12 @@ bool apply_sim_snapshot(Simulation& simulation, const std::span<const std::byte>
     session.player_ally_mask = decoded->metadata.player_ally_mask;
     session.player_ally_victory = decoded->metadata.player_ally_victory;
     session.block_team_changes = decoded->metadata.block_team_changes != 0U;
+    session.playing_slots_mask = decoded->metadata.playing_slots_mask;
+    session.eliminated_slots_mask = decoded->metadata.eliminated_slots_mask;
+    session.match_finished = decoded->metadata.match_finished != 0U;
+    session.winner_slot = decoded->metadata.winner_slot;
+    session.last_eliminating_slot = decoded->metadata.last_eliminating_slot;
+    session.finished_tick = decoded->metadata.finished_tick;
     session.player_stockpiles = decoded->metadata.player_stockpiles;
     session.player_stats = decoded->metadata.player_stats;
     session.attack_reveal_flares = decoded->metadata.attack_reveal_flares;

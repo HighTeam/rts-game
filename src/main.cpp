@@ -53,7 +53,7 @@ int main(int argc, char** argv)
             || arg == "--sim-8ai-bench" || arg == "--lockstep-4-stress-smoke"
             || arg == "--lockstep-4-reconnect-smoke" || arg == "--snapshot-smoke"
             || arg == "--snapshot-double-spawn-smoke" || arg == "--snapshot-reconnect-smoke"
-            || arg == "--snapshot-heavy-smoke" || arg == "--print-hash" || arg == "--help"
+            || arg == "--snapshot-resign-smoke" || arg == "--snapshot-heavy-smoke" || arg == "--print-hash" || arg == "--help"
             || arg == "-h") {
             want_console = true;
             break;
@@ -138,6 +138,10 @@ int main(int argc, char** argv)
 
         if (options.run_snapshot_reconnect_smoke) {
             return aoa::net::run_snapshot_reconnect_smoke();
+        }
+
+        if (options.run_snapshot_resign_smoke) {
+            return aoa::net::run_snapshot_resign_smoke();
         }
 
         if (options.run_snapshot_heavy_smoke) {

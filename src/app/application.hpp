@@ -103,6 +103,7 @@ struct LaunchOptions {
     bool run_snapshot_smoke{false};
     bool run_snapshot_double_spawn_smoke{false};
     bool run_snapshot_reconnect_smoke{false};
+    bool run_snapshot_resign_smoke{false};
     bool run_snapshot_heavy_smoke{false};
     bool lockstep_host{false};
     bool lockstep_join{false};
