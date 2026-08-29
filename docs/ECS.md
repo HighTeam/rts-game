@@ -25,13 +25,27 @@ Age of Affinities uses [EnTT](https://github.com/skypjack/entt) for simulation s
 
 Gameplay order in `run_gameplay_systems()` (do not reorder casually — hashes and combat depend on it):
 
-1. `run_worker_system` — gather / auto-worker brain (skipped when `ManualControlTag` is set)
-2. `run_worker_deposit_system`
-3. `run_enemy_militia_ai` — enemy militia only; player militia has no auto-attack AI
-4. `run_attack_chase_system`
-5. `run_movement_system`
-6. `run_combat_system` — same-tick damage sorted by entity id (see [DECISIONS.md](DECISIONS.md))
-7. `run_death_cleanup`
+0. `tick_match_announcement_cooldowns` — chat / announcement cooldown timers on the world entity
+1. `run_building_process_system` — train / research / age-up / construction progress (training that
+   finishes at 100% but cannot spawn refunds only on pop-cap today; blocked spawn tiles leave the
+   process stuck until draft PR **#77**). `issue_advance_age_order` only rejects an active process
+   on the chosen Town Center — two TCs can age-up in parallel on `main` (draft fix PR **#83**)
+2. `run_visibility_system` — fog explored / memory planes
+3. `run_worker_system` — gather / auto-worker brain (skipped when `ManualControlTag` is set)
+4. `run_worker_deposit_system`
+5. `run_builder_system`
+6. `run_extractor_mana_generation`
+7. `run_garden_production`
+8. `run_garrison_enter_system`
+9. `run_enemy_militia_ai` — enemy militia only; player militia has no auto-attack AI
+10. `run_attack_chase_system`
+11. `run_movement_system`
+12. `run_melee_contact_system` — slide attackers into melee range before damage
+13. `run_combat_system` — same-tick damage sorted by `EntitySnapshotKey` (see [DECISIONS.md](DECISIONS.md))
+14. `run_building_autoattack_system`
+15. `run_projectile_system`
+16. `run_death_cleanup`
+17. Map ping tickdown — decrement / erase `MapPingList` entries on the world entity
 
 Constraints:
 
