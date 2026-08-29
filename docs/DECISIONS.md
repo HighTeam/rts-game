@@ -11,8 +11,8 @@ Use it as a **checklist of decisions** that must be locked in before they become
 | Data-driven civ JSON | M1 #5 | Done — `data/civs/earth.json` + loader |
 | Render style (DE-like hybrid) | M1 #26 Render | Decided — see below |
 | Camera modes (Classic / Full 3D) | M1 #26 + M5 Settings | Decided — Classic first; Full 3D later default |
-| Asset pipeline (raw vs shipped) | M5 Packaging | Decided — see below |
-| Combat same-tick resolution | M1 | Done — sorted entity id; skip dead targets same tick |
+| Asset pipeline (raw vs shipped) | M5 Packaging | Decided — `assets.dat` packs now; M5 = tooling polish — see below |
+| Combat same-tick resolution | M1 | Done — `EntitySnapshotKey` sort; skip dead targets same tick |
 | Unit position model | M1 → M2 prep | Done — `GridPosition` + sub-tile `Fixed` segments |
 | Player militia auto-AI | Pre-M2 harness | Done — removed; only enemy militia auto-attacks |
 | World object taxonomy (Option A) | M1 prep | Decided — see [`docs/TAXONOMY.md`](TAXONOMY.md) |
@@ -54,22 +54,22 @@ Classic mode is the only implemented mode for now. Full 3D is reserved in settin
 
 ## Asset pipeline
 
-Two top-level folders; only **`assets/`** is shipped / committed for distribution builds.
+Two top-level folders; authoring stays in **`raw-assets/`**, committed sources in **`assets/`** + **`data/`**.
 
 | Folder | Purpose | In repo / release |
 |--------|---------|-------------------|
 | **`raw-assets/`** | Source art: raw audio, music, textures, models, etc. | **No** — `.gitignore`; local/dev only |
-| **`assets/`** | Shipped runtime assets — **immutable serialized packs** (goal) | **Yes** |
+| **`assets/`** + **`data/`** | Committed runtime sources | **Yes** in repo; packed at build time |
+| **`assets.dat`** | Immutable pack next to the exe (`aoa_pack_assets` POST_BUILD) | **Yes** in Release / portable / installer |
 
-**Now:** direct file copies from `raw-assets/` into `assets/` (same paths where practical, e.g. `assets/music/`).
+**Now (alpha_v0.2+):** game prefers `assets.dat` beside the exe (`AssetStore`); Debug may still fall back to loose trees via `AOA_RUNTIME_ROOT`. Release POST_BUILD removes loose `assets/` / `data/` from the output dir.
 
-**Later (M5 packaging):**
+**Still open (M5 packaging polish):**
 
-- Binary pack format (`.dat`-style containers; audio packs e.g. **`.adp`** — *audio data pack*, name TBD)
-- Standalone **pack tool** to create/read/update/delete entries inside packs (CRUD) — not hand-editing shipped blobs
-- Game loads only from `assets/` packs, not `raw-assets/`
+- Richer pack CRUD / audio-specific packs (e.g. **`.adp`** — name TBD)
+- Drop loose-tree fallback for shipping builds only
 
-See [assets/README.md](../assets/README.md).
+See [assets/README.md](../assets/README.md), [BUILD.md](BUILD.md), [LOCKSTEP.md](LOCKSTEP.md).
 
 ---
 
@@ -77,11 +77,11 @@ See [assets/README.md](../assets/README.md).
 
 When multiple units attack on the **same sim tick**:
 
-1. Collect attackers, sort by **`entt::entity` id** (stable, lockstep-safe).
+1. Collect attackers, sort by **`EntitySnapshotKey`** (player slot + category + ordinal — stable across snapshot restore; not raw `entt::entity` id).
 2. Apply damage **in that order**.
 3. **Skip** attacks against targets already at `health <= 0` this tick (before `run_death_cleanup`).
 
-No mutual “double KO” on the same tick when one hit would kill first. Cooldowns still tick down per attacker as before.
+No mutual “double KO” on the same tick when one hit would kill first. Cooldowns still tick down per attacker as before. Chase / melee contact use the same snapshot-key sort.
 
 ---
 
@@ -102,7 +102,7 @@ AoE-style free movement on a tile means sub-tile fixed-point coordinates, not fl
 | Topic | Choice |
 |-------|--------|
 | Application timing | Commands are **queued** with an `execute_tick` and applied at the **start** of that sim tick — never from the render/input loop directly |
-| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (command issued during tick *N* runs at tick *N+1*); network input delay buffer stacks on this in M2 |
+| Local delay | `PLAYER_COMMAND_DELAY_TICKS = 1` (SP / harness). Lockstep uses **`LOCKSTEP_COMMAND_DELAY_TICKS = 2`** instead — it does not stack both (see [LOCKSTEP.md](LOCKSTEP.md)) |
 | Wire format | Compact binary: sequence, execute tick, player slot, type, unit id list, payload (grid cell or attack target entity id) — see `src/sim/player/player_command.hpp` |
 | Pick → command | Screen pick runs locally; the **semantic result** (cell, entity id) is stored in the command payload for lockstep |
 | Input log | `CommandQueue::input_log()` retains every command from game start (M2 reconnect / save-load reuse) |
@@ -114,12 +114,28 @@ AoE-style free movement on a tile means sub-tile fixed-point coordinates, not fl
 When a human player disconnects during a multiplayer match:
 
 1. **No global pause** — the match continues for the remaining connected peer when that peer is the **host**. The sim **never freezes** waiting for reconnect.
-2. **Immediate AI takeover (host only)** — if the **client** disconnects, the host enables AI for player 2 **on the same tick** transport drops; UI shows “Player N left — AI playing (waiting for reconnect)”.
+2. **Immediate AI takeover (host only)** — unexpected drop enables AI for that slot (2p: global `enter_ai_fallback`; multi-peer: `handle_slot_ai_takeover`). UI / chat announces disconnect + AI.
 3. **Reconnect grace** — for `LOCKSTEP_RECONNECT_GRACE_MS` (30s), the host still accepts reconnect; AI keeps playing until the human returns.
 4. **Client loses host** — the client **stops playing**, retries reconnect automatically, and exits if the host is gone. The client does **not** simulate the host with AI.
-5. **Reconnect** — on reconnect, AI control **stops immediately** for that player; they resume issuing commands from their client. Catch-up uses snapshot + input log replay + `ResyncReady` handshake.
+5. **Reconnect** — on reconnect, AI control **stops immediately** for that player; they resume issuing commands from their client. Catch-up uses snapshot + input log + `ResyncReady` handshake (snapshot v26 includes map pings / pending orders). On `main`, match-outcome fields from resign are **not** in the snapshot or state hash (draft **#85**); see [LOCKSTEP.md](LOCKSTEP.md).
+6. **Resign** (`PlayerResign`) — slot marked resigned, **no** AI takeover, slot not reclaimable; player may stay in the match. On `main`, host-side resign / `ResyncReady` still trust payload slot without sender binding (draft **#79**); see [LOCKSTEP.md](LOCKSTEP.md).
+7. **Match pause** (`MatchPause`) — peers stop live tick advance while paused. On `main`, paused peers can still pipeline `TickInputBatch` ahead of the barrier (draft **#83**); see [LOCKSTEP.md](LOCKSTEP.md).
+8. **Host leave** — host `request_voluntary_resign` sends `HostEnded`; clients treat the match as over (no reconnect to a dead host).
 
-Poor connection (late/missing input batches) must not freeze the whole match — use input delay buffering and per-player stall policy (future tuning); only session-wide halt on desync or host loss.
+Poor connection (late/missing input batches) must not freeze the whole match — use input delay buffering and per-player stall policy (future tuning); only session-wide halt on desync or host loss. Details: [LOCKSTEP.md](LOCKSTEP.md).
+
+---
+
+## HUD style (alpha_v0.2.1)
+
+In-game / settings cycle (`HudStyle` in `src/core/constants.hpp`, `GameMenuAction::CycleHudStyle`):
+
+| Style | Behavior |
+|-------|----------|
+| **Default** | Custom HUD layout; minimap draws the Default double-diamond stroke |
+| **AoE Style** | Classic AoE panel layout (`hud_is_classic_aoe`); Default double-diamond stroke is **hidden** (`hud_overlay.cpp`, tip `bfc6a29`) |
+
+Persisted with other app settings (`app_settings.cpp`). Not a sim concern — render / menu only.
 
 ---
 
