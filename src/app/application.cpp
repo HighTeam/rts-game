@@ -260,6 +260,11 @@ LaunchOptions parse_launch_options(const int argc, char** argv)
             continue;
         }
 
+        if (arg == "--snapshot-resign-smoke") {
+            options.run_snapshot_resign_smoke = true;
+            continue;
+        }
+
         if (arg == "--snapshot-heavy-smoke") {
             options.run_snapshot_heavy_smoke = true;
             continue;

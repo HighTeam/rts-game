@@ -7,6 +7,7 @@
 #include "net/net_constants.hpp"
 #include "sim/player/player_economy.hpp"
 #include "sim/player/player_command.hpp"
+#include "sim/player/player_commands.hpp"
 #include "sim/components/grid_position.hpp"
 #include "sim/components/health.hpp"
 #include "sim/components/map_grid.hpp"
@@ -21,6 +22,7 @@
 #include "sim/snapshot/sim_snapshot.hpp"
 #include "sim/systems/disconnected_player_ai.hpp"
 #include "sim/systems/gameplay_systems.hpp"
+#include "sim/systems/match_outcome.hpp"
 #include "sim/systems/pathfinding.hpp"
 
 #include <array>
@@ -2319,6 +2321,69 @@ int run_snapshot_reconnect_smoke()
 
     std::cout << "snapshot-reconnect-smoke: ok ticks=" << source.tick_count() << " hash=0x"
               << std::hex << source.state_hash() << std::dec << '\n';
+    return 0;
+}
+
+int run_snapshot_resign_smoke()
+{
+    sim::Simulation source{};
+
+    sim::components::MatchSession* session = sim::systems::match_session(source.registry());
+    if (session == nullptr) {
+        std::cerr << "snapshot-resign-smoke: match session missing\n";
+        return 1;
+    }
+
+    session->playing_slots_mask = 0b00001111U;
+    for (int tick = 0; tick < 120; ++tick) {
+        source.tick();
+    }
+
+    if (!sim::player::issue_resign_order(source.registry(), 2U)) {
+        std::cerr << "snapshot-resign-smoke: failed to apply resign order\n";
+        return 1;
+    }
+
+    if ((session->eliminated_slots_mask & static_cast<std::uint8_t>(1U << 2U)) == 0U) {
+        std::cerr << "snapshot-resign-smoke: eliminated slot bit not set\n";
+        return 1;
+    }
+
+    sim::systems::compute_state_hash(source.registry());
+    const std::vector<std::byte> snapshot_bytes = sim::encode_reconnect_sim_snapshot(source);
+    if (snapshot_bytes.empty()) {
+        std::cerr << "snapshot-resign-smoke: encode failed\n";
+        return 1;
+    }
+
+    sim::Simulation restored{};
+    if (!restored.apply_snapshot(snapshot_bytes)) {
+        std::cerr << "snapshot-resign-smoke: restore failed\n";
+        return 1;
+    }
+
+    const sim::components::MatchSession* restored_session =
+        sim::systems::match_session(restored.registry());
+    if (restored_session == nullptr) {
+        std::cerr << "snapshot-resign-smoke: restored match session missing\n";
+        return 1;
+    }
+
+    if (restored_session->eliminated_slots_mask != session->eliminated_slots_mask) {
+        std::cerr << "snapshot-resign-smoke: eliminated_slots_mask mismatch expected="
+                  << static_cast<int>(session->eliminated_slots_mask) << " actual="
+                  << static_cast<int>(restored_session->eliminated_slots_mask) << '\n';
+        return 1;
+    }
+
+    if (source.state_hash() != restored.state_hash()) {
+        std::cerr << "snapshot-resign-smoke: hash mismatch live=0x" << std::hex << source.state_hash()
+                  << " restored=0x" << restored.state_hash() << std::dec << '\n';
+        return 1;
+    }
+
+    std::cout << "snapshot-resign-smoke: ok ticks=" << restored.tick_count() << " hash=0x"
+              << std::hex << restored.state_hash() << std::dec << '\n';
     return 0;
 }
 

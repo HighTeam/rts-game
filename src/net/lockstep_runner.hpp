@@ -47,6 +47,8 @@ int run_snapshot_heavy_smoke();
 
 [[nodiscard]] int run_snapshot_reconnect_smoke();
 
+[[nodiscard]] int run_snapshot_resign_smoke();
+
 [[nodiscard]] int run_lockstep_host(const LockstepRunOptions& options);
 
 [[nodiscard]] int run_lockstep_join(const LockstepRunOptions& options);

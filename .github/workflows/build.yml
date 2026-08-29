@@ -62,6 +62,7 @@ jobs:
           Start-Sleep -Milliseconds 500
           & $exe --lockstep-peer-silence-smoke
           & $exe --snapshot-smoke
+          & $exe --snapshot-resign-smoke
 
       - name: Regression harness
         if: matrix.preset == 'ci-x64-debug'

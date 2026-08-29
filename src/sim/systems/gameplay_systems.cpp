@@ -3254,6 +3254,12 @@ void compute_state_hash(entt::registry& registry)
             mix(static_cast<std::uint64_t>(victory));
         }
         mix(session.block_team_changes ? 1U : 0U);
+        mix(static_cast<std::uint64_t>(session.playing_slots_mask));
+        mix(static_cast<std::uint64_t>(session.eliminated_slots_mask));
+        mix(session.match_finished ? 1U : 0U);
+        mix(static_cast<std::uint64_t>(session.winner_slot));
+        mix(static_cast<std::uint64_t>(session.last_eliminating_slot));
+        mix(session.finished_tick);
         for (const std::uint8_t spy : session.player_spy) {
             mix(static_cast<std::uint64_t>(spy));
         }

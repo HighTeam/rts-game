@@ -38,6 +38,12 @@ struct SimSnapshot {
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_ally_mask{};
     std::array<std::uint8_t, constants::MAX_PLAYER_SLOTS> player_ally_victory{};
     std::uint8_t block_team_changes{0U};
+    std::uint8_t playing_slots_mask{0U};
+    std::uint8_t eliminated_slots_mask{0U};
+    std::uint8_t match_finished{0U};
+    std::uint8_t winner_slot{constants::MATCH_WINNER_NONE};
+    std::uint8_t last_eliminating_slot{constants::MATCH_WINNER_NONE};
+    std::uint64_t finished_tick{0U};
     std::array<components::Stockpile, constants::MAX_PLAYER_SLOTS> player_stockpiles{};
     std::array<components::PlayerMatchStats, constants::MAX_PLAYER_SLOTS> player_stats{};
     std::vector<components::AttackRevealFlare> attack_reveal_flares{};
