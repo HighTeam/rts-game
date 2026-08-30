@@ -4096,6 +4096,24 @@ void LockstepSession::process_received_packet(
             return;
         }
 
+        // Host applies slot AI transitions locally before broadcasting; only
+        // clients should accept these control messages, and only from the host.
+        if (role_ == LockstepRole::Host) {
+            LockstepDebugLog::log_event(
+                "slot_ai_takeover_ignored_on_host",
+                "player_slot=" + std::to_string(static_cast<int>(message->player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
+            return;
+        }
+
+        if (sender_slot != constants::LOCKSTEP_HOST_PLAYER_SLOT) {
+            LockstepDebugLog::log_event(
+                "slot_ai_takeover_rejected",
+                "player_slot=" + std::to_string(static_cast<int>(message->player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
+            return;
+        }
+
         handle_slot_ai_takeover(message->player_slot);
         return;
     }
@@ -4103,6 +4121,22 @@ void LockstepSession::process_received_packet(
     if (decoded_message->first == NetMessageKind::SlotAiResume) {
         const auto message = decode_reconnect_request(decoded_message->second);
         if (!message.has_value()) {
+            return;
+        }
+
+        if (role_ == LockstepRole::Host) {
+            LockstepDebugLog::log_event(
+                "slot_ai_resume_ignored_on_host",
+                "player_slot=" + std::to_string(static_cast<int>(message->player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
+            return;
+        }
+
+        if (sender_slot != constants::LOCKSTEP_HOST_PLAYER_SLOT) {
+            LockstepDebugLog::log_event(
+                "slot_ai_resume_rejected",
+                "player_slot=" + std::to_string(static_cast<int>(message->player_slot) + 1)
+                    + " sender_slot=" + std::to_string(static_cast<int>(sender_slot) + 1));
             return;
         }
 

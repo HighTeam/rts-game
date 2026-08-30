@@ -1054,7 +1054,10 @@ AppFlow run_lockstep_match(
                 window.close();
             }
 
-            (void)game_input.handle_event(*event, window, renderer, simulation, input_snapshot);
+            {
+                std::lock_guard lock(session.simulation_access_mutex());
+                (void)game_input.handle_event(*event, window, renderer, simulation, input_snapshot);
+            }
 
             if (game_input.consume_exit_game_request()) {
                 window.close();
@@ -1159,12 +1162,20 @@ AppFlow run_lockstep_match(
         }
 
 
-        game_input.update_continuous(window, renderer, simulation, input_snapshot);
-
-        app::PlayerSelection selection = game_input.selection();
-        app::HoverHighlight hover = game_input.hover();
-
+        app::PlayerSelection selection{};
+        app::HoverHighlight hover{};
+        render::HudUnitContext hud_context{};
         const std::shared_ptr<const render::SimRenderSnapshot> frame = session.render_snapshot();
+        {
+            std::lock_guard lock(session.simulation_access_mutex());
+            game_input.update_continuous(window, renderer, simulation, input_snapshot);
+            selection = game_input.selection();
+            hover = game_input.hover();
+            if (frame) {
+                hud_context = game_input.make_hud_context(window, simulation, frame.get());
+            }
+        }
+
         const bool show_waiting_overlay = lockstep_should_show_waiting_overlay(session, role);
         const auto waiting_text = lockstep_waiting_overlay_text(session, role);
 
@@ -1186,7 +1197,7 @@ AppFlow run_lockstep_match(
                 fps_tracker.fps(),
                 tps_tracker.tps(),
                 session.network_hud_stats(),
-                game_input.make_hud_context(window, simulation, frame.get()),
+                hud_context,
                 game_input.placement_ghost_anchor(),
                 game_input.placement_ghost_valid());
 
