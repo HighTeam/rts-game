@@ -4222,7 +4222,10 @@ void LockstepSession::process_received_packet(
             return;
         }
 
-        if (!is_valid_remote_player_slot(message->player_slot)) {
+        // Host binds hashes to the transport sender (like Chat), not the payload slot.
+        const std::uint8_t hash_player_slot =
+            role_ == LockstepRole::Host && sender_slot != 0U ? sender_slot : message->player_slot;
+        if (!is_valid_remote_player_slot(hash_player_slot)) {
             LockstepDebugLog::log_event("hash_rejected", "invalid_player_slot");
             return;
         }
@@ -4231,11 +4234,16 @@ void LockstepSession::process_received_packet(
             return;
         }
 
-        remote_state_hashes_by_slot_[message->execute_tick][message->player_slot] = message->state_hash;
+        remote_state_hashes_by_slot_[message->execute_tick][hash_player_slot] = message->state_hash;
 
-        if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
+        if (role_ == LockstepRole::Host && session_player_count_ > 2U && sender_slot != 0U) {
+            TickStateHashMessage relay = *message;
+            relay.player_slot = hash_player_slot;
+            const std::vector<std::byte> relay_payload = encode_tick_state_hash(relay);
+            const std::vector<std::byte> relay_wire =
+                encode_net_message(NetMessageKind::TickStateHash, relay_payload);
             (void)transport_.broadcast_unreliable_except(
-                packet,
+                relay_wire,
                 constants::CHANNEL_UNRELIABLE,
                 sender_slot);
         }
