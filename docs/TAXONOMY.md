@@ -35,14 +35,31 @@ Trees in M1 are **resource node** tiles (forest on `MapGrid`), not separate regi
 
 ## Archetype JSON (live)
 
-Shipped under `data/archetypes/` and loaded by `src/data/content_loader.cpp` into `data::ArchetypeDefinition`. Earth civ wires them via `data/civs/earth.json`.
+Shipped under `data/archetypes/` and loaded by `src/data/content_loader.cpp` into `data::ArchetypeDefinition`. Earth civ wires them via `data/civs/earth.json` (`unit_archetypes`, `structure_archetypes`, `resource_node_archetypes`).
 
 | File | Kind | Used for |
 |------|------|----------|
-| `worker.json` | unit | Gather / deposit |
+| `worker.json` | unit | Gather / deposit / build |
 | `militia.json` | unit | Melee combat |
-| `town_center.json` | structure | Stockpile + spawn cost fields |
-| `forest_patch.json` | resource_node | Wood capacity metadata |
+| `mage.json` | unit | Ranged / mage combat |
+| `town_center.json` | structure | Stockpile, train, age-up |
+| `house.json` | structure | Civil pop cap |
+| `barracks.json` | structure | Militia training |
+| `mage_academy.json` | structure | Mage training |
+| `lumber_camp.json` | structure | Wood drop-off |
+| `mill.json` | structure | Food drop-off / farm unlock |
+| `mining_camp.json` | structure | Gold drop-off |
+| `market.json` | structure | Trade |
+| `tower.json` | structure | Defense |
+| `farm.json` | structure | Food production |
+| `garden.json` | structure | Earth support building |
+| `extractor.json` | structure | Build on mana lake; timed extract |
+| `mana_lake.json` | structure | Mana lake (build-on target for Extractor) |
+| `reservoir.json` | structure | Mana reservoir |
+| `forest_patch.json` | resource_node | Wood capacity metadata (map owns per-tile wood) |
+| `berry_bush.json` | resource_node | Food bush |
+| `blueberry_bush.json` | resource_node | Food bush variant |
+| `gold_mine.json` | resource_node | Gold mine |
 
 Example (`militia.json`):
 
