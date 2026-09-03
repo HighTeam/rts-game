@@ -159,9 +159,15 @@ void LockstepSession::sync_command_sequences_from_input_log()
 {
     local_command_sequence_ = 1U;
     ai_command_sequence_ = 1U;
+    ai_command_sequence_by_slot_.fill(0U);
     for (const sim::player::PlayerCommand& command : simulation_.command_queue().input_log()) {
         local_command_sequence_ = std::max(local_command_sequence_, command.sequence + 1U);
         ai_command_sequence_ = std::max(ai_command_sequence_, command.sequence + 1U);
+        if (command.player_slot < ai_command_sequence_by_slot_.size()) {
+            ai_command_sequence_by_slot_[command.player_slot] = std::max(
+                ai_command_sequence_by_slot_[command.player_slot],
+                command.sequence + 1U);
+        }
     }
 }
 
@@ -234,11 +240,7 @@ LockstepSession::LockstepSession(
     , simulation_(simulation)
 {
     last_peer_activity_time_ = std::chrono::steady_clock::now();
-
-    for (const sim::player::PlayerCommand& command : simulation_.command_queue().input_log()) {
-        local_command_sequence_ = std::max(local_command_sequence_, command.sequence + 1U);
-        ai_command_sequence_ = std::max(ai_command_sequence_, command.sequence + 1U);
-    }
+    sync_command_sequences_from_input_log();
 
     transport_.set_inbound_latency_handler([this](const std::span<const std::byte> packet) {
         return handle_inbound_latency_packet(packet);
