@@ -3228,10 +3228,13 @@ void LockstepSession::handle_reconnect_snapshot(const std::vector<std::byte>& pa
 
     // Fresh reconnect OR host resent a snapshot before seeing ResyncReady —
     // keep acknowledging so the host is not stuck retrying forever.
-    if (actively_reconnecting || awaiting_reconnect_handshake_ || state_changed) {
+    // Do not treat state_changed alone as a handshake trigger: host catch-up
+    // broadcasts after another peer reconnects always advance tick/hash for
+    // live bystanders and must use the catch-up path below instead.
+    if (actively_reconnecting || awaiting_reconnect_handshake_) {
         awaiting_reconnect_handshake_ = true;
         resync_ready_sent_ = false;
-        if ((actively_reconnecting || state_changed) && !sync_status_chat_announced_) {
+        if (actively_reconnecting && !sync_status_chat_announced_) {
             push_system_chat("Synchronizing data with " + player_display_name(0U) + ".");
             sync_status_chat_announced_ = true;
         }
