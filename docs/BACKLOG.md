@@ -17,7 +17,9 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`, `
 | Classic isometric render + fog + HUD basics | Done |
 | Lockstep 2–4p, reconnect, AI takeover on disconnect | Done |
 | SP save/load + autosave; House / Lumberjack / Extractor / Mana lake | Done (polish remains) |
+| Lobby exact `GAME_VERSION` gate + main-menu version label | Done |
 | Crossing / Commons + Pattern Maker; lobby map picker | Shipped (size/fairness polish below) |
+| Packed `assets.dat` + NSIS installer script | Shipped baseline (`look-here.wav` still missing → pack/CI red) |
 | 8-player brutal soak, MP coordinated save/load | Open |
 | Map redesign → RMG → Ages/Civs | Planned (this backlog) |
 
@@ -36,6 +38,7 @@ Suggested labels: `engine`, `netcode`, `content`, `ui`, `tooling`, `blocking`, `
 
 - [ ] **Combat attack pathfinding** — dog-leg / double-diagonal near enemy when not 8-aligned; see [scripts/issue-bodies/pathfinding-combat.md](../scripts/issue-bodies/pathfinding-combat.md)
 - [ ] **Unit collision** — harden unit–unit blocking (soft-slide still leaks); see [scripts/issue-bodies/unit-collision.md](../scripts/issue-bodies/unit-collision.md)
+- [ ] **Missing map-ping SFX** — add `sfx/Cringemarine/look-here.wav` (or drop `SFX_LOOK_HERE_RELATIVE_PATH`) so `aoa_pack_assets` / CI greens
 - [ ] Extractor / Mana lake sprite offsets — visual pass until footprint and art agree
 - [ ] Work interact / stand range — keep tuned (currently `WORK_INTERACT_RANGE_TILES = 0.8`)
 - [ ] Hitbox / movement — units must not walk center through 1×1 resource tiles or buildings mid-segment
@@ -108,16 +111,16 @@ Picker is Crossing / Commons / Other…. Commons is the default and is unlocked 
 
 ### Version identity
 
-- [ ] Single source of truth for game version (build + runtime readable)
-- [ ] Show version in main menu / lobby UI
-- [ ] **Do not bump version unless the owner says so** (may be `+0.0.1` or larger in one drop)
+- [x] Single source of truth for game version (build + runtime readable) — `GAME_VERSION` in `src/core/constants.hpp`
+- [x] Show version in main menu / lobby UI — main menu footer `Version: …`
+- [ ] **Do not bump version unless the owner says so** (may be `+0.0.1` or larger in one drop) — ongoing process rule
 
 ### Lobby enforcement
 
-- [ ] Host advertises required/protocol version (or exact version policy)
-- [ ] Joiners with mismatched version are rejected with a clear message
-- [ ] Example policy: peers on `1.4.5` can play together; `1.4.6` cannot join a `1.4.5` lobby (exact match unless a wider “compatible range” is decided later)
-- [ ] Document wire field(s) in DECISIONS.md / net docs
+- [x] Host advertises required/protocol version (or exact version policy) — `LobbyJoinMessage.version`
+- [x] Joiners with mismatched version are rejected with a clear message — `LOBBY_VERSION_MISMATCH_MESSAGE`
+- [x] Exact-match policy (`1.4.5` cannot join `1.4.6`); wider “compatible range” still undecided
+- [x] Document wire field(s) in [DECISIONS.md](DECISIONS.md) / [LOCKSTEP.md](LOCKSTEP.md)
 
 ---
 
@@ -195,21 +198,21 @@ Picker is Crossing / Commons / Other…. Commons is the default and is unlocked 
 
 ### Main menu & lobby
 
-- [ ] Singleplayer / Multiplayer / Settings / Account / Credits / Leave
-- [ ] Logo + menu art
-- [ ] Map selection, resources, unit cap, map size
+- [x] Singleplayer / Multiplayer / Settings / Exit (Account / Credits still open)
+- [x] Logo + menu art (slideshow + theme)
+- [x] Map selection, resources, unit cap, map size / biome
 - [ ] Civ / general / age-related setup as content unlocks
-- [ ] Ready-check; **version gate** (see Versioning pillar)
+- [x] Ready-check; **version gate** (see Versioning pillar)
 
 ### Settings & AI
 
-- [ ] Video, Audio, Controls, Account (nickname MVP)
-- [ ] Rule-based AI opponent (no ML)
+- [x] Video, Audio, HUD style, nickname MVP (Controls / Account polish still open)
+- [x] Rule-based AI opponent for empty / disconnected slots (no ML; depth polish open)
 
 ### Packaging
 
-- [ ] Asset pack pipeline maturity (`assets.dat` / future packs)
-- [ ] Windows installer / distribution package
+- [x] Asset pack pipeline baseline (`assets.dat` POST_BUILD; richer `.adp` tooling still open)
+- [x] Windows installer script (`packaging/aoa-setup.nsi` + `scripts/package-setup.ps1`) — distribution polish open
 - [ ] Minimal download page (do not over-invest for MVP)
 
 ### Analytics (optional / later)
@@ -220,12 +223,12 @@ Picker is Crossing / Commons / Other…. Commons is the default and is unlocked 
 
 ## Suggested order of attack
 
-1. **Polish & Debt** — enough that the Earth build is trustworthy  
+1. **Polish & Debt** — enough that the Earth build is trustworthy (incl. missing `look-here.wav`)  
 2. **Map Redesign** — tiles, layering, nature  
 3. **RMG & Fairness** — pattern/script generation on the new vocabulary  
-4. **Versioning** — as soon as multiplayer lobbies are used for wider playtests (can overlap earlier)  
+4. **Versioning** — exact gate shipped; keep owner-only bumps + revisit compatible-range only if needed  
 5. **Ages & Technologies** then **Civilizations & Generals**  
 6. **Art & Presentation** and **GUI Redesign** in parallel where staffed  
-7. **Shell & Packaging** for external playtests / release  
+7. **Shell & Packaging** polish for external playtests / release  
 
 If schedule slips: cut tech-tree depth and general count before cutting map fairness, lockstep robustness, or data-driven architecture.
