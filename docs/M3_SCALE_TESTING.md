@@ -31,6 +31,10 @@ Start-Sleep -Milliseconds 500
 & $exe --lockstep-reconnect-smoke
 Start-Sleep -Milliseconds 500
 & $exe --lockstep-4-smoke
+Start-Sleep -Milliseconds 500
+& $exe --lockstep-4-disconnect-smoke
+Start-Sleep -Milliseconds 500
+& $exe --lockstep-4-reconnect-smoke
 ```
 
 **Pass criteria**
@@ -38,12 +42,14 @@ Start-Sleep -Milliseconds 500
 | Command | Expected |
 |---------|----------|
 | `--harness` | `All scenarios passed` |
-| `--lockstep-smoke` | `ok ticks=40 hash=0x...` |
-| `--lockstep-disconnect-smoke` | `ok ai_at_tick=... continued_to=...` |
-| `--lockstep-reconnect-smoke` | `ok cycles=3 ticks=130 hash=0x...` |
-| `--lockstep-4-smoke` | `ok ticks=40 hash=0x74adf4a4c1592f59` (hash must match across 4 peers) |
+| `--lockstep-smoke` | `ok ticks=… hash=0x…` |
+| `--lockstep-disconnect-smoke` | `ok ai_at_tick=… continued_to=…` |
+| `--lockstep-reconnect-smoke` | `ok cycles=3 … hash=0x…` |
+| `--lockstep-4-smoke` | `ok ticks=40 hash=0x…` (same hash across all 4 peers) |
+| `--lockstep-4-disconnect-smoke` | remaining peers stay in lockstep after one drop |
+| `--lockstep-4-reconnect-smoke` | disconnect → live advance → reconnect → hash match |
 
-If any fail, fix before LAN or long soaks.
+If any fail, fix before LAN or long soaks. Ports and caveats: [LOCKSTEP.md](LOCKSTEP.md).
 
 ---
 
@@ -55,7 +61,7 @@ If any fail, fix before LAN or long soaks.
 .\build\x64-release\Release\AgeofAffinities.exe --lockstep-4-smoke
 ```
 
-One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check** until manual multi-join CLI lands.
+One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check**. Multi-process joins use `--players 4` + `--player-slot N` (see §2b).
 
 ### 2b. Graphical / multi-process 4-player
 
@@ -209,4 +215,4 @@ Run brutal **localhost + headless** first; then one **2-PC split soak** (§5) wi
 | 4-smoke ok but LAN bad | Connect in slot order (P2→P3→P4); same `--lockstep-players` on every process |
 | Hash mismatch after sim change | Re-run smokes; update harness JSON if intentional |
 
-See also [BUILD.md](BUILD.md) for all CLI flags and [LAN_SOAK.md](LAN_SOAK.md) for M2 two-player soak.
+See also [BUILD.md](BUILD.md) for all CLI flags, [LOCKSTEP.md](LOCKSTEP.md) for ports/reconnect, and [LAN_SOAK.md](LAN_SOAK.md) for two-player soak.
