@@ -1497,6 +1497,8 @@ void LockstepSession::disconnect_transport()
     if (role_ == LockstepRole::Host && match_started_) {
         send_host_ended();
         transport_.flush_outbound();
+        transport_.disconnect_after_host_ended();
+        return;
     }
 
     transport_.disconnect();
@@ -2718,7 +2720,12 @@ bool LockstepSession::request_voluntary_resign()
     }
 
     transport_.flush_outbound();
-    transport_.disconnect_peer();
+    if (role_ == LockstepRole::Host && match_started_) {
+        transport_.disconnect_after_host_ended();
+    }
+    else {
+        transport_.disconnect_peer();
+    }
     return true;
 }
 

@@ -462,6 +462,57 @@ void EnetTransport::disconnect()
     destroy_host_locked();
 }
 
+void EnetTransport::disconnect_after_host_ended()
+{
+    stop_network_thread();
+
+    std::lock_guard lock(mutex_);
+    if (host_ == nullptr) {
+        return;
+    }
+
+    flush_outbound_locked();
+
+    if (is_server_) {
+        for (std::uint8_t client_slot = 1U; client_slot <= max_clients_; ++client_slot) {
+            _ENetPeer* peer = client_peers_[client_slot];
+            if (peer != nullptr && peer->state == ENET_PEER_STATE_CONNECTED) {
+                enet_peer_disconnect(peer, 0);
+            }
+        }
+    }
+    else if (client_peer_ != nullptr && client_peer_->state == ENET_PEER_STATE_CONNECTED) {
+        enet_peer_disconnect(client_peer_, 0);
+    }
+
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(constants::ENET_HOST_END_GRACE_MS);
+    while (std::chrono::steady_clock::now() < deadline) {
+        service_events_locked(constants::ENET_NETWORK_THREAD_SERVICE_TIMEOUT_MS);
+        enet_host_flush(host_);
+
+        bool any_connected = false;
+        if (is_server_) {
+            for (std::uint8_t client_slot = 1U; client_slot <= max_clients_; ++client_slot) {
+                _ENetPeer* peer = client_peers_[client_slot];
+                if (peer != nullptr && peer->state == ENET_PEER_STATE_CONNECTED) {
+                    any_connected = true;
+                    break;
+                }
+            }
+        }
+        else if (client_peer_ != nullptr && client_peer_->state == ENET_PEER_STATE_CONNECTED) {
+            any_connected = true;
+        }
+
+        if (!any_connected) {
+            break;
+        }
+    }
+
+    destroy_host_locked();
+}
+
 void EnetTransport::disconnect_peer()
 {
     std::lock_guard lock(mutex_);

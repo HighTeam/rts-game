@@ -47,6 +47,8 @@ public:
     [[nodiscard]] bool connect(const char* host_name, std::uint16_t port);
 
     void disconnect();
+    // Flush outbound reliables and disconnect peers gracefully (host end-game path).
+    void disconnect_after_host_ended();
     void disconnect_peer();
     void disconnect_peer_slot(std::uint8_t client_slot);
     void poll(std::uint32_t timeout_ms);
