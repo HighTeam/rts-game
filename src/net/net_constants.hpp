@@ -33,6 +33,8 @@ inline constexpr int NET_SMOKE_RECEIVE_ATTEMPTS = 5000;
 inline constexpr std::uint32_t NET_POLL_TIMEOUT_MS = 0U;
 inline constexpr std::uint32_t ENET_NETWORK_THREAD_SERVICE_TIMEOUT_MS = 1U;
 inline constexpr std::uint32_t ENET_NETWORK_THREAD_IDLE_WAIT_MS = 1U;
+// Grace period for HostEnded and other reliable shutdown messages before tearing down ENet.
+inline constexpr std::uint32_t ENET_HOST_END_GRACE_MS = 500U;
 inline constexpr std::uint32_t ENET_PEER_TIMEOUT_MINIMUM_MS = 1000U;
 inline constexpr std::uint32_t ENET_PEER_TIMEOUT_MAXIMUM_MS = 15000U;
 inline constexpr std::uint32_t ENET_PEER_TIMEOUT_LIMIT = 32U;
