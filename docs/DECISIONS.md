@@ -167,8 +167,9 @@ Developer checklist: [BUILD.md](BUILD.md) (Save / load). Snapshot wire details: 
 | Source of truth | `GAME_VERSION` in `src/core/constants.hpp` (also shown on the main menu) |
 | Lobby wire | `LobbyJoinMessage.version` text field (`lobby_wire.cpp`) |
 | Lobby reject | Host sends `LobbyReject` with `LOBBY_VERSION_MISMATCH_MESSAGE` ("Version mismatch") |
-| Lockstep join | Host requires `join->version == GAME_VERSION` |
-| Compatibility range | None — exact match only until a wider policy is decided |
+| Mid-match menu rejoin | Host accepts `LobbyJoin` only when `join->version == GAME_VERSION` |
+| CLI `--lockstep-join` | No version gate — `ReconnectRequest` carries only `player_slot` + `claim_token` |
+| Compatibility range | None for lobby/menu paths — exact match only until a wider policy is decided |
 
 See [LOCKSTEP.md](LOCKSTEP.md) (Version gate) and [BUILD.md](BUILD.md).
 
