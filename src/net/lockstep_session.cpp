@@ -2230,6 +2230,22 @@ std::optional<std::uint8_t> LockstepSession::enet_slot_for_player(
     return enet_slot;
 }
 
+std::optional<std::uint8_t> LockstepSession::player_slot_for_enet_slot(
+    const std::uint8_t enet_slot) const
+{
+    if (enet_slot == 0U) {
+        return std::nullopt;
+    }
+
+    for (std::uint8_t player_slot = 0U; player_slot < player_slot_to_enet_slot_.size(); ++player_slot) {
+        if (player_slot_to_enet_slot_[player_slot] == enet_slot) {
+            return player_slot;
+        }
+    }
+
+    return std::nullopt;
+}
+
 void LockstepSession::apply_post_join_accepted_host_state()
 {
     if (role_ == LockstepRole::Host && session_player_count_ > 2U) {
@@ -3015,13 +3031,20 @@ void LockstepSession::handle_reconnect_request(
         return;
     }
 
-    if (sender_enet_slot != 0U) {
-        bind_player_to_enet_slot(player_slot, sender_enet_slot);
-        pending_reconnect_enet_slot_ = sender_enet_slot;
-    }
-
     const bool mid_match_reconnect =
         match_started_ && simulation_.tick_count() > 0U;
+
+    if (sender_enet_slot != 0U) {
+        const std::optional<std::uint8_t> sender_player_slot =
+            player_slot_for_enet_slot(sender_enet_slot);
+        if (sender_player_slot.has_value() && *sender_player_slot != player_slot) {
+            LockstepDebugLog::log_event(
+                "reconnect_request_rejected",
+                "player_slot=" + std::to_string(static_cast<int>(player_slot) + 1) + " enet_slot="
+                    + std::to_string(sender_enet_slot) + " reason=cross_slot_claim");
+            return;
+        }
+    }
 
     if (mid_match_reconnect && !claim_token_accepted(player_slot, claim_token)) {
         LockstepDebugLog::log_event(
@@ -3029,6 +3052,11 @@ void LockstepSession::handle_reconnect_request(
             "player_slot=" + std::to_string(static_cast<int>(player_slot) + 1)
                 + " reason=claim_token");
         return;
+    }
+
+    if (sender_enet_slot != 0U) {
+        bind_player_to_enet_slot(player_slot, sender_enet_slot);
+        pending_reconnect_enet_slot_ = sender_enet_slot;
     }
 
     if (is_multi_peer_session(session_player_count_) && mid_match_reconnect) {
