@@ -87,8 +87,9 @@ Close epics when all checklist items are done.
 
 ## What to work on first
 
-1. All `[BLOCKING]` items in M0
-2. M1 deterministic sim + data-driven civ definitions
-3. M2 lockstep — do not steal time from this milestone
+1. Lockstep robustness on `main` (open fix drafts **#72** / **#75** / **#77** / **#79** /
+   **#81** / **#83** / **#85** / **#87** / **#89**) — see [LOCKSTEP.md](LOCKSTEP.md)
+2. Remaining M3 gaps: 8-player CI smoke, MP coordinated save/load — [BACKLOG.md](BACKLOG.md)
+3. M4 civ content and M5 packaging polish (without regressing lockstep)
 
-If behind at week 6, trim M4 tech-tree depth first, not networking or M1 architecture.
+If schedule slips: cut M4 tech-tree depth before cutting lockstep robustness or data-driven architecture.
