@@ -31,6 +31,10 @@ Start-Sleep -Milliseconds 500
 & $exe --lockstep-reconnect-smoke
 Start-Sleep -Milliseconds 500
 & $exe --lockstep-4-smoke
+Start-Sleep -Milliseconds 500
+& $exe --lockstep-4-disconnect-smoke
+Start-Sleep -Milliseconds 500
+& $exe --lockstep-4-reconnect-smoke
 ```
 
 **Pass criteria**
@@ -38,12 +42,14 @@ Start-Sleep -Milliseconds 500
 | Command | Expected |
 |---------|----------|
 | `--harness` | `All scenarios passed` |
-| `--lockstep-smoke` | `ok ticks=40 hash=0x...` |
-| `--lockstep-disconnect-smoke` | `ok ai_at_tick=... continued_to=...` |
-| `--lockstep-reconnect-smoke` | `ok cycles=3 ticks=130 hash=0x...` |
-| `--lockstep-4-smoke` | `ok ticks=40 hash=0x74adf4a4c1592f59` (hash must match across 4 peers) |
+| `--lockstep-smoke` | `ok ticks=… hash=0x…` |
+| `--lockstep-disconnect-smoke` | `ok ai_at_tick=… continued_to=…` |
+| `--lockstep-reconnect-smoke` | `ok cycles=3 … hash=0x…` |
+| `--lockstep-4-smoke` | `ok ticks=40 hash=0x…` (same hash across all 4 peers) |
+| `--lockstep-4-disconnect-smoke` | remaining peers stay in lockstep after one drop |
+| `--lockstep-4-reconnect-smoke` | disconnect → live advance → reconnect → hash match |
 
-If any fail, fix before LAN or long soaks.
+If any fail, fix before LAN or long soaks. Ports and caveats: [LOCKSTEP.md](LOCKSTEP.md).
 
 ---
 
@@ -55,13 +61,31 @@ If any fail, fix before LAN or long soaks.
 .\build\x64-release\Release\AgeofAffinities.exe --lockstep-4-smoke
 ```
 
-One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check** until manual multi-join CLI lands.
+One process runs host (slot 0) + three in-process clients (slots 1–3). No windows. This is the **authoritative 4-player desync check**. Multi-process joins use `--players 4` + `--player-slot N` (see §2b).
 
 ### 2b. Graphical / multi-process 4-player
 
-Use **`--players 4`** (alias: `--players 4`) on the host and every join. Each slot gets a town center, worker, and militia on a **4-corner map**. The host shows **Waiting for players (N/4)** until all clients connect; the sim does not advance until the lobby is full.
+Use **`--players 4`** (or `--lockstep-players 4`) on the host and every join. Each slot gets a town center, worker, and militia on a **4-corner map**. The host shows **Waiting for players (N/4)** until all clients connect; the sim does not advance until the lobby is full.
 
 Connect in order: **P2 → P3 → P4** (ENet slot must match `--player-slot`).
+
+**Repo helper scripts** (Release build at `build\x64-release\Release\AgeofAffinities.exe`):
+
+| Script | What it does |
+|--------|----------------|
+| `.\scripts\run-lockstep-4-graphical.ps1` | Opens **4** PowerShell windows: host + joins slots 2–4 on port **27000**, each with `--lockstep-debug --lockstep-auto-input`. Join order is P2→P3→P4. Logs under `Release\logs\`. |
+| `.\scripts\run-lockstep-4-stress.ps1` | **4** headless processes on port **27010**, `--ticks 500`, debug + auto-input; waits on the host (900s timeout) and fails if any peer exits non-zero. |
+
+Manual equivalent (without the scripts):
+
+```powershell
+$exe = ".\build\x64-release\Release\AgeofAffinities.exe"
+& $exe --lockstep-host --port 27000 --players 4 --lockstep-debug --lockstep-auto-input
+& $exe --lockstep-join 127.0.0.1:27000 --players 4 --player-slot 2 --lockstep-debug --lockstep-auto-input
+# …slots 3 and 4 the same way
+```
+
+For a single-process stress smoke instead of four OS processes, use `--lockstep-4-stress-smoke` (`27206`) — see [LOCKSTEP.md](LOCKSTEP.md) / [BUILD.md](BUILD.md).
 
 ---
 
@@ -69,7 +93,7 @@ Connect in order: **P2 → P3 → P4** (ENet slot must match `--player-slot`).
 
 Full checklist and portable copy steps: [LAN_SOAK.md](LAN_SOAK.md) **§2–§4**.
 
-**Recommended:** stage `D:\aoa-lan` on the build PC (exe + DLLs + `data\` + `assets\`), copy that folder to the second PC, then run with explicit flags only.
+**Recommended:** stage `D:\aoa-lan` on the build PC (exe + `*.dll` + `assets.dat` + `scenarios\` / `patterns\`), copy that folder to the second PC, then run with explicit flags only.
 
 **PC A (host)** — start first:
 
@@ -85,7 +109,8 @@ cd D:\aoa-lan
 .\AgeofAffinities.exe --lockstep-join 192.168.x.x:27000 --lockstep-debug
 ```
 
-Logs (with `--lockstep-debug`): `D:\aoa-lan\logs\lockstep_p1_host.log`, `lockstep_p2_client.log`.
+Logs (with `--lockstep-debug`): `logs/` next to the exe
+(`lockstep_p1_host.log`, `lockstep_p2_client.log`, … — see [LAN_SOAK.md](LAN_SOAK.md)).
 
 **Repo-only optional helpers** (both machines have the full checkout): `.\scripts\run-lan-host.ps1` / `.\scripts\run-lan-join.ps1` — see [LAN_SOAK.md](LAN_SOAK.md) §5.
 
@@ -209,4 +234,4 @@ Run brutal **localhost + headless** first; then one **2-PC split soak** (§5) wi
 | 4-smoke ok but LAN bad | Connect in slot order (P2→P3→P4); same `--lockstep-players` on every process |
 | Hash mismatch after sim change | Re-run smokes; update harness JSON if intentional |
 
-See also [BUILD.md](BUILD.md) for all CLI flags and [LAN_SOAK.md](LAN_SOAK.md) for M2 two-player soak.
+See also [BUILD.md](BUILD.md) for all CLI flags, [LOCKSTEP.md](LOCKSTEP.md) for ports/reconnect, and [LAN_SOAK.md](LAN_SOAK.md) for two-player soak.
