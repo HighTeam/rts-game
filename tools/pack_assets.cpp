@@ -146,6 +146,7 @@ struct PackEntry {
     out_entries.clear();
     out_entries.reserve(relative_paths.size());
 
+    std::size_t skipped_missing = 0U;
     for (const std::string& relative : relative_paths) {
         const bool is_data = relative.rfind("data/", 0) == 0;
         const std::filesystem::path source_file = is_data
@@ -154,11 +155,26 @@ struct PackEntry {
         PackEntry entry{};
         entry.relative_path = relative;
         if (!read_file_bytes(source_file, entry.bytes)) {
-            std::cerr << "pack_assets: failed to read " << source_file.string() << '\n';
-            return false;
+            // visuals.json may list media that is only present in a local raw-assets
+            // checkout. Skip those paths so CI / clean clones can still produce assets.dat
+            // from the force-tracked subset (headless smokes do not need every texture).
+            std::cerr << "pack_assets: skipping missing " << source_file.string() << '\n';
+            ++skipped_missing;
+            continue;
         }
 
         out_entries.push_back(std::move(entry));
+    }
+
+    if (out_entries.empty()) {
+        std::cerr << "pack_assets: no readable entries to pack\n";
+        return false;
+    }
+
+    if (skipped_missing > 0U) {
+        std::cerr << "pack_assets: skipped " << skipped_missing
+                  << " missing path(s); packed " << out_entries.size() << " entr"
+                  << (out_entries.size() == 1U ? "y" : "ies") << '\n';
     }
 
     return true;
