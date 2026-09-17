@@ -1,25 +1,58 @@
 # Shipped assets (`assets/`)
 
-Runtime assets for Age of Affinities. **Committed and copied next to the executable at build time** (see `CMakeLists.txt` POST_BUILD).
+Committed runtime sources for Age of Affinities. At build time, `aoa_pack_assets`
+packs this tree plus `data/` into **`assets.dat`** next to the executable
+(`CMakeLists.txt` POST_BUILD). Release output then drops loose `assets/` / `data/`
+copies so portable folders ship `assets.dat` only (plus `scenarios/` and `patterns/`).
 
 ## Layout
 
 | Path | Content |
 |------|---------|
-| `music/` | Background music (interim: direct copies from `raw-assets/music/`) |
+| `music/` | Background music (interim: copies from `raw-assets/music/`) |
 | `sfx/` | Sound effects (interim copies) |
 | `textures/` | Sprites / tile art (interim copies) |
 | `models/` | 3D models (interim copies) |
-| *(future)* | `.dat` / `.adp` binary packs |
+| `visuals.json` | HUD / sprite atlas metadata |
+
+Packed at build: `aoa_pack_assets <assets_dir> <data_dir> <out/assets.dat>`
+(`ASSET_PACK_FILENAME`). Pack header magic `AOA1` (`0x31414F41`) / version **1**
+(`tools/pack_assets.cpp`). Manifest is:
+
+1. Media paths regex-scraped from `visuals.json` (png/jpg/webp/bmp/wav/ogg/flac), plus the
+   `visuals.json` file itself
+2. CursorCrystal PNGs under `textures/CursorCrystal/PNG/{01,02,04,05,13,20,21,22,23,27,28}/`
+3. Every regular file under `data/` (stored as `data/…` paths)
+
+Not a blind walk of all of `assets/`. Missing paths listed in `visuals.json` are **skipped with a
+warning** (`tools/pack_assets.cpp`) so CI / clean clones can still produce `assets.dat` from the
+force-tracked subset. Local artist checkouts that have the full `raw-assets/` tree pack the
+complete set.
+
+Force-tracked silent PCM placeholders (replace with real VO when available):
+
+| `visuals.json` key | Path | Runtime constant |
+|--------------------|------|------------------|
+| `look_here` | `sfx/Cringemarine/look-here.wav` | `SFX_LOOK_HERE_RELATIVE_PATH` |
+| `new_age` | `sfx/Cringemarine/new-age.wav` | `SFX_NEW_AGE_RELATIVE_PATH` |
 
 ## Source of truth (dev only)
 
-Authoring happens under **`raw-assets/`** (gitignored). Do not reference `raw-assets/` from the game binary.
+Authoring happens under **`raw-assets/`** (gitignored). Do not reference `raw-assets/`
+from the game binary.
 
-## Serialization (planned)
+## Runtime load order
 
-Today: plain files in this tree (often direct copies from `raw-assets/`).
+1. Prefer `assets.dat` next to the exe (portable / installer / Release).
+2. Optional loose `assets/` + `data/` for local Debug: pass `--loose-assets`, or rely on
+   the pack-open fallback under `AOA_RUNTIME_ROOT` (`src/core/asset_store.*`).
 
-Later (M5): immutable binary packs (`.dat`, `.adp`, …) built by a dedicated pack tool. The game will load packs only.
+There is no `AOA_DATA_DIR` env var.
 
-See [docs/DECISIONS.md](../docs/DECISIONS.md).
+## Still open (M5)
+
+Richer pack tooling (CRUD, audio-specific packs such as `.adp`) and shipping builds
+that never fall back to loose trees.
+
+See [docs/DECISIONS.md](../docs/DECISIONS.md), [docs/BUILD.md](../docs/BUILD.md),
+[docs/LOCKSTEP.md](../docs/LOCKSTEP.md).
