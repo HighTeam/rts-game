@@ -44,6 +44,7 @@ AoE2-style RTS where civilizations rise through their affinity to elemental powe
 - [LAN_SOAK.md](docs/LAN_SOAK.md) — two-PC LAN soak checklist
 - [M3_SCALE_TESTING.md](docs/M3_SCALE_TESTING.md) — 4–8 player scale testing without 8 PCs
 - [ECS.md](docs/ECS.md) — EnTT components, tick pipeline, systems, data-driven hooks
+- [HUD.md](docs/HUD.md) — Default vs AoE Style HUD layout, hit-tests, `settings.json`
 - [TAXONOMY.md](docs/TAXONOMY.md) — world object terms and live archetype JSON
 - [DECISIONS.md](docs/DECISIONS.md) — early decision tracker (issue #21)
 - [BACKLOG.md](docs/BACKLOG.md) — full epic checklists (M0–M5)

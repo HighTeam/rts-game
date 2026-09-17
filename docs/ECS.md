@@ -114,7 +114,10 @@ Player “look here” markers are sim state (hashed + snapshotted), not pure UI
 | Hash / snapshot | Included in `compute_state_hash` and snapshot v26 |
 | SFX | `SfxEventKind::LookHere` → `sfx/Cringemarine/look-here.wav` (silent PCM placeholder until real VO lands; `new_age` uses the same pattern via `SFX_NEW_AGE_RELATIVE_PATH`) |
 
-**UI path:** spyglass / pointer-mode HUD button toggles `pointer_targeting_mode_`; next world or minimap click submits the ping (`GameInput::submit_map_ping`). Esc cancels the mode. Same command path in SP and lockstep (delayed via the session outbox in MP).
+**UI path:** spyglass / pointer-mode HUD button toggles `pointer_targeting_mode_`; next world or
+minimap click submits the ping (`GameInput::submit_map_ping`). Esc cancels the mode. Same command
+path in SP and lockstep (delayed via the session outbox in MP). Pointer-mode buttons are
+**Default HUD** chrome — see [HUD.md](HUD.md).
 
 ## Diplomacy (chat / trades / teams)
 

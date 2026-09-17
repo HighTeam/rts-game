@@ -51,7 +51,7 @@ Launching the binary without CLI flags opens the main menu (slideshow background
 |------------|-----------|
 | Singleplayer | Fresh 2-player simulation with the second slot AI-controlled; fog cycles Enabled → Explored → Disabled (`FogOfWarMode`) |
 | Multiplayer | Player name, then **Host** (player count, map, biome Mixed/Grass/Snow/Sand, civil cap, fog; AI slots can be cycled off) or **Connect** (address, port) |
-| Settings | Same Game/Audio/HUD panel as the in-game menu (fullscreen, Master/Music/SFX, Default vs AoE Style HUD). AoE Style hides the Default HUD **minimap** outer/inner double-diamond stroke (`draw_minimap_contents`, tip `bfc6a29`) |
+| Settings | Same Game/Audio/HUD panel as the in-game menu (fullscreen, Master/Music/SFX, Default vs AoE Style HUD). Layout / hit-test details: [HUD.md](HUD.md). AoE Style hides the Default HUD **minimap** outer/inner double-diamond stroke (`draw_minimap_contents`, tip `bfc6a29`) |
 | Exit | Quits; `Esc` on the main menu does the same |
 
 Main menu footer shows `GAME_VERSION` (`alpha_v0.2.1`). **Menu lobby** joins require an **exact**
